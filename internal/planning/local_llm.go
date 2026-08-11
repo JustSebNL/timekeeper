@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Seb. All rights reserved.
+// Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 
 // Package planning talks to explicitly configured local LLM servers. It returns
 // drafts only; applying a draft to Time Keeper is a separate approval action.

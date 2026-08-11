@@ -1,6 +1,6 @@
 # Time Keeper for VS Code
 
-Copyright (c) 2026 Seb. All rights reserved.
+Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 
 The official Time Keeper VS Code companion is a thin client for a locally running Time Keeper server. It never opens Time Keeper's SQLite database directly and does not maintain a second task store.
 

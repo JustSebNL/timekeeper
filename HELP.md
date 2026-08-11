@@ -1,6 +1,6 @@
 # Time Keeper Help
 
-Copyright (c) 2026 Seb. All rights reserved.
+Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 
 ## Implemented CLI
 
