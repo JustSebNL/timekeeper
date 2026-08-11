@@ -21,9 +21,10 @@ done < <(git ls-files)
 
 gem_word='gem'
 mining_word='mining'
+vault_word='vault'
 mount_root='/mnt'
 external_repo_shelf="$mount_root/h/dev/repos"
-forbidden_pattern="${gem_word}[ -]?${mining_word}|vault_snippets|track_${gem_word}s|$external_repo_shelf"
+forbidden_pattern="${gem_word}[ -]?${mining_word}|${vault_word}_snippets|track_${gem_word}s|$external_repo_shelf"
 if matches="$(git grep -IlE "$forbidden_pattern" -- . ':!dev-ops/tests/project_content_scope_test.sh' || true)" && [[ -n "$matches" ]]; then
   printf 'unrelated-mining-material-present-in-tracked-source:\n%s\n' "$matches" >&2
   exit 1
