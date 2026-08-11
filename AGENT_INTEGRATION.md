@@ -2,7 +2,7 @@
 
 Time Keeper is deliberately boring at the boundary: local SQLite behind versioned HTTP JSON. Hermes, OpenClaw, other Claw runtimes, shell agents, and custom orchestrators should use this contract directly rather than receive a runtime-specific fork of the core.
 
-Copyright (c) 2026 Seb. All rights reserved.
+Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 
 ## Connection
 

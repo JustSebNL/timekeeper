@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright (c) 2026 Seb. All rights reserved.
+# Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 # RELEASE_PREFLIGHT_DOES_NOT_ENABLE_INSTALLATION
 #
 # This validates a checked-out source tree. It creates no installer, performs no
@@ -36,6 +36,7 @@ for asset in web/timekeeper.html web/timekeeper.css web/timekeeper.js; do
 done
 node --check "$ROOT/web/timekeeper.js"
 bash "$ROOT/dev-ops/tests/project_local_state_test.sh"
+bash "$ROOT/dev-ops/tests/copyright_attribution_contract_test.sh"
 bash "$ROOT/dev-ops/tests/public_documentation_contract_test.sh"
 
 mkdir -p "$WORK_ROOT"

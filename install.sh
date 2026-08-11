@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright (c) 2026 Seb. All rights reserved.
+# Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 # INSTALLER_DISABLED_UNTIL_RELEASE_READINESS
 set -Eeuo pipefail
 

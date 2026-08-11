@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Seb. All rights reserved. */
+/* Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved. */
 
 :root { color-scheme: dark; --bg:#0b0e12; --panel:#121820; --line:#26313d; --text:#edf2f7; --muted:#93a1b2; --accent:#4f90c9; --danger:#e16b72; }
     * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif; }

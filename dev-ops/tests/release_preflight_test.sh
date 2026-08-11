@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright (c) 2026 Seb. All rights reserved.
+# Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -13,6 +13,7 @@ for required in \
   '"$GO_BIN" vet ./...' \
   'node --check "$ROOT/web/timekeeper.js"' \
   'project_local_state_test.sh' \
+  'copyright_attribution_contract_test.sh' \
   'public_documentation_contract_test.sh' \
   'git diff --check' \
   'git ls-files' \

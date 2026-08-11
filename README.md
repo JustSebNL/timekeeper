@@ -1,6 +1,6 @@
 # Time Keeper
 
-Copyright (c) 2026 Seb. All rights reserved. This is proprietary software; see `LICENSE` and `NOTICE`.
+Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved. This is proprietary software; see `LICENSE` and `NOTICE`.
 
 Time Keeper is a local-first project execution memory system for humans and agents. SQLite is authoritative; the HTTP API, `tk` CLI, and dashboard use the same data.
 
