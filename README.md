@@ -65,7 +65,7 @@ The checkout must be clean, use the official `origin`, and exactly match its loc
 ~/.local/share/timekeeper/timekeeper
 ```
 
-Use `--source <checkout>` or `--destination <new-directory>` only when deliberately choosing a verified checkout or an isolated user-owned destination. This is a local source bootstrap, not a downloadable release installer, service manager, or deployment mechanism.
+Use `--source <checkout>` or `--destination <new-directory>` only when deliberately choosing a verified checkout or a new dedicated destination. The installer will not merge with or alter an existing destination; when overriding the default, choose an OS-user-private location yourself. This is a local source bootstrap, not a downloadable release installer, service manager, or deployment mechanism.
 
 ### Source release preflight
 
