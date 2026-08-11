@@ -1,0 +1,18 @@
+# Build outputs
+/bin/
+/dist/
+*.exe
+*.test
+
+# Runtime state and local artifacts
+*.db
+*.db-shm
+*.db-wal
+*.vsix
+/data/
+/.timekeeper/
+
+# Local environment/editor state
+.env
+.idea/
+.vscode/

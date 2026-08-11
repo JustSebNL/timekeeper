@@ -1,0 +1,70 @@
+{
+  "name": "timekeeper-vscode",
+  "displayName": "Time Keeper",
+  "description": "Official local execution companion for Time Keeper.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "justsebnl",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onView:timekeeper.projects",
+    "onCommand:timekeeper.connect",
+    "onCommand:timekeeper.selectProject",
+    "onCommand:timekeeper.refresh",
+    "onCommand:timekeeper.startSprint",
+    "onCommand:timekeeper.holdSprint",
+    "onCommand:timekeeper.resumeSprint",
+    "onCommand:timekeeper.completeSprint",
+    "onCommand:timekeeper.openDashboard"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "Time Keeper",
+      "properties": {
+        "timekeeper.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:1618",
+          "description": "Numeric-loopback URL of the locally running Time Keeper server."
+        }
+      }
+    },
+    "commands": [
+      { "command": "timekeeper.connect", "title": "Time Keeper: Connect" },
+      { "command": "timekeeper.selectProject", "title": "Time Keeper: Select Project" },
+      { "command": "timekeeper.refresh", "title": "Time Keeper: Refresh" },
+      { "command": "timekeeper.startSprint", "title": "Time Keeper: Start Sprint" },
+      { "command": "timekeeper.holdSprint", "title": "Time Keeper: Hold Sprint" },
+      { "command": "timekeeper.resumeSprint", "title": "Time Keeper: Resume Sprint" },
+      { "command": "timekeeper.completeSprint", "title": "Time Keeper: Complete Sprint" },
+      { "command": "timekeeper.openDashboard", "title": "Time Keeper: Open Dashboard" }
+    ],
+    "views": {
+      "explorer": [
+        { "id": "timekeeper.projects", "name": "Time Keeper" }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "timekeeper.connect", "when": "view == timekeeper.projects", "group": "navigation@1" },
+        { "command": "timekeeper.selectProject", "when": "view == timekeeper.projects", "group": "navigation@2" },
+        { "command": "timekeeper.refresh", "when": "view == timekeeper.projects", "group": "navigation@3" },
+        { "command": "timekeeper.openDashboard", "when": "view == timekeeper.projects", "group": "navigation@4" }
+      ],
+      "view/item/context": [
+        { "command": "timekeeper.startSprint", "when": "view == timekeeper.projects && viewItem == timekeeper.sprint.open", "group": "inline@1" },
+        { "command": "timekeeper.holdSprint", "when": "view == timekeeper.projects && viewItem == timekeeper.sprint.active", "group": "inline@2" },
+        { "command": "timekeeper.resumeSprint", "when": "view == timekeeper.projects && viewItem == timekeeper.sprint.on-hold", "group": "inline@3" },
+        { "command": "timekeeper.completeSprint", "when": "view == timekeeper.projects && viewItem == timekeeper.sprint.active", "group": "inline@4" }
+      ]
+    }
+  },
+  "scripts": {
+    "lint": "node --check extension.js && node --check lib/client.js && node --check lib/tree.js",
+    "test": "node --test test/*.test.js"
+  }
+}
