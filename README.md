@@ -22,10 +22,10 @@ The current foundation provides:
 
 ## Build and run from WSL
 
-The Windows Go toolchain is used from WSL on this machine:
+If Go is not on `PATH`, set `GOEXE` to its executable:
 
 ```text
-GOEXE='/mnt/c/Program Files/Go/bin/go.exe'
+GOEXE='/path/to/go'
 "$GOEXE" test ./...
 "$GOEXE" build -o bin/timekeeper.exe ./cmd/server
 "$GOEXE" build -o bin/tk.exe ./cmd/tk
@@ -43,33 +43,43 @@ Then visit `http://127.0.0.1:1618/` or use:
 For a source checkout, `scripts/run-local.sh` builds and runs locally without root access, service managers, package managers, or system-wide installation. Runtime state stays in the ignored `.timekeeper/` directory inside this repository:
 
 ```text
-TIMEKEEPER_GO='/mnt/c/Program Files/Go/bin/go.exe' ./scripts/run-local.sh
+TIMEKEEPER_GO='/path/to/go' ./scripts/run-local.sh
 ```
 
-### Future user-owned bootstrap contract
+### Pinned user-owned bootstrap from a verified checkout
 
-A supported installer must discover the checked-out source repository from the invocation directory, but install material and user-owned runtime state under a fixed platform root:
+`install.sh` builds a clean, exact checkout of the authoritative repository into a fixed user-owned root:
 
 ```text
 Linux/WSL: ~/.local/share/timekeeper
 Windows:   %LOCALAPPDATA%\\TimeKeeper
 ```
 
-It must not silently install into the invocation directory, a system-wide location, or another hidden root. It must stage safely, refuse unsafe overwrites, require no elevation, and keep source, installed binaries, configuration, and runtime state explicitly distinguishable.
+```text
+TIMEKEEPER_GO='/path/to/go' ./install.sh
+```
 
-### Source release preflight (not installation)
+The checkout must be clean, use the official `origin`, and exactly match its locally verified `origin/main` commit. The installer archives that pinned commit, stages the installation, refuses any existing destination, changes neither `PATH` nor system state, and starts no server. It builds with network access disabled, so required Go modules must already be present in the local module cache; obtain and verify any missing dependencies deliberately before invoking the installer. Run the installed launcher explicitly after success:
+
+```text
+~/.local/share/timekeeper/timekeeper
+```
+
+Use `--source <checkout>` or `--destination <new-directory>` only when deliberately choosing a verified checkout or an isolated user-owned destination. This is a local source bootstrap, not a downloadable release installer, service manager, or deployment mechanism.
+
+### Source release preflight
 
 Before considering a source tree for a release candidate, run its local verification gate:
 
 ```text
-TIMEKEEPER_GO='/mnt/c/Program Files/Go/bin/go.exe' ./scripts/release-preflight.sh
+TIMEKEEPER_GO='/path/to/go' ./scripts/release-preflight.sh
 ```
 
-It checks dashboard assets, the disabled-installer sentinel, tests, vet, diff cleanliness, and reproducible local server/CLI builds in a private temporary `.timekeeper/` directory. Passing it does **not** enable `install.sh` or establish deployment, service, signing, or platform-install readiness.
+It checks dashboard assets, content-scope and artifact-ignore contracts, the disposable local-bootstrap harness, tests, vet, diff cleanliness, and reproducible local server/CLI builds in a private temporary `.timekeeper/` directory. Passing it does **not** establish deployment, service, signing, downloadable-release, or remote-hosting readiness.
 
 ## Agent/framework integration contract
 
-Time Keeper does not assume Hermes, OpenClaw, or any specific Claw runtime. Any tool-capable agent can use ordinary HTTP with its own stable agent metadata:
+Time Keeper does not assume a particular agent framework. Any HTTP/JSON client can use ordinary HTTP with its own stable caller metadata:
 
 ```text
 X-Agent-ID: stable-runtime-worker-id
@@ -80,7 +90,7 @@ X-LLM-Provider: supplied only when known
 X-LLM-Model: supplied only when known
 ```
 
-Clients must treat Time Keeper as an external system of record. They should not infer IDs, manufacture historical timers, or depend on a conversation context window for recovery. `tk doctor` performs a non-mutating local readiness check against `/health`; it is the first command to run when a local CLI or agent integration cannot connect. The complete contract is in `API.md`; portable integration guidance for Hermes/OpenClaw/custom runtimes is in `AGENT_INTEGRATION.md`; framework-specific adapters belong outside the core service.
+Clients must treat Time Keeper as an external system of record. They should not infer IDs, manufacture historical timers, or depend on a conversation context window for recovery. `tk doctor` performs a non-mutating local readiness check against `/health`; it is the first command to run when a local CLI or integration cannot connect. The complete contract is in `API.md`; portable HTTP-client guidance is in `AGENT_INTEGRATION.md`; client-specific adapters belong outside the core service.
 
 ## Publication posture
 

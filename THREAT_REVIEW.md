@@ -40,7 +40,7 @@ Server startup now rejects wildcard and remote interfaces before database startu
 
 ### Closed: unsafe installer surface
 
-`install.sh` is deliberately a side-effect-free refusal (`exit 64`). The previous installer design required root, packages, network downloads, service management, and stale source assumptions; it is not a defensible release mechanism yet. The refusal is regression-tested and contains no privileged/network commands.
+`install.sh` is a deliberately narrow local-source bootstrap, not a release installer. It accepts only a clean checkout whose official `origin` and locally verified `origin/main` exactly match `HEAD`; it archives that pinned commit, stages the result in a fixed user-owned root, refuses existing destinations, and records the source commit. It neither downloads code, elevates privileges, modifies `PATH`, manages a service, nor starts a server. Disposable harness tests prove the clean-source, destination-refusal, and no-start boundary.
 
 ### Closed: incomplete SQLite file copying
 
@@ -64,9 +64,9 @@ Any process running with the user's local authority may interact with the loopba
 
 ## Release gate
 
-The source is ready for local developer use after ordinary build/test verification. It is **not** approved for public network deployment, unattended privileged installation, multi-user access, or a release installer.
+The source is ready for local use after ordinary build/test verification and the narrow user-owned local bootstrap. It is **not** approved for public network deployment, unattended privileged installation, multi-user access, or a downloadable release installer.
 
-Before enabling an installer, require all of:
+Before providing downloadable or signed install artifacts, require all of:
 
 1. reproducible, signed release artifacts with checksums;
 2. platform-specific service model and rollback tests;

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
-# RELEASE_PREFLIGHT_DOES_NOT_ENABLE_INSTALLATION
+# RELEASE_PREFLIGHT_VALIDATES_LOCAL_BOOTSTRAP
 #
-# This validates a checked-out source tree. It creates no installer, performs no
-# network/privileged action, and does not claim deployment or service readiness.
+# This validates a checked-out source tree and its disposable local bootstrap
+# harness. It performs no network or privileged action, does not modify PATH,
+# and does not establish service or remote-deployment readiness.
 set -Eeuo pipefail
 umask 077
 
@@ -19,25 +20,16 @@ if ! command -v node >/dev/null 2>&1; then
   printf 'Time Keeper release preflight requires Node.js to syntax-check the dashboard script.\n' >&2
   exit 69
 fi
-if ! grep -Fq 'INSTALLER_DISABLED_UNTIL_RELEASE_READINESS' "$ROOT/install.sh"; then
-  printf 'Refusing release preflight: install.sh must remain explicitly disabled.\n' >&2
-  exit 65
-fi
-install_status=0
-"$ROOT/install.sh" >/dev/null 2>&1 || install_status=$?
-if [[ $install_status -eq 64 ]]; then
-  :
-else
-  printf 'Refusing release preflight: install.sh must exit 64 while installation is disabled (got %s).\n' "$install_status" >&2
-  exit 65
-fi
 for asset in web/timekeeper.html web/timekeeper.css web/timekeeper.js; do
   [[ -f "$ROOT/$asset" && -r "$ROOT/$asset" ]] || { printf 'Missing dashboard asset: %s\n' "$asset" >&2; exit 66; }
 done
 node --check "$ROOT/web/timekeeper.js"
 bash "$ROOT/dev-ops/tests/project_local_state_test.sh"
+bash "$ROOT/dev-ops/tests/project_content_scope_test.sh"
 bash "$ROOT/dev-ops/tests/copyright_attribution_contract_test.sh"
 bash "$ROOT/dev-ops/tests/public_documentation_contract_test.sh"
+bash "$ROOT/dev-ops/tests/install_bootstrap_test.sh"
+bash "$ROOT/dev-ops/tests/install_e2e_test.sh"
 
 mkdir -p "$WORK_ROOT"
 chmod 700 "$WORK_ROOT"
@@ -67,4 +59,4 @@ fi
 "$GO_BIN" build -trimpath -o "$BUILD_SERVER" ./cmd/server
 "$GO_BIN" build -trimpath -o "$BUILD_CLI" ./cmd/tk
 [[ -s "$SERVER" && -s "$CLI" ]] || { printf 'Release preflight build artifacts are missing.\n' >&2; exit 70; }
-printf 'release-preflight=passed (source validation only; installation remains disabled)\n'
+printf 'release-preflight=passed (source and disposable local-bootstrap validation; no deployment or service readiness claim)\n'

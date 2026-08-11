@@ -12,11 +12,10 @@ for obsolete in timekeeper.html project.md project-adopt.md; do
   fi
 done
 
-grep -Fqx 'tk t new <project-id> <category-id> <task-name> <estimate>' SKILL.md
-grep -Fqx 'tk st new <task-id> <subtask-name> <estimate>' SKILL.md
-grep -Fqx 'tk sp new task <task-id> <sprint-name> <estimate> [buffer-percent]' SKILL.md
-grep -Fqx 'tk sp new subtask <subtask-id> <sprint-name> <estimate> [buffer-percent]' SKILL.md
-if grep -Fq '<estimate-seconds>' SKILL.md; then
+grep -Fqx 'tk t  new <project-id> <category-id> <task-name> <estimate>' HELP.md
+grep -Fqx 'tk st new <task-id> <subtask-name> <estimate>' HELP.md
+grep -Fqx 'tk sp new <task|subtask> <owner-id> <sprint-name> <estimate> [buffer-percent]' HELP.md
+if grep -Fq '<estimate-seconds>' HELP.md; then
   printf 'stale-sprint-estimate-syntax-present\n' >&2
   exit 1
 fi

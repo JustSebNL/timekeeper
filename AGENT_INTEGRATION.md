@@ -1,6 +1,6 @@
 # Agent and framework integration
 
-Time Keeper is deliberately boring at the boundary: local SQLite behind versioned HTTP JSON. Hermes, OpenClaw, other Claw runtimes, shell agents, and custom orchestrators should use this contract directly rather than receive a runtime-specific fork of the core.
+Time Keeper is deliberately boring at the boundary: local SQLite behind versioned HTTP JSON. Any HTTP/JSON client should use this contract directly rather than receive a runtime-specific fork of the core.
 
 Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 
@@ -25,7 +25,7 @@ The server binds to loopback by default. It has no network authentication yet, s
 Each caller supplies stable identity when it has one. Omit unknown values; Time Keeper must not invent a model or agent identity.
 
 ```text
-X-Agent-ID: hermes:default:worker-7
+X-Agent-ID: agent:worker-7
 X-Agent-Name: optional human-readable name
 X-Agent-Type: agent | human | system
 X-Swarm-ID: optional coordination group
@@ -55,19 +55,19 @@ curl -sS http://127.0.0.1:1618/health
 
 curl -sS -X POST http://127.0.0.1:1618/api/v1/projects \
   -H 'Content-Type: application/json' \
-  -H 'X-Agent-ID: hermes:default:worker-7' \
+  -H 'X-Agent-ID: agent:worker-7' \
   -H 'X-Agent-Type: agent' \
-  -d '{"name":"HSAM","goal":"Build durable agent memory"}'
+  -d '{"name":"Example Project","goal":"Deliver a durable local workflow"}'
 
 curl -sS -X POST http://127.0.0.1:1618/api/v1/projects/P-10000/categories \
   -H 'Content-Type: application/json' \
-  -H 'X-Agent-ID: hermes:default:worker-7' \
+  -H 'X-Agent-ID: agent:worker-7' \
   -H 'X-Agent-Type: agent' \
   -d '{"name":"Memory","goal":"Own memory subsystems"}'
 
 curl -sS -X POST http://127.0.0.1:1618/api/v1/projects/P-10000/tasks \
   -H 'Content-Type: application/json' \
-  -H 'X-Agent-ID: hermes:default:worker-7' \
+  -H 'X-Agent-ID: agent:worker-7' \
   -H 'X-Agent-Type: agent' \
   -d '{"category_id":"C-10001","name":"Build recall","estimated_duration_seconds":1800}'
 ```

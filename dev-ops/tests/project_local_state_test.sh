@@ -6,7 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 for local_artifact in \
   .timekeeper/runtime-state-probe.db \
   timekeeper-backup.db \
-  extensions/vscode/timekeeper-vscode-0.1.0.vsix; do
+  extensions/vscode/timekeeper-vscode-0.1.0.vsix \
+  dev/private-scratch-probe.txt; do
   git -C "$ROOT" check-ignore -q "$local_artifact" || {
     printf 'local artifact must remain untracked: %s\n' "$local_artifact" >&2
     exit 1

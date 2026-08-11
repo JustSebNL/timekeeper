@@ -22,7 +22,7 @@ VS Code extension → numeric-loopback Time Keeper HTTP API → SQLite authority
 1. Start Time Keeper from the repository root:
 
    ```text
-   TIMEKEEPER_GO='/mnt/c/Program Files/Go/bin/go.exe' ./scripts/run-local.sh
+   TIMEKEEPER_GO='/path/to/go' ./scripts/run-local.sh
    ```
 
 2. In VS Code, set `timekeeper.serverUrl` to the exact local server origin. The default is:
