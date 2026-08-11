@@ -72,6 +72,6 @@ For a portable Project-only JSON export, use `tk export <project-id> > project-e
 
 ## Availability boundary
 
-Only commands listed in **Implemented CLI** are available. Time Keeper does not currently implement automatic pickup/context recovery, Pulses, agent liveness supervision, Decisions/Edits/Bugs records, task adoption, metrics, automatic stopping, background scheduling, external model providers, remote server operation, or a release installer.
+Only commands listed in **Implemented CLI** are available. Time Keeper does not currently implement automatic pickup/context recovery, Pulses, agent liveness supervision, Decisions/Edits/Bugs records, task adoption, metrics, automatic stopping, background scheduling, external model providers, remote server operation, or a downloadable release installer. A narrow verified-checkout bootstrap is documented in `README.md`.
 
-See `API.md`, `README.md`, `SKILL.md`, and `THREAT_REVIEW.md` for the authoritative current contract.
+See `API.md`, `README.md`, `AGENT_INTEGRATION.md`, and `THREAT_REVIEW.md` for the authoritative current contract.
