@@ -192,6 +192,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			buffer_duration_seconds INTEGER NOT NULL CHECK (buffer_duration_seconds >= 0),
 			active_duration_seconds INTEGER NOT NULL DEFAULT 0 CHECK (active_duration_seconds >= 0),
 			hold_duration_seconds INTEGER NOT NULL DEFAULT 0 CHECK (hold_duration_seconds >= 0),
+			hold_reason TEXT NOT NULL DEFAULT '' CHECK (length(hold_reason) <= 10000),
 			started_at TEXT,
 			ended_at TEXT,
 			active_started_at TEXT,
@@ -219,6 +220,15 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at TEXT NOT NULL
 		)`,
 		"CREATE INDEX IF NOT EXISTS sprint_time_extensions_sprint_created_idx ON sprint_time_extensions(sprint_id, created_at, extension_id)",
+		`CREATE TABLE IF NOT EXISTS sprint_retrieval_attempts (
+			attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			sprint_id TEXT NOT NULL REFERENCES sprints(sprint_id) ON DELETE RESTRICT,
+			attempt_number INTEGER NOT NULL CHECK (attempt_number BETWEEN 1 AND 4),
+			reason TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 10000),
+			created_at TEXT NOT NULL,
+			UNIQUE(sprint_id, attempt_number)
+		)`,
+		"CREATE INDEX IF NOT EXISTS sprint_retrieval_attempts_sprint_created_idx ON sprint_retrieval_attempts(sprint_id, created_at, attempt_id)",
 		`CREATE TABLE IF NOT EXISTS project_events (
 			event_id INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
@@ -258,6 +268,30 @@ func (s *Store) migrate(ctx context.Context) error {
 			applied_at TEXT
 		)`,
 		"CREATE INDEX IF NOT EXISTS planning_drafts_project_created_idx ON planning_drafts(project_id, created_at DESC, draft_id DESC)",
+		`CREATE TABLE IF NOT EXISTS agent_pulse_progress (
+			agent_id TEXT PRIMARY KEY CHECK (length(agent_id) BETWEEN 1 AND 256),
+			active_sprint_id TEXT NOT NULL DEFAULT '' CHECK (length(active_sprint_id) <= 100),
+			lease_duration_seconds INTEGER NOT NULL CHECK (lease_duration_seconds BETWEEN 1 AND 86400),
+			guardian_url TEXT NOT NULL DEFAULT '' CHECK (length(guardian_url) <= 2048),
+			last_progress_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS pulse_nudges (
+			nudge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			agent_id TEXT NOT NULL REFERENCES agent_pulse_progress(agent_id) ON DELETE RESTRICT,
+			active_sprint_id TEXT NOT NULL DEFAULT '' CHECK (length(active_sprint_id) <= 100),
+			kind TEXT NOT NULL CHECK (kind IN ('agent_unresponsive')),
+			status TEXT NOT NULL CHECK (status IN ('Pending', 'Acknowledged')),
+			detected_after_seconds INTEGER NOT NULL CHECK (detected_after_seconds > 0),
+			delivery_attempts INTEGER NOT NULL DEFAULT 0 CHECK (delivery_attempts >= 0),
+			last_delivery_at TEXT,
+			delivered_at TEXT,
+			created_at TEXT NOT NULL,
+			acknowledged_at TEXT,
+			acknowledged_by TEXT
+		)`,
+		"CREATE UNIQUE INDEX IF NOT EXISTS pulse_nudges_one_pending_agent_idx ON pulse_nudges(agent_id) WHERE status = 'Pending'",
+		"CREATE INDEX IF NOT EXISTS pulse_nudges_agent_status_created_idx ON pulse_nudges(agent_id, status, created_at, nudge_id)",
 		"CREATE INDEX IF NOT EXISTS time_entries_sprint_started_idx ON time_entries(sprint_id, started_at, time_entry_id)",
 	} {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -272,6 +306,21 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	if err := s.ensureColumn(ctx, "sprints", "subtask_id", "TEXT REFERENCES subtasks(subtask_id) ON DELETE RESTRICT"); err != nil {
 		return fmt.Errorf("migrate sprints subtask ownership: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "sprints", "hold_reason", "TEXT NOT NULL DEFAULT '' CHECK (length(hold_reason) <= 10000)"); err != nil {
+		return fmt.Errorf("migrate Sprint hold reason: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "agent_pulse_progress", "guardian_url", "TEXT NOT NULL DEFAULT '' CHECK (length(guardian_url) <= 2048)"); err != nil {
+		return fmt.Errorf("migrate agent Pulse Guardian URL: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "pulse_nudges", "delivery_attempts", "INTEGER NOT NULL DEFAULT 0 CHECK (delivery_attempts >= 0)"); err != nil {
+		return fmt.Errorf("migrate Pulse nudge delivery attempts: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "pulse_nudges", "last_delivery_at", "TEXT"); err != nil {
+		return fmt.Errorf("migrate Pulse nudge delivery timestamp: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "pulse_nudges", "delivered_at", "TEXT"); err != nil {
+		return fmt.Errorf("migrate Pulse nudge delivered timestamp: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS sprints_subtask_updated_idx ON sprints(subtask_id, updated_at DESC)"); err != nil {
 		return fmt.Errorf("migrate sprints subtask index: %w", err)
@@ -823,6 +872,8 @@ func (s *Store) ProjectOperationalSummary(ctx context.Context, projectID string)
 		COALESCE(SUM(CASE WHEN s.status = 'Active' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN s.status = 'On Hold' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN s.status = 'Completed' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN s.status = 'TimedOut' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN s.status = 'Cancelled' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(s.estimated_duration_seconds), 0),
 		COALESCE(SUM(s.buffer_duration_seconds), 0),
 		COALESCE(SUM(COALESCE(x.extension_duration_seconds, 0)), 0),
@@ -831,12 +882,126 @@ func (s *Store) ProjectOperationalSummary(ctx context.Context, projectID string)
 		COALESCE(SUM(s.hold_duration_seconds), 0)
 		FROM sprints s LEFT JOIN (SELECT sprint_id, SUM(duration_seconds) AS extension_duration_seconds FROM sprint_time_extensions GROUP BY sprint_id) x ON x.sprint_id = s.sprint_id WHERE s.project_id = ?`, projectID).Scan(
 		&summary.TotalSprints, &summary.OpenSprints, &summary.ActiveSprints, &summary.HeldSprints,
-		&summary.CompletedSprints, &summary.EstimatedDurationSeconds, &summary.BufferDurationSeconds, &summary.ExtensionDurationSeconds,
+		&summary.CompletedSprints, &summary.TimedOutSprints, &summary.CancelledSprints, &summary.EstimatedDurationSeconds, &summary.BufferDurationSeconds, &summary.ExtensionDurationSeconds,
 		&summary.PlannedDurationSeconds, &summary.RecordedWorkSeconds, &summary.RecordedHoldSeconds)
 	if err != nil {
 		return model.ProjectOperationalSummary{}, fmt.Errorf("read project operational summary: %w", err)
 	}
 	return summary, nil
+}
+
+// ProjectAttention returns durable work that needs an explicit decision but is
+// intentionally outside Pulse: On Hold work, dormant TimedOut work, and legacy
+// Open Sprints whose parent hierarchy makes them non-runnable.
+func (s *Store) ProjectAttention(ctx context.Context, projectID string) (model.ProjectAttention, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ProjectAttention{}, fmt.Errorf("%w: project %s", ErrNotFound, projectID)
+		}
+		return model.ProjectAttention{}, fmt.Errorf("read attention project: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT s.sprint_id, s.item_address, s.sprint_name, s.status, s.hold_reason,
+		p.status, c.status, t.status, COALESCE(st.status, '')
+		FROM sprints s
+		JOIN projects p ON p.project_id = s.project_id
+		JOIN categories c ON c.category_id = s.category_id
+		JOIN tasks t ON t.task_id = s.task_id
+		LEFT JOIN subtasks st ON st.subtask_id = s.subtask_id
+		WHERE s.project_id = ? AND (
+			s.status IN ('On Hold', 'TimedOut') OR
+			(s.status = 'Open' AND (p.status != 'Open' OR c.status != 'Open' OR t.status != 'Open' OR (st.subtask_id IS NOT NULL AND st.status != 'Open')))
+		)
+		ORDER BY CASE WHEN s.status = 'Open' THEN 0 WHEN s.status = 'TimedOut' THEN 1 ELSE 2 END, s.updated_at, s.sprint_id`, projectID)
+	if err != nil {
+		return model.ProjectAttention{}, fmt.Errorf("read project attention: %w", err)
+	}
+	defer rows.Close()
+
+	attention := model.ProjectAttention{ProjectID: projectID, Items: make([]model.ProjectAttentionItem, 0)}
+	for rows.Next() {
+		var item model.ProjectAttentionItem
+		var projectStatus, categoryStatus, taskStatus, subtaskStatus string
+		if err := rows.Scan(&item.SprintID, &item.ItemAddress, &item.Name, &item.Status, &item.HoldReason,
+			&projectStatus, &categoryStatus, &taskStatus, &subtaskStatus); err != nil {
+			return model.ProjectAttention{}, fmt.Errorf("scan project attention: %w", err)
+		}
+		switch item.Status {
+		case "Open":
+			item.Kind = "stranded_open_sprint"
+			item.Detail = fmt.Sprintf("Open Sprint is not runnable because its parent state is project=%s, category=%s, task=%s, subtask=%s.", projectStatus, categoryStatus, taskStatus, subtaskStatus)
+		case "TimedOut":
+			item.Kind = "sprint_timed_out"
+			item.Detail = "Sprint became dormant after four retrieval attempts; explicitly replan before more work."
+		default:
+			item.Kind = "sprint_on_hold"
+			if item.HoldReason == "" {
+				item.Detail = "Sprint is On Hold without a recorded reason; record why before deciding its next step."
+			} else {
+				item.Detail = "Sprint is On Hold and does not consume active capacity."
+			}
+		}
+		attention.Items = append(attention.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return model.ProjectAttention{}, fmt.Errorf("iterate project attention: %w", err)
+	}
+	return attention, nil
+}
+
+// PulseAt returns a read-only local attention snapshot for active Sprints that exceed their declared plan.
+// It does not persist a notification, create an event, or contact any external delivery service.
+func (s *Store) PulseAt(ctx context.Context, at time.Time) (model.Pulse, error) {
+	if at.IsZero() {
+		return model.Pulse{}, errors.New("pulse time is required")
+	}
+	generatedAt := at.UTC().Round(0)
+	pulse := model.Pulse{
+		Format:                      "timekeeper-pulse/v1",
+		GeneratedAt:                 generatedAt,
+		RecommendedNextPulseSeconds: 60,
+		Attention:                   make([]model.PulseAttention, 0),
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT s.project_id, s.sprint_id, s.item_address, s.sprint_name, s.status,
+		s.estimated_duration_seconds, s.buffer_duration_seconds, COALESCE(x.extension_duration_seconds, 0),
+		s.active_duration_seconds, s.active_started_at
+		FROM sprints s
+		LEFT JOIN (SELECT sprint_id, SUM(duration_seconds) AS extension_duration_seconds FROM sprint_time_extensions GROUP BY sprint_id) x ON x.sprint_id = s.sprint_id
+		WHERE s.status = 'Active'
+		ORDER BY s.project_id, s.started_at, s.sprint_id`)
+	if err != nil {
+		return model.Pulse{}, fmt.Errorf("read active Sprints for pulse: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item model.PulseAttention
+		var estimated, buffer, extensions, recordedActive int64
+		var activeStartedAt string
+		if err := rows.Scan(&item.ProjectID, &item.SprintID, &item.ItemAddress, &item.Name, &item.Status,
+			&estimated, &buffer, &extensions, &recordedActive, &activeStartedAt); err != nil {
+			return model.Pulse{}, fmt.Errorf("scan active Sprint for pulse: %w", err)
+		}
+		if activeStartedAt == "" {
+			return model.Pulse{}, fmt.Errorf("active Sprint %s is missing its active interval", item.SprintID)
+		}
+		startedAt, err := time.Parse(time.RFC3339Nano, activeStartedAt)
+		if err != nil {
+			return model.Pulse{}, fmt.Errorf("parse active Sprint %s interval: %w", item.SprintID, err)
+		}
+		item.Kind = "sprint_overdue"
+		item.PlannedDurationSeconds = estimated + buffer + extensions
+		item.ActiveDurationSeconds = recordedActive + elapsedSeconds(startedAt, generatedAt)
+		if item.ActiveDurationSeconds <= item.PlannedDurationSeconds {
+			continue
+		}
+		item.OverdueDurationSeconds = item.ActiveDurationSeconds - item.PlannedDurationSeconds
+		pulse.Attention = append(pulse.Attention, item)
+	}
+	if err := rows.Err(); err != nil {
+		return model.Pulse{}, fmt.Errorf("iterate active Sprints for pulse: %w", err)
+	}
+	return pulse, nil
 }
 
 // ListProjectEvents returns newest-first immutable execution history for one project.
@@ -1277,6 +1442,18 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, taskID string, input model
 		}
 		return model.Task{}, err
 	}
+	if status == "Completed" {
+		var pendingSprints, pendingSubtasks int
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM sprints WHERE task_id = ? AND status != 'Completed'", taskID).Scan(&pendingSprints); err != nil {
+			return model.Task{}, fmt.Errorf("check task sprint completion: %w", err)
+		}
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM subtasks WHERE task_id = ? AND status != 'Completed'", taskID).Scan(&pendingSubtasks); err != nil {
+			return model.Task{}, fmt.Errorf("check task subtask completion: %w", err)
+		}
+		if pendingSprints != 0 || pendingSubtasks != 0 {
+			return model.Task{}, errors.New("task cannot complete while it owns non-terminal sprints or subtasks")
+		}
+	}
 	now := time.Now().UTC().Round(0)
 	if _, err := tx.ExecContext(ctx, "UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?", status, now.Format(time.RFC3339Nano), taskID); err != nil {
 		return model.Task{}, err
@@ -1504,6 +1681,36 @@ func (s *Store) createSprint(ctx context.Context, taskID, subtaskID string, inpu
 		}
 		return model.Sprint{}, fmt.Errorf("read sprint task: %w", err)
 	}
+
+	var projectStatus, categoryStatus, taskStatus, subtaskStatus string
+	if subtaskID != "" {
+		err = tx.QueryRowContext(ctx, `SELECT p.status, c.status, t.status, st.status
+			FROM subtasks st JOIN tasks t ON t.task_id = st.task_id JOIN categories c ON c.category_id = st.category_id JOIN projects p ON p.project_id = st.project_id
+			WHERE st.subtask_id = ?`, subtaskID).Scan(&projectStatus, &categoryStatus, &taskStatus, &subtaskStatus)
+	} else {
+		err = tx.QueryRowContext(ctx, `SELECT p.status, c.status, t.status
+			FROM tasks t JOIN categories c ON c.category_id = t.category_id JOIN projects p ON p.project_id = t.project_id
+			WHERE t.task_id = ?`, taskID).Scan(&projectStatus, &categoryStatus, &taskStatus)
+	}
+	if err != nil {
+		return model.Sprint{}, fmt.Errorf("read sprint parent status: %w", err)
+	}
+	if projectStatus != "Open" || categoryStatus != "Open" || taskStatus != "Open" || (subtaskID != "" && subtaskStatus != "Open") {
+		return model.Sprint{}, errors.New("sprint parent project, category, task, and subtask must be Open")
+	}
+
+	var existing int
+	if subtaskID != "" {
+		err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM sprints WHERE subtask_id = ?", subtaskID).Scan(&existing)
+	} else {
+		err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM sprints WHERE task_id = ? AND subtask_id IS NULL", taskID).Scan(&existing)
+	}
+	if err != nil {
+		return model.Sprint{}, fmt.Errorf("count existing owner sprints: %w", err)
+	}
+	if existing >= 4 {
+		return model.Sprint{}, errors.New("a task or subtask may own at most four sprints")
+	}
 	number, err := allocateItemNumber(ctx, tx)
 	if err != nil {
 		return model.Sprint{}, err
@@ -1559,7 +1766,7 @@ func (s *Store) ListSprints(ctx context.Context, taskID string) ([]model.Sprint,
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT sprint_id, project_id, category_id, task_id, subtask_id, item_address,
 		sprint_name, sprint_description, sprint_goal, status, priority, estimated_duration_seconds,
-		buffer_pct, buffer_duration_seconds, active_duration_seconds, hold_duration_seconds,
+		buffer_pct, buffer_duration_seconds, active_duration_seconds, hold_duration_seconds, hold_reason,
 		started_at, ended_at, created_at, updated_at FROM sprints WHERE task_id = ? AND subtask_id IS NULL ORDER BY created_at, sprint_id`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list sprints: %w", err)
@@ -1590,7 +1797,7 @@ func (s *Store) ListSubtaskSprints(ctx context.Context, subtaskID string) ([]mod
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT sprint_id, project_id, category_id, task_id, subtask_id, item_address,
 		sprint_name, sprint_description, sprint_goal, status, priority, estimated_duration_seconds,
-		buffer_pct, buffer_duration_seconds, active_duration_seconds, hold_duration_seconds,
+		buffer_pct, buffer_duration_seconds, active_duration_seconds, hold_duration_seconds, hold_reason,
 		started_at, ended_at, created_at, updated_at FROM sprints WHERE subtask_id = ? ORDER BY created_at, sprint_id`, subtaskID)
 	if err != nil {
 		return nil, fmt.Errorf("list subtask sprints: %w", err)
@@ -1610,6 +1817,58 @@ func (s *Store) ListSubtaskSprints(ctx context.Context, subtaskID string) ([]mod
 	return sprints, nil
 }
 
+// ErrNoRunnableSprint means a Project has no Open Sprint whose owning work is eligible to run.
+var ErrNoRunnableSprint = errors.New("no runnable sprint")
+
+// GetTask returns one Task by its durable ID.
+func (s *Store) GetTask(ctx context.Context, taskID string) (model.Task, error) {
+	return scanTask(s.db.QueryRowContext(ctx, `SELECT task_id, project_id, category_id, item_address, task_name, task_description, task_goal, status, priority, estimated_duration_seconds, reported_completion_pct, calculated_completion_pct, created_at, updated_at FROM tasks WHERE task_id = ?`, taskID))
+}
+
+// ClaimNextSprint atomically starts the oldest Open Sprint that belongs to an Open Project, Category, Task, and optional Subtask.
+// It is an explicit queue-pickup operation: no background worker silently starts work.
+func (s *Store) ClaimNextSprint(ctx context.Context, projectID string) (model.Sprint, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Sprint{}, fmt.Errorf("begin claim next sprint: %w", err)
+	}
+	defer tx.Rollback()
+	var sprintID string
+	err = tx.QueryRowContext(ctx, `SELECT s.sprint_id FROM sprints s
+		JOIN projects p ON p.project_id = s.project_id
+		JOIN categories c ON c.category_id = s.category_id
+		JOIN tasks t ON t.task_id = s.task_id
+		LEFT JOIN subtasks st ON st.subtask_id = s.subtask_id
+		WHERE s.project_id = ? AND s.status = 'Open' AND p.status = 'Open' AND c.status = 'Open' AND t.status = 'Open'
+		AND (st.subtask_id IS NULL OR st.status = 'Open')
+		ORDER BY s.created_at, s.sprint_id LIMIT 1`, projectID).Scan(&sprintID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Sprint{}, fmt.Errorf("%w: project %s", ErrNoRunnableSprint, projectID)
+	}
+	if err != nil {
+		return model.Sprint{}, fmt.Errorf("select next sprint: %w", err)
+	}
+	now := time.Now().UTC().Round(0)
+	result, err := tx.ExecContext(ctx, `UPDATE sprints SET status = 'Active', started_at = COALESCE(started_at, ?), active_started_at = ?, updated_at = ? WHERE sprint_id = ? AND status = 'Open'`, stamp(now), stamp(now), stamp(now), sprintID)
+	if err != nil {
+		return model.Sprint{}, fmt.Errorf("claim next sprint: %w", err)
+	}
+	if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+		return model.Sprint{}, fmt.Errorf("%w: project %s", ErrNoRunnableSprint, projectID)
+	}
+	claimed, err := loadSprintState(ctx, tx, sprintID)
+	if err != nil {
+		return model.Sprint{}, err
+	}
+	if err := recordProjectEvent(ctx, tx, projectID, "sprint", sprintID, "sprint_claimed", "Sprint claimed from the runnable queue.", now); err != nil {
+		return model.Sprint{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.Sprint{}, fmt.Errorf("commit claim next sprint: %w", err)
+	}
+	return claimed.Sprint, nil
+}
+
 // TransitionSprint performs one legal lifecycle transition and records completed intervals immutably.
 func (s *Store) TransitionSprint(ctx context.Context, sprintID, action, reason string) (model.Sprint, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1623,6 +1882,15 @@ func (s *Store) TransitionSprint(ctx context.Context, sprintID, action, reason s
 	}
 	now := time.Now().UTC().Round(0)
 	reason = strings.TrimSpace(reason)
+	if len(reason) > 10000 {
+		return model.Sprint{}, errors.New("sprint transition reason must be at most 10000 characters")
+	}
+	if action == "hold" && reason == "" {
+		return model.Sprint{}, errors.New("placing a sprint On Hold requires a reason")
+	}
+	if action == "cancel" && reason == "" {
+		return model.Sprint{}, errors.New("cancelling a sprint requires a reason")
+	}
 
 	rule, err := lifecycle.SprintTransition(state.Sprint.Status, action)
 	if err != nil {
@@ -1634,13 +1902,17 @@ func (s *Store) TransitionSprint(ctx context.Context, sprintID, action, reason s
 		_, err = tx.ExecContext(ctx, `UPDATE sprints SET status = ?, started_at = COALESCE(started_at, ?),
 			active_started_at = ?, updated_at = ? WHERE sprint_id = ?`, rule.To, stamp(now), stamp(now), stamp(now), sprintID)
 	case "hold":
+		if state.Sprint.Status == "Open" {
+			_, err = tx.ExecContext(ctx, `UPDATE sprints SET status = ?, hold_reason = ?, hold_started_at = ?, updated_at = ? WHERE sprint_id = ?`, rule.To, reason, stamp(now), stamp(now), sprintID)
+			break
+		}
 		if state.ActiveStartedAt == nil {
 			return model.Sprint{}, errors.New("active sprint is missing its active interval")
 		}
 		seconds := elapsedSeconds(*state.ActiveStartedAt, now)
 		if err = addTimeEntry(ctx, tx, sprintID, rule.CloseInterval, *state.ActiveStartedAt, now, seconds, reason); err == nil {
-			_, err = tx.ExecContext(ctx, `UPDATE sprints SET status = ?, active_duration_seconds = active_duration_seconds + ?,
-				active_started_at = NULL, hold_started_at = ?, updated_at = ? WHERE sprint_id = ?`, rule.To, seconds, stamp(now), stamp(now), sprintID)
+			_, err = tx.ExecContext(ctx, `UPDATE sprints SET status = ?, hold_reason = ?, active_duration_seconds = active_duration_seconds + ?,
+				active_started_at = NULL, hold_started_at = ?, updated_at = ? WHERE sprint_id = ?`, rule.To, reason, seconds, stamp(now), stamp(now), sprintID)
 		}
 	case "resume":
 		if state.HoldStartedAt == nil {
@@ -1660,11 +1932,49 @@ func (s *Store) TransitionSprint(ctx context.Context, sprintID, action, reason s
 			_, err = tx.ExecContext(ctx, `UPDATE sprints SET status = ?, active_duration_seconds = active_duration_seconds + ?,
 				active_started_at = NULL, ended_at = ?, updated_at = ? WHERE sprint_id = ?`, rule.To, seconds, stamp(now), stamp(now), sprintID)
 		}
+	case "cancel":
+		switch state.Sprint.Status {
+		case "Open":
+			_, err = tx.ExecContext(ctx, `UPDATE sprints SET status = ?, ended_at = ?, updated_at = ? WHERE sprint_id = ?`, rule.To, stamp(now), stamp(now), sprintID)
+		case "Active":
+			if state.ActiveStartedAt == nil {
+				return model.Sprint{}, errors.New("active sprint is missing its active interval")
+			}
+			seconds := elapsedSeconds(*state.ActiveStartedAt, now)
+			if err = addTimeEntry(ctx, tx, sprintID, rule.CloseInterval, *state.ActiveStartedAt, now, seconds, reason); err == nil {
+				_, err = tx.ExecContext(ctx, `UPDATE sprints SET status = ?, active_duration_seconds = active_duration_seconds + ?, active_started_at = NULL, ended_at = ?, updated_at = ? WHERE sprint_id = ?`, rule.To, seconds, stamp(now), stamp(now), sprintID)
+			}
+		case "On Hold":
+			if state.HoldStartedAt == nil {
+				return model.Sprint{}, errors.New("held sprint is missing its hold interval")
+			}
+			seconds := elapsedSeconds(*state.HoldStartedAt, now)
+			if err = addTimeEntry(ctx, tx, sprintID, rule.CloseInterval, *state.HoldStartedAt, now, seconds, reason); err == nil {
+				_, err = tx.ExecContext(ctx, `UPDATE sprints SET status = ?, hold_duration_seconds = hold_duration_seconds + ?, hold_started_at = NULL, ended_at = ?, updated_at = ? WHERE sprint_id = ?`, rule.To, seconds, stamp(now), stamp(now), sprintID)
+			}
+		default:
+			return model.Sprint{}, fmt.Errorf("cannot cancel sprint in status %s", state.Sprint.Status)
+		}
 	default:
 		return model.Sprint{}, fmt.Errorf("unsupported declared sprint transition %q", rule.Action)
 	}
 	if err != nil {
 		return model.Sprint{}, fmt.Errorf("update sprint transition: %w", err)
+	}
+	if rule.Action == "complete" && state.Sprint.SubtaskID == "" {
+		var remainingDirect, subtasks int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sprints WHERE task_id = ? AND subtask_id IS NULL AND status != 'Completed'`, state.Sprint.TaskID).Scan(&remainingDirect); err == nil {
+			err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM subtasks WHERE task_id = ?`, state.Sprint.TaskID).Scan(&subtasks)
+		}
+		if err == nil && remainingDirect == 0 && subtasks == 0 {
+			_, err = tx.ExecContext(ctx, `UPDATE tasks SET status = 'Completed', updated_at = ? WHERE task_id = ? AND status = 'Open'`, stamp(now), state.Sprint.TaskID)
+			if err == nil {
+				err = recordProjectEvent(ctx, tx, state.Sprint.ProjectID, "task", state.Sprint.TaskID, "task_completed_from_sprints", "Task completed after its final direct Sprint.", now)
+			}
+		}
+		if err != nil {
+			return model.Sprint{}, fmt.Errorf("advance task after sprint completion: %w", err)
+		}
 	}
 	updated, err := loadSprintState(ctx, tx, sprintID)
 	if err != nil {
@@ -1680,6 +1990,42 @@ func (s *Store) TransitionSprint(ctx context.Context, sprintID, action, reason s
 	return updated.Sprint, nil
 }
 
+// UpdateSprintHoldReason corrects or enriches why an already-held Sprint is
+// blocked without resuming it or manufacturing a time interval.
+func (s *Store) UpdateSprintHoldReason(ctx context.Context, sprintID, reason string) (model.Sprint, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" || len(reason) > 10000 {
+		return model.Sprint{}, errors.New("hold reason is required and must be at most 10000 characters")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Sprint{}, fmt.Errorf("begin hold reason update: %w", err)
+	}
+	defer tx.Rollback()
+	state, err := loadSprintState(ctx, tx, sprintID)
+	if err != nil {
+		return model.Sprint{}, err
+	}
+	if state.Sprint.Status != "On Hold" {
+		return model.Sprint{}, errors.New("a hold reason may be updated only while a sprint is On Hold")
+	}
+	now := time.Now().UTC().Round(0)
+	if _, err := tx.ExecContext(ctx, "UPDATE sprints SET hold_reason = ?, updated_at = ? WHERE sprint_id = ?", reason, stamp(now), sprintID); err != nil {
+		return model.Sprint{}, fmt.Errorf("update hold reason: %w", err)
+	}
+	if err := recordProjectEvent(ctx, tx, state.Sprint.ProjectID, "sprint", sprintID, "sprint_hold_reason_updated", "Sprint hold reason updated: "+reason, now); err != nil {
+		return model.Sprint{}, fmt.Errorf("record hold reason update: %w", err)
+	}
+	updated, err := loadSprintState(ctx, tx, sprintID)
+	if err != nil {
+		return model.Sprint{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.Sprint{}, fmt.Errorf("commit hold reason update: %w", err)
+	}
+	return updated.Sprint, nil
+}
+
 func sprintTransitionEvent(action string) (string, string) {
 	switch action {
 	case "start":
@@ -1690,6 +2036,8 @@ func sprintTransitionEvent(action string) (string, string) {
 		return "sprint_resumed", "Sprint resumed."
 	case "complete":
 		return "sprint_completed", "Sprint completed."
+	case "cancel":
+		return "sprint_cancelled", "Sprint cancelled; it remains visible in project history."
 	default:
 		return "sprint_transitioned", "Sprint transitioned."
 	}
@@ -1730,6 +2078,117 @@ func (s *Store) AddSprintTimeExtension(ctx context.Context, sprintID string, inp
 		return model.SprintTimeExtension{}, err
 	}
 	return model.SprintTimeExtension{ExtensionID: id, SprintID: sprintID, DurationSeconds: input.DurationSeconds, Reason: reason, CreatedAt: now}, nil
+}
+
+// RecordSprintRetrievalAttempt persists one failed retrieval attempt. The fourth
+// attempt closes any current interval and makes the Sprint dormant TimedOut.
+func (s *Store) RecordSprintRetrievalAttempt(ctx context.Context, sprintID, reason string) (model.SprintRetrievalAttempt, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" || len(reason) > 10000 {
+		return model.SprintRetrievalAttempt{}, errors.New("retrieval attempt requires a reason of at most 10000 characters")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.SprintRetrievalAttempt{}, err
+	}
+	defer tx.Rollback()
+	state, err := loadSprintState(ctx, tx, sprintID)
+	if err != nil {
+		return model.SprintRetrievalAttempt{}, err
+	}
+	if state.Sprint.Status == "Completed" || state.Sprint.Status == "TimedOut" || state.Sprint.Status == "Cancelled" {
+		return model.SprintRetrievalAttempt{}, errors.New("retrieval attempts may be recorded only for non-terminal sprints")
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM sprint_retrieval_attempts WHERE sprint_id = ?", sprintID).Scan(&count); err != nil {
+		return model.SprintRetrievalAttempt{}, fmt.Errorf("count retrieval attempts: %w", err)
+	}
+	if count >= 4 {
+		return model.SprintRetrievalAttempt{}, errors.New("a sprint may record exactly four retrieval attempts")
+	}
+	now := time.Now().UTC().Round(0)
+	result, err := tx.ExecContext(ctx, `INSERT INTO sprint_retrieval_attempts (sprint_id, attempt_number, reason, created_at) VALUES (?, ?, ?, ?)`, sprintID, count+1, reason, stamp(now))
+	if err != nil {
+		return model.SprintRetrievalAttempt{}, fmt.Errorf("insert retrieval attempt: %w", err)
+	}
+	attemptID, err := result.LastInsertId()
+	if err != nil {
+		return model.SprintRetrievalAttempt{}, fmt.Errorf("read retrieval attempt id: %w", err)
+	}
+	attempt := model.SprintRetrievalAttempt{AttemptID: attemptID, SprintID: sprintID, AttemptNumber: count + 1, Reason: reason, CreatedAt: now}
+	if err := recordProjectEvent(ctx, tx, state.Sprint.ProjectID, "sprint", sprintID, "sprint_retrieval_attempted", fmt.Sprintf("Retrieval attempt %d of 4 recorded: %s", attempt.AttemptNumber, reason), now); err != nil {
+		return model.SprintRetrievalAttempt{}, err
+	}
+	if attempt.AttemptNumber == 4 {
+		if err := timeoutSprint(ctx, tx, state, now, "four retrieval attempts recorded"); err != nil {
+			return model.SprintRetrievalAttempt{}, err
+		}
+		attempt.TimedOut = true
+	}
+	if err := tx.Commit(); err != nil {
+		return model.SprintRetrievalAttempt{}, err
+	}
+	return attempt, nil
+}
+
+func timeoutSprint(ctx context.Context, tx *sql.Tx, state sprintState, now time.Time, reason string) error {
+	var err error
+	switch state.Sprint.Status {
+	case "Open":
+		_, err = tx.ExecContext(ctx, "UPDATE sprints SET status = 'TimedOut', ended_at = ?, updated_at = ? WHERE sprint_id = ?", stamp(now), stamp(now), state.Sprint.SprintID)
+	case "Active":
+		if state.ActiveStartedAt == nil {
+			return errors.New("active sprint is missing its active interval")
+		}
+		seconds := elapsedSeconds(*state.ActiveStartedAt, now)
+		if err = addTimeEntry(ctx, tx, state.Sprint.SprintID, "work", *state.ActiveStartedAt, now, seconds, reason); err == nil {
+			_, err = tx.ExecContext(ctx, "UPDATE sprints SET status = 'TimedOut', active_duration_seconds = active_duration_seconds + ?, active_started_at = NULL, ended_at = ?, updated_at = ? WHERE sprint_id = ?", seconds, stamp(now), stamp(now), state.Sprint.SprintID)
+		}
+	case "On Hold":
+		if state.HoldStartedAt == nil {
+			return errors.New("held sprint is missing its hold interval")
+		}
+		seconds := elapsedSeconds(*state.HoldStartedAt, now)
+		if err = addTimeEntry(ctx, tx, state.Sprint.SprintID, "hold", *state.HoldStartedAt, now, seconds, reason); err == nil {
+			_, err = tx.ExecContext(ctx, "UPDATE sprints SET status = 'TimedOut', hold_duration_seconds = hold_duration_seconds + ?, hold_started_at = NULL, ended_at = ?, updated_at = ? WHERE sprint_id = ?", seconds, stamp(now), stamp(now), state.Sprint.SprintID)
+		}
+	default:
+		return fmt.Errorf("cannot time out sprint in status %s", state.Sprint.Status)
+	}
+	if err != nil {
+		return fmt.Errorf("mark sprint timed out: %w", err)
+	}
+	return recordProjectEvent(ctx, tx, state.Sprint.ProjectID, "sprint", state.Sprint.SprintID, "sprint_timed_out", "Sprint became TimedOut after four retrieval attempts.", now)
+}
+
+// ListSprintRetrievalAttempts returns immutable retrieval evidence in creation order.
+func (s *Store) ListSprintRetrievalAttempts(ctx context.Context, sprintID string) ([]model.SprintRetrievalAttempt, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM sprints WHERE sprint_id = ?", sprintID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: sprint %s", ErrNotFound, sprintID)
+		}
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT attempt_id, sprint_id, attempt_number, reason, created_at FROM sprint_retrieval_attempts WHERE sprint_id = ? ORDER BY attempt_number", sprintID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]model.SprintRetrievalAttempt, 0)
+	for rows.Next() {
+		var item model.SprintRetrievalAttempt
+		var createdAt string
+		if err := rows.Scan(&item.AttemptID, &item.SprintID, &item.AttemptNumber, &item.Reason, &createdAt); err != nil {
+			return nil, err
+		}
+		if item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+			return nil, err
+		}
+		item.TimedOut = item.AttemptNumber == 4
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 // ListSprintTimeExtensions returns immutable Sprint extension evidence in chronological order.
@@ -1814,13 +2273,13 @@ func loadSprintState(ctx context.Context, tx *sql.Tx, sprintID string) (sprintSt
 	var createdAt, updatedAt string
 	err := tx.QueryRowContext(ctx, `SELECT sprint_id, project_id, category_id, task_id, subtask_id, item_address,
 		sprint_name, sprint_description, sprint_goal, status, priority, estimated_duration_seconds,
-		buffer_pct, buffer_duration_seconds, active_duration_seconds, hold_duration_seconds,
+		buffer_pct, buffer_duration_seconds, active_duration_seconds, hold_duration_seconds, hold_reason,
 		started_at, ended_at, active_started_at, hold_started_at, created_at, updated_at
 		FROM sprints WHERE sprint_id = ?`, sprintID).Scan(&state.Sprint.SprintID, &state.Sprint.ProjectID,
 		&state.Sprint.CategoryID, &state.Sprint.TaskID, &subtaskID, &state.Sprint.ItemAddress, &state.Sprint.Name,
 		&state.Sprint.Description, &state.Sprint.Goal, &state.Sprint.Status, &state.Sprint.Priority,
 		&state.Sprint.EstimatedDurationSeconds, &state.Sprint.BufferPct, &state.Sprint.BufferDurationSeconds,
-		&state.Sprint.ActiveDurationSeconds, &state.Sprint.HoldDurationSeconds, &startedAt, &endedAt,
+		&state.Sprint.ActiveDurationSeconds, &state.Sprint.HoldDurationSeconds, &state.Sprint.HoldReason, &startedAt, &endedAt,
 		&activeStartedAt, &holdStartedAt, &createdAt, &updatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1859,7 +2318,7 @@ func scanSprint(scanner interface{ Scan(...any) error }) (model.Sprint, error) {
 	var createdAt, updatedAt string
 	if err := scanner.Scan(&sprint.SprintID, &sprint.ProjectID, &sprint.CategoryID, &sprint.TaskID, &subtaskID, &sprint.ItemAddress,
 		&sprint.Name, &sprint.Description, &sprint.Goal, &sprint.Status, &sprint.Priority, &sprint.EstimatedDurationSeconds,
-		&sprint.BufferPct, &sprint.BufferDurationSeconds, &sprint.ActiveDurationSeconds, &sprint.HoldDurationSeconds,
+		&sprint.BufferPct, &sprint.BufferDurationSeconds, &sprint.ActiveDurationSeconds, &sprint.HoldDurationSeconds, &sprint.HoldReason,
 		&startedAt, &endedAt, &createdAt, &updatedAt); err != nil {
 		return model.Sprint{}, fmt.Errorf("scan sprint: %w", err)
 	}

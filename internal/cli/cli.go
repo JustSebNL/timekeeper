@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -44,7 +45,7 @@ func ResolveBaseURL(args []string, environmentURL string) (string, []string, err
 // Run executes a framework-neutral Time Keeper CLI command.
 func Run(args []string, out, errOut io.Writer, baseURL string) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		_, _ = fmt.Fprint(out, "Usage: tk [--url <api-base-url>] <command>\n\nCommands:\n  list                                        List projects\n  tree <project-id>                           Show an executable hierarchy\n  export <project-id>                         Print a portable Project snapshot as JSON\n  summary <project-id>                        Show a durable Sprint operational snapshot\n  events <project-id>                         List immutable Project activity\n  note <project-id> <content>                 Record a Project note\n  notes <project-id>                          List Project notes\n  p new <name>                                Create a Project\n  p edit <project-id> <goal> <description>    Update Project context\n  p status <project-id> <status>              Set Project status\n  c new <project-id> <name> [parent-category-id] Create a Category\n  c edit <category-id> <goal> <description>    Update Category context\n  c status <category-id> <status>              Set Category status\n  t edit <task-id> <goal> <description>        Update Task context\n  t new <project-id> <category-id> <name> <estimate>\n                                              Create a Task\n  t status <task-id> <status>                 Set Task status\n  st new <task-id> <name> <estimate>          Create a Subtask\n  st status <subtask-id> <status>              Set Subtask status\n  sp new <task|subtask> <owner-id> <name> <estimate> [buffer-percent]\n                                              Create a Sprint\n  sp <start|hold|resume|complete> <sprint-id> Transition a Sprint\n  sp extend <sprint-id> <duration> <reason>   Record justified additional planned time\n  sp extensions <sprint-id>                   List immutable extension history\n  sp entries <sprint-id>                      List recorded work/hold intervals\n  llm new <name> <provider> <base-url> <model> [system-prompt]\n                                              Configure a local planner\n  plan <generate|apply> <project-id> <id>     Generate a Review draft or apply one\n  plan list <project-id>                       List planning drafts\n  doctor                                      Check local API readiness\n\nStatuses:\n  Open | On Hold | Completed | Cancelled\n\nEnvironment:\n  TIMEKEEPER_URL  API base URL (default http://127.0.0.1:1618)\n")
+		_, _ = fmt.Fprint(out, "Usage: tk [--url <api-base-url>] <command>\n\nCommands:\n  list                                        List projects\n  tree <project-id>                           Show an executable hierarchy\n  export <project-id>                         Print a portable Project snapshot as JSON\n  summary <project-id>                        Show a durable Sprint operational snapshot\n  pulse                                       Show local Sprint attention needing follow-up\n  agent progress <id> <lease> [sprint-id] [guardian-url]\n                                              Renew an agent material-progress lease and optionally register a numeric-loopback Guardian\n  agent nudges <id>                           List durable unacknowledged Guardian nudges\n  agent history <id>                          List durable Guardian delivery/recovery history\n  agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge and renew the lease\n  events <project-id>                         List immutable Project activity\n  note <project-id> <content>                 Record a Project note\n  notes <project-id>                          List Project notes\n  p new <name>                                Create a Project\n  p edit <project-id> <goal> <description>    Update Project context\n  p status <project-id> <status>              Set Project status\n  c new <project-id> <name> [parent-category-id] Create a Category\n  c edit <category-id> <goal> <description>    Update Category context\n  c status <category-id> <status>              Set Category status\n  t edit <task-id> <goal> <description>        Update Task context\n  t new <project-id> <category-id> <name> <estimate>\n                                              Create a Task\n  t status <task-id> <status>                 Set Task status\n  st new <task-id> <name> <estimate>          Create a Subtask\n  st status <subtask-id> <status>              Set Subtask status\n  sp new <task|subtask> <owner-id> <name> <estimate> [buffer-percent]\n                                              Create a Sprint\n  sp <start|hold|resume|complete|cancel> <sprint-id> [reason] Transition a Sprint; hold/cancel require a reason\n  sp reason <sprint-id> <reason>                Update why an already-held Sprint is blocked\n  sp next <project-id>                         Atomically claim the oldest runnable Sprint\n  sp attempts <sprint-id>                      List immutable retrieval-attempt evidence\n  sp attempt <sprint-id> <reason>              Record a failed retrieval attempt (fourth makes TimedOut)\n  sp extend <sprint-id> <duration> <reason>   Record justified additional planned time\n  sp extensions <sprint-id>                   List immutable extension history\n  sp entries <sprint-id>                      List recorded work/hold intervals\n  llm new <name> <provider> <base-url> <model> [system-prompt]\n                                              Register a loopback LLM pipeline\n  plan <generate|apply> <project-id> <pipeline-id|draft-id>\n                                              Generate or apply a reviewed planning draft\n  plan list <project-id>                       List planning drafts\n  doctor                                      Check whether Time Keeper is reachable\n")
 		return 0
 	}
 	switch args[0] {
@@ -68,6 +69,10 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return exportProject(args[1:], out, errOut, baseURL)
 	case "summary":
 		return summary(args[1:], out, errOut, baseURL)
+	case "pulse":
+		return pulse(out, errOut, baseURL)
+	case "agent":
+		return agentPulse(args[1:], out, errOut, baseURL)
 	case "events":
 		return events(args[1:], out, errOut, baseURL)
 	case "notes":
@@ -255,6 +260,8 @@ func summary(args []string, out, errOut io.Writer, baseURL string) int {
 		TotalSprints             int64  `json:"total_sprints"`
 		ActiveSprints            int64  `json:"active_sprints"`
 		HeldSprints              int64  `json:"held_sprints"`
+		TimedOutSprints          int64  `json:"timed_out_sprints"`
+		CancelledSprints         int64  `json:"cancelled_sprints"`
 		EstimatedDurationSeconds int64  `json:"estimated_duration_seconds"`
 		BufferDurationSeconds    int64  `json:"buffer_duration_seconds"`
 		ExtensionDurationSeconds int64  `json:"extension_duration_seconds"`
@@ -265,8 +272,171 @@ func summary(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(out, "%s	sprints=%d	active=%d	held=%d	estimated=%ds	buffer=%ds	extensions=%ds	planned=%ds	recorded-work=%ds\n", value.ProjectID, value.TotalSprints, value.ActiveSprints, value.HeldSprints, value.EstimatedDurationSeconds, value.BufferDurationSeconds, value.ExtensionDurationSeconds, value.PlannedDurationSeconds, value.RecordedWorkSeconds)
+	_, _ = fmt.Fprintf(out, "%s	sprints=%d	active=%d	held=%d	timed-out=%d	cancelled=%d	estimated=%ds	buffer=%ds	extensions=%ds	planned=%ds	recorded-work=%ds\n", value.ProjectID, value.TotalSprints, value.ActiveSprints, value.HeldSprints, value.TimedOutSprints, value.CancelledSprints, value.EstimatedDurationSeconds, value.BufferDurationSeconds, value.ExtensionDurationSeconds, value.PlannedDurationSeconds, value.RecordedWorkSeconds)
 	return 0
+}
+
+func pulse(out, errOut io.Writer, baseURL string) int {
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/pulse"
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(url)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		return 1
+	}
+	var value struct {
+		Format                      string `json:"format"`
+		RecommendedNextPulseSeconds int64  `json:"recommended_next_pulse_seconds"`
+		Attention                   []struct {
+			Kind                   string `json:"kind"`
+			ProjectID              string `json:"project_id"`
+			SprintID               string `json:"sprint_id"`
+			Name                   string `json:"name"`
+			PlannedDurationSeconds int64  `json:"planned_duration_seconds"`
+			ActiveDurationSeconds  int64  `json:"active_duration_seconds"`
+			OverdueDurationSeconds int64  `json:"overdue_duration_seconds"`
+		} `json:"attention"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&value); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
+		return 1
+	}
+	if value.Format != "timekeeper-pulse/v1" {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned unsupported Pulse format %q\n", value.Format)
+		return 1
+	}
+	if len(value.Attention) == 0 {
+		_, _ = fmt.Fprintf(out, "clear\tnext=%ds\n", value.RecommendedNextPulseSeconds)
+		return 0
+	}
+	for _, item := range value.Attention {
+		_, _ = fmt.Fprintf(out, "%s\t%s\t%s\tactive=%ds\tplanned=%ds\toverdue=%ds\t%s\n", item.Kind, item.ProjectID, item.SprintID, item.ActiveDurationSeconds, item.PlannedDurationSeconds, item.OverdueDurationSeconds, item.Name)
+	}
+	return 0
+}
+
+func agentPulse(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(errOut, "usage: tk agent <progress|nudges|ack> ...")
+		return 2
+	}
+	switch args[0] {
+	case "progress":
+		if len(args) < 3 || len(args) > 5 || strings.TrimSpace(args[1]) == "" {
+			_, _ = fmt.Fprintln(errOut, "usage: tk agent progress <agent-id> <lease> [sprint-id] [guardian-url]")
+			return 2
+		}
+		lease, err := time.ParseDuration(args[2])
+		if err != nil || lease < time.Second || lease != time.Duration(int64(lease.Seconds()))*time.Second {
+			_, _ = fmt.Fprintln(errOut, "lease must be a whole positive duration such as 20s or 5m")
+			return 2
+		}
+		input := map[string]any{"lease_duration_seconds": int64(lease.Seconds())}
+		if len(args) >= 4 {
+			input["active_sprint_id"] = args[3]
+		}
+		if len(args) == 5 {
+			input["guardian_url"] = args[4]
+		}
+		body, err := json.Marshal(input)
+		if err != nil {
+			return 1
+		}
+		endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/agents/" + url.PathEscape(args[1]) + "/progress"
+		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return 1
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
+			return 1
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusCreated {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+			return 1
+		}
+		var progress model.AgentPulseProgress
+		if err := json.NewDecoder(response.Body).Decode(&progress); err != nil {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
+			return 1
+		}
+		_, _ = fmt.Fprintf(out, "%s\tlease=%ds\tsprint=%s\tguardian=%s\n", progress.AgentID, progress.LeaseDurationSeconds, progress.ActiveSprintID, progress.GuardianURL)
+		return 0
+	case "nudges", "history":
+		if len(args) != 2 || strings.TrimSpace(args[1]) == "" {
+			_, _ = fmt.Fprintf(errOut, "usage: tk agent %s <agent-id>\n", args[0])
+			return 2
+		}
+		path := "/nudges"
+		if args[0] == "history" {
+			path += "/history"
+		}
+		endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/agents/" + url.PathEscape(args[1]) + path
+		response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
+			return 1
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+			return 1
+		}
+		var payload struct {
+			Items []model.PulseNudge `json:"items"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
+			return 1
+		}
+		for _, nudge := range payload.Items {
+			_, _ = fmt.Fprintf(out, "%d\t%s\t%s\t%s\tdetected=%ds\tdelivery-attempts=%d\n", nudge.NudgeID, nudge.Status, nudge.Kind, nudge.ActiveSprintID, nudge.DetectedAfterSeconds, nudge.DeliveryAttempts)
+		}
+		return 0
+	case "ack":
+		if len(args) != 3 || strings.TrimSpace(args[1]) == "" {
+			_, _ = fmt.Fprintln(errOut, "usage: tk agent ack <agent-id> <nudge-id>")
+			return 2
+		}
+		nudgeID, err := strconv.ParseInt(args[2], 10, 64)
+		if err != nil || nudgeID < 1 {
+			_, _ = fmt.Fprintln(errOut, "nudge ID must be a positive integer")
+			return 2
+		}
+		endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/agents/" + url.PathEscape(args[1]) + "/nudges/" + strconv.FormatInt(nudgeID, 10) + "/ack"
+		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader([]byte(`{}`)))
+		if err != nil {
+			return 1
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
+			return 1
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+			return 1
+		}
+		var nudge model.PulseNudge
+		if err := json.NewDecoder(response.Body).Decode(&nudge); err != nil {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
+			return 1
+		}
+		_, _ = fmt.Fprintf(out, "%d\t%s\t%s\n", nudge.NudgeID, nudge.Status, nudge.AgentID)
+		return 0
+	default:
+		_, _ = fmt.Fprintf(errOut, "unknown agent command %q\n", args[0])
+		return 2
+	}
 }
 
 func events(args []string, out, errOut io.Writer, baseURL string) int {
@@ -377,20 +547,70 @@ func note(args []string, out, errOut io.Writer, baseURL string) int {
 	return 0
 }
 
+func sprintHoldReason(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) < 3 || strings.TrimSpace(args[1]) == "" || strings.TrimSpace(strings.Join(args[2:], " ")) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage: tk sp reason <sprint-id> <reason>")
+		return 2
+	}
+	body, err := json.Marshal(map[string]string{"reason": strings.TrimSpace(strings.Join(args[2:], " "))})
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "encode hold reason: %v\n", err)
+		return 1
+	}
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/sprints/" + args[1] + "/hold-reason"
+	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "create hold reason request: %v\n", err)
+		return 1
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		return 1
+	}
+	var sprint struct {
+		SprintID   string `json:"sprint_id"`
+		Status     string `json:"status"`
+		HoldReason string `json:"hold_reason"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&sprint); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(out, "%s\t%s\t%s\n", sprint.SprintID, sprint.Status, sprint.HoldReason)
+	return 0
+}
+
 func sprintAction(args []string, out, errOut io.Writer, baseURL string) int {
-	if len(args) != 2 || strings.TrimSpace(args[1]) == "" {
-		_, _ = fmt.Fprintln(errOut, "usage: tk sp <start|hold|resume|complete> <sprint-id>")
+	if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage: tk sp <start|hold|resume|complete|cancel> <sprint-id> [reason]")
 		return 2
 	}
 	action := args[0]
 	switch action {
-	case "start", "hold", "resume", "complete":
+	case "start", "hold", "resume", "complete", "cancel":
 	default:
 		_, _ = fmt.Fprintf(errOut, "unknown sprint action %q\n", action)
 		return 2
 	}
+	reason := strings.TrimSpace(strings.Join(args[2:], " "))
+	if (action == "hold" || action == "cancel") && reason == "" {
+		_, _ = fmt.Fprintf(errOut, "tk sp %s requires a reason\n", action)
+		return 2
+	}
+	body, err := json.Marshal(map[string]string{"reason": reason})
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "encode sprint action reason: %v\n", err)
+		return 1
+	}
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/sprints/" + args[1] + "/" + action
-	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte("{}")))
+	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "create sprint action request: %v\n", err)
 		return 1
@@ -527,7 +747,129 @@ func sprintExtend(args []string, out, errOut io.Writer, baseURL string) int {
 	return 0
 }
 
+func sprintAttempt(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) != 3 || strings.TrimSpace(args[1]) == "" || strings.TrimSpace(args[2]) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage: tk sp attempt <sprint-id> <reason>")
+		return 2
+	}
+	body, err := json.Marshal(map[string]string{"reason": strings.TrimSpace(args[2])})
+	if err != nil {
+		return 1
+	}
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/sprints/" + url.PathEscape(args[1]) + "/retrieval-attempts"
+	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return 1
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		return 1
+	}
+	var attempt struct {
+		AttemptNumber int  `json:"attempt_number"`
+		TimedOut      bool `json:"timed_out"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&attempt); err != nil {
+		return 1
+	}
+	status := "recorded"
+	if attempt.TimedOut {
+		status = "TimedOut"
+	}
+	_, _ = fmt.Fprintf(out, "%s\tattempt=%d\t%s\n", args[1], attempt.AttemptNumber, status)
+	return 0
+}
+
+func sprintAttempts(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) != 2 || strings.TrimSpace(args[1]) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage: tk sp attempts <sprint-id>")
+		return 2
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/sprints/" + url.PathEscape(args[1]) + "/retrieval-attempts"
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		return 1
+	}
+	var payload struct {
+		Items []struct {
+			AttemptNumber int    `json:"attempt_number"`
+			Reason        string `json:"reason"`
+			TimedOut      bool   `json:"timed_out"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return 1
+	}
+	for _, item := range payload.Items {
+		status := "recorded"
+		if item.TimedOut {
+			status = "TimedOut"
+		}
+		_, _ = fmt.Fprintf(out, "%s\tattempt=%d\t%s\t%s\n", args[1], item.AttemptNumber, status, item.Reason)
+	}
+	return 0
+}
+
+func sprintNext(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) != 2 || strings.TrimSpace(args[1]) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage: tk sp next <project-id>")
+		return 2
+	}
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + args[1] + "/sprints/claim-next"
+	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return 1
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		return 1
+	}
+	var sprint struct {
+		SprintID    string `json:"sprint_id"`
+		Name        string `json:"name"`
+		ItemAddress string `json:"item_address"`
+		Status      string `json:"status"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&sprint); err != nil {
+		return 1
+	}
+	_, _ = fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", sprint.SprintID, sprint.Status, sprint.Name, sprint.ItemAddress)
+	return 0
+}
+
 func sprint(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) > 0 && args[0] == "reason" {
+		return sprintHoldReason(args, out, errOut, baseURL)
+	}
+	if len(args) > 0 && args[0] == "attempts" {
+		return sprintAttempts(args, out, errOut, baseURL)
+	}
+	if len(args) > 0 && args[0] == "attempt" {
+		return sprintAttempt(args, out, errOut, baseURL)
+	}
+	if len(args) > 0 && args[0] == "next" {
+		return sprintNext(args, out, errOut, baseURL)
+	}
 	if len(args) > 0 && args[0] == "entries" {
 		return sprintEntries(args, out, errOut, baseURL)
 	}

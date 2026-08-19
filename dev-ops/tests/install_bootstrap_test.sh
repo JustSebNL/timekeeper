@@ -9,22 +9,24 @@ EXPECTED_ORIGIN='git@github.com:JustSebNL/timekeeper.git'
 [[ -f "$SCRIPT" ]] || { printf 'missing installer: %s\n' "$SCRIPT" >&2; exit 1; }
 bash -n "$SCRIPT"
 for required in \
-  '--source' \
-  '--destination' \
+  'SOURCE="$ROOT"' \
+  'DESTINATION="$ROOT/.timekeeper/app"' \
   'archive --format=tar' \
   'SOURCE_COMMIT' \
   'GOPROXY=off' \
   'GOTOOLCHAIN=local' \
   "$EXPECTED_ORIGIN" \
-  '.local/share/timekeeper' \
-  'LOCALAPPDATA' \
-  'refusing non-empty destination' \
-  'must be clean'; do
+  'preserving existing runtime state' \
+  'Run: ./.timekeeper/app/timekeeper'; do
   grep -Fq -- "$required" "$SCRIPT" || {
-    printf 'installer is missing required safety contract: %s\n' "$required" >&2
+    printf 'installer is missing repository-contained bootstrap contract: %s\n' "$required" >&2
     exit 1
   }
 done
+if grep -Eq -- '--source|--destination|\.local/share/timekeeper|LOCALAPPDATA' "$SCRIPT"; then
+  printf 'installer exposes stale path-selection behavior\n' >&2
+  exit 1
+fi
 if grep -Eq '(sudo |apt-get|dnf |yum |pacman |systemctl |useradd |curl |wget )' "$SCRIPT"; then
   printf 'installer must not require privileged, package-manager, service, or network commands\n' >&2
   exit 1
@@ -32,16 +34,22 @@ fi
 
 TMP="$(mktemp -d)"
 SOURCE="$TMP/source"
-TARGET="$TMP/installed"
 cleanup() {
-  git -C "$ROOT" worktree remove --force "$SOURCE" >/dev/null 2>&1 || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
 
-git -C "$ROOT" worktree add --detach "$SOURCE" origin/main >/dev/null
+git clone --no-hardlinks --local "$ROOT" "$SOURCE" >/dev/null
+# Exercise the current installer implementation against an otherwise clean,
+# self-contained clone without changing the active checkout's remote refs.
+cp "$SCRIPT" "$SOURCE/install.sh"
+git -C "$SOURCE" add install.sh
+git -C "$SOURCE" -c user.name='Time Keeper test' -c user.email='timekeeper-test@example.invalid' commit -m 'test current installer' >/dev/null
+git -C "$SOURCE" remote set-url origin "$EXPECTED_ORIGIN"
+git -C "$SOURCE" update-ref refs/remotes/origin/main HEAD
 COMMIT="$(git -C "$SOURCE" rev-parse HEAD)"
-FAKE_GO="$TMP/go tool"
+
+FAKE_GO="$TMP/go-tool"
 cat > "$FAKE_GO" <<'FAKE_GO'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -69,7 +77,11 @@ exit 1
 FAKE_GO
 chmod 0755 "$FAKE_GO"
 
-TIMEKEEPER_GO="$FAKE_GO" "$SCRIPT" --source "$SOURCE" --destination "$TARGET" > "$TMP/install.out"
+TARGET="$SOURCE/.timekeeper/app"
+(
+  cd "$SOURCE"
+  TIMEKEEPER_GO="$FAKE_GO" bash ./install.sh > "$TMP/install.out"
+)
 [[ -f "$TARGET/app/README.md" ]]
 [[ -x "$TARGET/bin/timekeeper" ]]
 [[ -x "$TARGET/bin/tk" ]]
@@ -80,18 +92,30 @@ grep -Fqx "SOURCE_COMMIT=$COMMIT" "$TARGET/INSTALLATION.env"
 grep -Fqx "SOURCE_ORIGIN=$EXPECTED_ORIGIN" "$TARGET/INSTALLATION.env"
 grep -Fqx 'INSTALLER_STARTS_NO_SERVER=1' "$TARGET/INSTALLATION.env"
 
-mkdir "$TMP/nonempty"
-touch "$TMP/nonempty/keep"
-if TIMEKEEPER_GO="$FAKE_GO" "$SCRIPT" --source "$SOURCE" --destination "$TMP/nonempty" >/dev/null 2>&1; then
-  printf 'installer accepted a non-empty destination\n' >&2
+printf 'preserved-state' > "$TARGET/state/runtime-marker"
+(
+  cd "$SOURCE"
+  TIMEKEEPER_GO="$FAKE_GO" bash ./install.sh > "$TMP/refresh.out"
+)
+[[ "$(<"$TARGET/state/runtime-marker")" == 'preserved-state' ]]
+grep -Fq 'preserving existing runtime state' "$TMP/refresh.out"
+
+if (
+  cd "$SOURCE"
+  TIMEKEEPER_GO="$FAKE_GO" bash ./install.sh --destination "$TMP/elsewhere"
+) >/dev/null 2>&1; then
+  printf 'installer accepted obsolete path-selection arguments\n' >&2
   exit 1
 fi
+[[ ! -e "$TMP/elsewhere" ]]
 
 printf '\n' >> "$SOURCE/README.md"
-if TIMEKEEPER_GO="$FAKE_GO" "$SCRIPT" --source "$SOURCE" --destination "$TMP/dirty" >/dev/null 2>&1; then
+if (
+  cd "$SOURCE"
+  TIMEKEEPER_GO="$FAKE_GO" bash ./install.sh
+) >/dev/null 2>&1; then
   printf 'installer accepted a dirty source checkout\n' >&2
   exit 1
 fi
-[[ ! -e "$TMP/dirty" ]]
 
 printf 'install-bootstrap-contract=passed\n'

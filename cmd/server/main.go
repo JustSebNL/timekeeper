@@ -16,8 +16,16 @@ import (
 	"time"
 
 	"github.com/JustSebNL/timekeeper/internal/api"
+	"github.com/JustSebNL/timekeeper/internal/guardian"
 	"github.com/JustSebNL/timekeeper/internal/store"
 )
+
+func recoveryPolicy() string {
+	// The repo-local recovery receiver performs exactly one allowlisted action:
+	// write a durable local recovery artifact and acknowledge the nudge. It
+	// performs no process control. This string is status evidence, not a grant.
+	return "local-artifact: durable recovery marker only; no process control"
+}
 
 func validateServerConfig(addr, uiPath string) error {
 	host, port, err := net.SplitHostPort(strings.TrimSpace(addr))
@@ -63,7 +71,11 @@ func main() {
 	dbPath := flag.String("db", "timekeeper.db", "SQLite database path")
 	uiPath := flag.String("ui", "web/timekeeper.html", "dashboard HTML path")
 	backupTo := flag.String("backup-to", "", "create a SQLite backup at this new path, then exit")
+	pulseGuardianInterval := flag.Duration("pulse-guardian-interval", 0, "run the local Pulse Guardian at this interval; 0 disables it")
 	flag.Parse()
+	if *pulseGuardianInterval != 0 && *pulseGuardianInterval < time.Second {
+		log.Fatalf("Pulse Guardian interval must be at least %s", time.Second)
+	}
 	if *backupTo == "" {
 		if err := validateServerConfig(*addr, *uiPath); err != nil {
 			log.Fatalf("validate Time Keeper configuration: %v", err)
@@ -83,8 +95,20 @@ func main() {
 		log.Print(message)
 		return
 	}
+	if *pulseGuardianInterval > 0 {
+		guardianContext, guardianStop := context.WithCancel(context.Background())
+		defer guardianStop()
+		go guardian.Run(guardianContext, database, *pulseGuardianInterval, func(err error) {
+			log.Printf("Pulse Guardian: %v", err)
+		})
+		log.Printf("Pulse Guardian enabled with %s interval", *pulseGuardianInterval)
+	}
 
-	apiHandler := api.New(database)
+	apiHandler := api.NewWithRuntime(database, api.RuntimeStatus{
+		PulseGuardianEnabled:         *pulseGuardianInterval > 0,
+		PulseGuardianIntervalSeconds: int64(pulseGuardianInterval.Seconds()),
+		RecoveryPolicy:               recoveryPolicy(),
+	})
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiHandler)
 	mux.Handle("/health", apiHandler)

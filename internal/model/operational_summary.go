@@ -10,6 +10,8 @@ type ProjectOperationalSummary struct {
 	ActiveSprints            int64  `json:"active_sprints"`
 	HeldSprints              int64  `json:"held_sprints"`
 	CompletedSprints         int64  `json:"completed_sprints"`
+	TimedOutSprints          int64  `json:"timed_out_sprints"`
+	CancelledSprints         int64  `json:"cancelled_sprints"`
 	EstimatedDurationSeconds int64  `json:"estimated_duration_seconds"`
 	BufferDurationSeconds    int64  `json:"buffer_duration_seconds"`
 	ExtensionDurationSeconds int64  `json:"extension_duration_seconds"`

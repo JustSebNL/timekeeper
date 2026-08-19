@@ -12,6 +12,11 @@ tk list
 tk tree <project-id>
 tk export <project-id> > project-export.json
 tk summary <project-id>
+tk pulse
+tk agent progress <agent-id> <lease> [sprint-id] [guardian-url]
+tk agent nudges <agent-id>
+tk agent history <agent-id>
+tk agent ack <agent-id> <nudge-id>
 tk events <project-id>
 tk note <project-id> <content>
 tk notes <project-id>
@@ -28,6 +33,7 @@ tk t  status <task-id> <Open|On Hold|Completed|Cancelled>
 tk st new <task-id> <subtask-name> <estimate>
 tk st status <subtask-id> <Open|On Hold|Completed|Cancelled>
 tk sp new <task|subtask> <owner-id> <sprint-name> <estimate> [buffer-percent]
+tk sp next <project-id> # atomically claim the next runnable Sprint
 tk sp <start|hold|resume|complete> <sprint-id>
 tk sp extend <sprint-id> <duration> <reason>
 tk sp extensions <sprint-id>
@@ -58,6 +64,25 @@ Estimates and durations use Go duration syntax, for example `90m`, `2h`, or `1h3
 
 `tk doctor` performs a non-mutating `/health` readiness check against the configured endpoint and reports a recovery hint when the API is unavailable.
 
+`tk pulse` prints every Active Sprint whose recorded and current active time has exceeded its estimate, buffer, and approved extensions. It is a read-only local attention check: it does not create reminder records, start a timer, send a notification, or contact another service. `clear\tnext=60s` means there is no such Sprint at this instant.
+
+## Pulse Guardian
+
+`GET /api/v1/pulse` is still the read-only local list of over-plan Active Sprints. It cannot wake a hung agent; it only answers a request that reaches it.
+
+For an actual out-of-band attention path, Time Keeper runs a Guardian by default every 5 minutes. Override the cadence with `-pulse-guardian-interval`, and have the agent renew a material-progress lease:
+
+```text
+timekeeper -pulse-guardian-interval 1s
+
+tk agent progress agent:worker-7 45s SP-10004 http://127.0.0.1:19090/pulse
+tk agent nudges agent:worker-7
+tk agent history agent:worker-7
+tk agent ack agent:worker-7 41
+```
+
+The registered callback must be a plain numeric-loopback HTTP URL. After a lease has expired, Time Keeper sends one versioned `recover_attention` signal to that independent local Guardian and records whether it explicitly accepted it. The Guardian returns `X-Timekeeper-Pulse-Accepted: v1` after accepting the signal, performs its own deliberate local recovery, and the owning agent acknowledges the nudge. A failed callback remains pending for a later retry; a confirmed callback is not spammed while acknowledgement is pending. Time Keeper itself never kills, restarts, or executes a watched process.
+
 Time Keeper validates serving configuration before opening the database: the dashboard path must be a readable file and `-addr` must use an explicit numeric loopback host (`127.0.0.1` or `::1`). It refuses names, wildcard, and remote interfaces.
 
 ## SQLite backup
@@ -72,6 +97,6 @@ For a portable Project-only JSON export, use `tk export <project-id> > project-e
 
 ## Availability boundary
 
-Only commands listed in **Implemented CLI** are available. Time Keeper does not currently implement automatic pickup/context recovery, Pulses, agent liveness supervision, Decisions/Edits/Bugs records, task adoption, metrics, automatic stopping, background scheduling, external model providers, remote server operation, or a downloadable release installer. A narrow verified-checkout bootstrap is documented in `README.md`.
+Only commands listed in **Implemented CLI** are available. Time Keeper does not currently implement automatic pickup/context recovery, direct process control, Decisions/Edits/Bugs records, task adoption, metrics, external model providers, remote server operation, or a downloadable release installer. Pulse Guardian is limited to explicit material-progress leases and independently-owned numeric-loopback attention callbacks; it is not a general scheduler or process supervisor. A narrow verified-checkout bootstrap is documented in `README.md`.
 
 See `API.md`, `README.md`, `AGENT_INTEGRATION.md`, and `THREAT_REVIEW.md` for the authoritative current contract.

@@ -5,6 +5,7 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GO_BIN="${TIMEKEEPER_GO:-go}"
 INSTALLER="$ROOT/install.sh"
+EXPECTED_ORIGIN='git@github.com:JustSebNL/timekeeper.git'
 
 "$GO_BIN" version >/dev/null 2>&1 || {
   printf 'install e2e test requires Go. Set TIMEKEEPER_GO to a Go executable.\n' >&2
@@ -13,7 +14,7 @@ INSTALLER="$ROOT/install.sh"
 
 TMP="$(mktemp -d "$ROOT/.timekeeper/install-e2e.XXXXXX")"
 SOURCE="$TMP/source"
-DESTINATION="$TMP/installed"
+DESTINATION="$SOURCE/.timekeeper/app"
 PORT="$((18000 + RANDOM % 1000))"
 BASE_URL="http://127.0.0.1:$PORT"
 SERVER_PID=''
@@ -22,13 +23,20 @@ cleanup() {
     kill "$SERVER_PID" >/dev/null 2>&1 || true
     wait "$SERVER_PID" >/dev/null 2>&1 || true
   fi
-  git -C "$ROOT" worktree remove --force "$SOURCE" >/dev/null 2>&1 || true
   rm -rf "$TMP"
 }
 trap cleanup EXIT
 
-git -C "$ROOT" worktree add --detach "$SOURCE" origin/main >/dev/null
-TIMEKEEPER_GO="$GO_BIN" "$INSTALLER" --source "$SOURCE" --destination "$DESTINATION" >/dev/null
+git clone --no-hardlinks --local "$ROOT" "$SOURCE" >/dev/null
+cp "$INSTALLER" "$SOURCE/install.sh"
+git -C "$SOURCE" add install.sh
+git -C "$SOURCE" -c user.name='Time Keeper test' -c user.email='timekeeper-test@example.invalid' commit -m 'test current installer' >/dev/null
+git -C "$SOURCE" remote set-url origin "$EXPECTED_ORIGIN"
+git -C "$SOURCE" update-ref refs/remotes/origin/main HEAD
+(
+  cd "$SOURCE"
+  TIMEKEEPER_GO="$GO_BIN" bash ./install.sh >/dev/null
+)
 
 test ! -e "$DESTINATION/state/timekeeper.db"
 test -x "$DESTINATION/timekeeper"
@@ -55,4 +63,14 @@ grep -Fq 'Time Keeper is ready.' "$TMP/doctor.log" || {
   exit 1
 }
 test -s "$DESTINATION/state/timekeeper.db"
+
+kill "$SERVER_PID" >/dev/null 2>&1 || true
+wait "$SERVER_PID" >/dev/null 2>&1 || true
+SERVER_PID=''
+(
+  cd "$SOURCE"
+  TIMEKEEPER_GO="$GO_BIN" bash ./install.sh > "$TMP/refresh.log"
+)
+test -s "$DESTINATION/state/timekeeper.db"
+grep -Fq 'preserving existing runtime state' "$TMP/refresh.log"
 printf 'install-e2e=passed\n'

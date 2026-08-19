@@ -82,7 +82,7 @@ func TestSprintLifecycleRecordsWorkAndHoldTimeEntries(t *testing.T) {
 	if err := json.NewDecoder(invalidStartResponse.Body).Decode(&invalidPayload); err != nil {
 		t.Fatalf("decode invalid transition: %v", err)
 	}
-	if invalidPayload.Error.Code != "invalid_transition" || invalidPayload.Error.Details.Status != "Active" || len(invalidPayload.Error.Details.AllowedActions) != 2 || invalidPayload.Error.Details.AllowedActions[0] != "complete" || invalidPayload.Error.Details.AllowedActions[1] != "hold" {
+	if invalidPayload.Error.Code != "invalid_transition" || invalidPayload.Error.Details.Status != "Active" || len(invalidPayload.Error.Details.AllowedActions) != 3 || invalidPayload.Error.Details.AllowedActions[0] != "cancel" || invalidPayload.Error.Details.AllowedActions[1] != "complete" || invalidPayload.Error.Details.AllowedActions[2] != "hold" {
 		t.Fatalf("invalid transition payload = %#v", invalidPayload)
 	}
 

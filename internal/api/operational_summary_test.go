@@ -48,7 +48,7 @@ func TestProjectOperationalSummaryReportsDurableSprintStateAndEstimate(t *testin
 	if _, err := database.TransitionSprint(ctx, held.SprintID, "start", ""); err != nil {
 		t.Fatalf("start held sprint: %v", err)
 	}
-	if _, err := database.TransitionSprint(ctx, held.SprintID, "hold", ""); err != nil {
+	if _, err := database.TransitionSprint(ctx, held.SprintID, "hold", "waiting for external input"); err != nil {
 		t.Fatalf("hold sprint: %v", err)
 	}
 

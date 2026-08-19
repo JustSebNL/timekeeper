@@ -2,96 +2,118 @@
 
 Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved. This is proprietary software; see `LICENSE` and `NOTICE`.
 
-Time Keeper is a local-first project execution memory system for humans and agents. SQLite is authoritative; the HTTP API, `tk` CLI, and dashboard use the same data.
+Time Keeper helps an agent plan work, keep time, and remember what needs attention.
 
-## First runnable slice
+It is a local workspace for the things that usually get lost between conversations: what the agent promised to do, how long it expected the work to take, what is happening now, and what already happened.
 
-The current foundation provides:
+## What Time Keeper does
 
-- server startup validates a readable dashboard path and explicit loopback-only bind address; wildcard/remote interfaces are refused by default
-- durable `Project`, `Category`, `Task`, and Task-owned `Subtask` creation with public IDs (`P-10000`, `C-10001`, `T-10002`, `ST-10003`) and hierarchical Item Addresses (`10000.10001.10002.10003`)
-- durable, attributed Project notes plus immutable Sprint lifecycle activity, exposed uniformly to HTTP clients, `tk`, and the dashboard
-- bounded Sprints owned either directly by a Task or by a Subtask, with an explicit whole-percent planning buffer, legal `Open → Active → On Hold → Active → Completed` lifecycle transitions, and immutable `work`/`hold` time entries
-- framework-neutral JSON API: `GET /health`, `GET/POST /api/v1/projects`, a single Project execution-tree read endpoint, hierarchy endpoints for Categories/Tasks/Sprints, Sprint lifecycle endpoints, and `GET /api/v1/sprints/{sprintID}/time-entries`
-- a self-contained dashboard at `/` with lazy, inspectable Project → Category → Task → Subtask → Sprint navigation; it can create every core hierarchy item and invoke only the legal Sprint lifecycle actions shown for each current state
-- a local overwrite-safe SQLite backup command (`timekeeper -db timekeeper.db -backup-to timekeeper-backup.db`) plus versioned portable Project JSON export via `tk export <project-id>`
-- optional local-only LLM planning pipelines for Ollama and OpenAI-compatible loopback servers; models create strict versioned Review drafts only, while a separate user-approved apply action transactionally materializes hierarchy
-- API, CLI, and dashboard review/apply paths for local planning drafts; raw model output is inspectable and never treated as authority
-- an official local VS Code companion under `extensions/vscode/`, with a hierarchy Explorer, local connection status, Project selection, dashboard deep-link, and legal Sprint lifecycle controls; it uses only the public local HTTP API
-- a reviewed local-only threat model and explicit release gates in `THREAT_REVIEW.md`
+- Plans a Project as Categories, Tasks, Subtasks, and short work blocks called Sprints.
+- Gives each Sprint an expected duration and optional buffer, so the plan has a clock instead of a vague "later".
+- Tracks whether work is open, active, on hold, complete, or dormant `TimedOut` after four recorded failed retrieval attempts.
+- Uses `On Hold` broadly for any real blocker—you run out of road and other items must catch up first, a user decided otherwise, just waiting for input, or any other external dependency—and records the reason without charging active work time when a Sprint has not started.
+- Keeps a durable history of changes, notes, time spent, holds, and extensions.
+- Surfaces active Sprints that have exceeded their declared plan through a local Pulse.
+- Can run an independent local Pulse Guardian that detects an agent which stopped reporting material progress and sends a durable attention-recovery signal to an explicitly registered loopback Guardian.
+- Lets an agent or a person inspect the same plan from the dashboard, the `tk` command, or the local API.
+- Keeps the plan and history on the local machine. It does not need a cloud account.
 
-## Build and run from WSL
+Think of it as a project planner, a time scheduler, and a work history for an agent that needs to stay accountable over more than one conversation.
 
-If Go is not on `PATH`, set `GOEXE` to its executable:
+## When work is late
+
+Time Keeper keeps the original time budget, buffer, extensions, current status, and recorded work history together. That means an agent can see why a work block is late instead of guessing from a stale checklist.
+
+## Pulse
+
+Pulse is a local attention check: it highlights Active Sprints only after they exceed their declared plan.
+
+Use the dashboard's Pulse card, `tk pulse`, or `GET /api/v1/pulse` to see the exact work needing attention. This Sprint-overrun view is read-only: it does not create a reminder record, start a background timer, send push notifications, send messages, or contact an external service. An agent can poll it or schedule its own follow-up when that is useful.
+
+## Pulse Guardian
+
+A response from a hung agent is not a nudge — it is just a postcard from a process that may never read it. For an out-of-band recovery path, Time Keeper can run an independent local Pulse Guardian. An agent renews a material-progress lease and explicitly registers a numeric-loopback Guardian callback. When that lease expires, Time Keeper creates a durable recovery nudge and calls the independent Guardian, which may notify, interrupt, restart, or replace its watched agent according to that local integration's own policy.
+
+The split is deliberate: Time Keeper tracks the evidence and delivers only to a registered local Guardian; it does not execute arbitrary commands or silently kill/restart processes. The recovered agent must acknowledge the nudge, so callback acceptance cannot be misrepresented as recovery. See `API.md` and `AGENT_INTEGRATION.md` for the callback contract.
+
+## Where it is going
+
+Over time, Time Keeper should help agents see which models spend tokens without producing useful progress.
+
+That means connecting the time and outcome of a piece of work with the model that handled it. An agent should be able to spot a model that burns a large budget, loops on a task, or creates work that later has to be redone. The point is not to crown a permanent winner. It is to choose the model that is earning its place for this job.
+
+That insight is a direction, not a finished feature. Time Keeper does not yet collect or score token use automatically.
+
+## Install and run
+
+From a clean Time Keeper clone, run:
+
+```text
+./install.sh
+```
+
+The installer keeps everything it creates inside this clone:
+
+```text
+TimeKeeper/
+  .timekeeper/
+    app/        the installed app and local state
+```
+
+It does not put files in your home folder, change your `PATH`, install a service, download code, or start a server without you asking.
+
+Start Time Keeper when you are ready:
+
+```text
+./.timekeeper/app/timekeeper
+# Pulse Guardian is a required backbone service and runs by default every 5m.
+# Override the cadence with TIMEKEEPER_PULSE_GUARDIAN_INTERVAL, or disable it
+# explicitly with TIMEKEEPER_PULSE_GUARDIAN_INTERVAL="".
+# ./.timekeeper/app/timekeeper -pulse-guardian-interval 1s
+# Or when using scripts/run-local.sh, the Guardian is already on by default:
+# TIMEKEEPER_PULSE_GUARDIAN_INTERVAL=1s ./scripts/run-local.sh
+```
+
+Then open `http://127.0.0.1:1618/` in a browser. In another terminal, these are useful first commands:
+
+```text
+./.timekeeper/app/tk doctor
+./.timekeeper/app/tk pulse
+./.timekeeper/app/tk list
+./.timekeeper/app/tk tree <project-id>
+```
+
+The server listens only on your own machine. Stop it with `Ctrl+C` when you are done.
+
+## A simple way to use it
+
+1. Create a Project for the outcome you want.
+2. Break it into Categories, Tasks, and Subtasks.
+3. Give the next piece of work a Sprint with an honest time budget.
+4. Start, pause, wait, resume, extend, or finish that Sprint as the work changes. An Open Sprint may be placed on hold before it starts when it is waiting for a person or external dependency; it consumes no active-time budget.
+5. Keep retrieval loops bounded: record each failed retrieval attempt, and after the fourth Time Keeper marks the Sprint `TimedOut` while retaining all four reasons.
+6. Check Pulse when the agent needs a local list of active work that has run over plan.
+7. Check the Project history when the agent needs to recover context or explain what happened.
+
+The dashboard is the easiest place to browse a Project. The `tk` command is useful when an agent or terminal workflow needs the same information.
+
+## What stays local
+
+Time Keeper is for local, single-user work. Its SQLite database, backups, and exported Project history can contain your notes and plans, so keep the clone in a location you trust.
+
+It is not a public service, a team-hosting product, or a remote deployment system. Do not expose its loopback API to a network.
+
+## For developers
+
+Run the local checks with:
 
 ```text
 GOEXE='/path/to/go'
 "$GOEXE" test ./...
-"$GOEXE" build -o bin/timekeeper.exe ./cmd/server
-"$GOEXE" build -o bin/tk.exe ./cmd/tk
-./bin/timekeeper.exe -db timekeeper.db -ui web/timekeeper.html
+"$GOEXE" vet ./...
+TIMEKEEPER_GO="$GOEXE" ./scripts/release-preflight.sh
 ```
 
-Then visit `http://127.0.0.1:1618/` or use:
+`scripts/run-local.sh` is a development shortcut. It builds from the checkout and keeps temporary runtime files in this clone's ignored `.timekeeper/` directory.
 
-```text
-./bin/tk.exe --url http://127.0.0.1:1618 list
-```
-
-### Portable repo-local launch
-
-For a source checkout, `scripts/run-local.sh` builds and runs locally without root access, service managers, package managers, or system-wide installation. Runtime state stays in the ignored `.timekeeper/` directory inside this repository:
-
-```text
-TIMEKEEPER_GO='/path/to/go' ./scripts/run-local.sh
-```
-
-### Pinned user-owned bootstrap from a verified checkout
-
-`install.sh` builds a clean, exact checkout of the authoritative repository into a fixed user-owned root:
-
-```text
-Linux/WSL: ~/.local/share/timekeeper
-Windows:   %LOCALAPPDATA%\\TimeKeeper
-```
-
-```text
-TIMEKEEPER_GO='/path/to/go' ./install.sh
-```
-
-The checkout must be clean, use the official `origin`, and exactly match its locally verified `origin/main` commit. The installer archives that pinned commit, stages the installation, refuses any existing destination, changes neither `PATH` nor system state, and starts no server. It builds with network access disabled, so required Go modules must already be present in the local module cache; obtain and verify any missing dependencies deliberately before invoking the installer. Run the installed launcher explicitly after success:
-
-```text
-~/.local/share/timekeeper/timekeeper
-```
-
-Use `--source <checkout>` or `--destination <new-directory>` only when deliberately choosing a verified checkout or a new dedicated destination. The installer will not merge with or alter an existing destination; when overriding the default, choose an OS-user-private location yourself. This is a local source bootstrap, not a downloadable release installer, service manager, or deployment mechanism.
-
-### Source release preflight
-
-Before considering a source tree for a release candidate, run its local verification gate:
-
-```text
-TIMEKEEPER_GO='/path/to/go' ./scripts/release-preflight.sh
-```
-
-It checks dashboard assets, content-scope and artifact-ignore contracts, the disposable local-bootstrap harness, tests, vet, diff cleanliness, and reproducible local server/CLI builds in a private temporary `.timekeeper/` directory. Passing it does **not** establish deployment, service, signing, downloadable-release, or remote-hosting readiness.
-
-## Agent/framework integration contract
-
-Time Keeper does not assume a particular agent framework. Any HTTP/JSON client can use ordinary HTTP with its own stable caller metadata:
-
-```text
-X-Agent-ID: stable-runtime-worker-id
-X-Agent-Name: optional display name
-X-Agent-Type: agent | human | system
-X-Swarm-ID: optional coordinator/group ID
-X-LLM-Provider: supplied only when known
-X-LLM-Model: supplied only when known
-```
-
-Clients must treat Time Keeper as an external system of record. They should not infer IDs, manufacture historical timers, or depend on a conversation context window for recovery. `tk doctor` performs a non-mutating local readiness check against `/health`; it is the first command to run when a local CLI or integration cannot connect. The complete contract is in `API.md`; portable HTTP-client guidance is in `AGENT_INTEGRATION.md`; client-specific adapters belong outside the core service.
-
-## Publication posture
-
-Do not make this repository public until a security, dependency, documentation, and release review passes. The current evidence and remaining release gates are in `THREAT_REVIEW.md`. If it is ever published before an open-source license is deliberately chosen, the proprietary `LICENSE` remains in force.
+The HTTP API is documented in `API.md`. Generic client guidance is in `AGENT_INTEGRATION.md`. The VS Code companion lives in `extensions/vscode/` and uses the same local API.
