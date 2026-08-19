@@ -119,7 +119,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			reported_completion_pct REAL NOT NULL DEFAULT 0 CHECK (reported_completion_pct BETWEEN 0 AND 100),
 			calculated_completion_pct REAL NOT NULL DEFAULT 0 CHECK (calculated_completion_pct BETWEEN 0 AND 100),
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			project_alias TEXT NOT NULL DEFAULT '' COLLATE NOCASE
 		)`,
 		"CREATE INDEX IF NOT EXISTS projects_status_updated_idx ON projects(status, updated_at DESC)",
 		`CREATE TABLE IF NOT EXISTS categories (
@@ -325,6 +326,12 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS sprints_subtask_updated_idx ON sprints(subtask_id, updated_at DESC)"); err != nil {
 		return fmt.Errorf("migrate sprints subtask index: %w", err)
 	}
+	if err := s.ensureColumn(ctx, "projects", "project_alias", "TEXT NOT NULL DEFAULT '' COLLATE NOCASE"); err != nil {
+		return fmt.Errorf("migrate projects alias column: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS projects_alias_idx ON projects(project_alias)"); err != nil {
+		return fmt.Errorf("migrate projects alias index: %w", err)
+	}
 	return nil
 }
 
@@ -391,14 +398,15 @@ func (s *Store) CreateProject(ctx context.Context, input model.CreateProjectInpu
 		PaletteID:          input.PaletteID,
 		CreatedAt:          now,
 		UpdatedAt:          now,
+		ProjectAlias:       strings.TrimSpace(input.Alias),
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO projects (
 		project_id, project_number, item_address, project_name, project_description,
-		project_goal, status, priority, palette_id, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		project_goal, status, priority, palette_id, created_at, updated_at, project_alias
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		project.ProjectID, project.ProjectNumber, project.ItemAddress, project.ProjectName,
 		project.ProjectDescription, project.ProjectGoal, project.Status, project.Priority,
-		project.PaletteID, project.CreatedAt.Format(time.RFC3339Nano), project.UpdatedAt.Format(time.RFC3339Nano))
+		project.PaletteID, project.CreatedAt.Format(time.RFC3339Nano), project.UpdatedAt.Format(time.RFC3339Nano), project.ProjectAlias)
 	if err != nil {
 		return model.Project{}, fmt.Errorf("insert project: %w", err)
 	}
@@ -697,7 +705,7 @@ func (s *Store) UpdateProjectStatus(ctx context.Context, projectID string, input
 	}
 	return scanProject(s.db.QueryRowContext(ctx, `SELECT project_id, project_number, item_address, project_name,
 		project_description, project_goal, status, priority, palette_id,
-		reported_completion_pct, calculated_completion_pct, created_at, updated_at
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
 		FROM projects WHERE project_id = ?`, projectID))
 }
 
@@ -734,7 +742,7 @@ func (s *Store) UpdateProjectMetadata(ctx context.Context, projectID string, inp
 	}
 	return scanProject(s.db.QueryRowContext(ctx, `SELECT project_id, project_number, item_address, project_name,
 		project_description, project_goal, status, priority, palette_id,
-		reported_completion_pct, calculated_completion_pct, created_at, updated_at
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
 		FROM projects WHERE project_id = ?`, projectID))
 }
 
@@ -742,7 +750,7 @@ func (s *Store) UpdateProjectMetadata(ctx context.Context, projectID string, inp
 func (s *Store) ProjectExecutionTree(ctx context.Context, projectID string) (model.ExecutionTree, error) {
 	project, err := scanProject(s.db.QueryRowContext(ctx, `SELECT project_id, project_number, item_address, project_name,
 		project_description, project_goal, status, priority, palette_id,
-		reported_completion_pct, calculated_completion_pct, created_at, updated_at
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
 		FROM projects WHERE project_id = ?`, projectID))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -812,7 +820,7 @@ func (s *Store) ProjectExecutionTree(ctx context.Context, projectID string) (mod
 func (s *Store) ListProjects(ctx context.Context) ([]model.Project, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT project_id, project_number, item_address, project_name,
 		project_description, project_goal, status, priority, palette_id,
-		reported_completion_pct, calculated_completion_pct, created_at, updated_at
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
 		FROM projects ORDER BY updated_at DESC, project_number DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
@@ -837,12 +845,81 @@ func (s *Store) ListProjects(ctx context.Context) ([]model.Project, error) {
 	return projects, nil
 }
 
+// ResolveProjectID returns the project ID for an exact alias, or the input if it looks like a P-code/NULL fallback.
+func (s *Store) ResolveProjectID(ctx context.Context, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("project id or alias is required")
+	}
+	if strings.HasPrefix(strings.ToUpper(value), "P-") || value == "pulse" {
+		return value, nil
+	}
+	var projectID string
+	err := s.db.QueryRowContext(ctx, `SELECT project_id FROM projects WHERE project_alias = ? AND project_alias != '' LIMIT 1`, value).Scan(&projectID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return value, nil
+		}
+		return "", fmt.Errorf("resolve project alias: %w", err)
+	}
+	return projectID, nil
+}
+
+// GetProjectByAlias returns a project by alias, or not found.
+func (s *Store) GetProjectByAlias(ctx context.Context, alias string) (model.Project, error) {
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return model.Project{}, ErrNotFound
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT project_id, project_number, item_address, project_name,
+		project_description, project_goal, status, priority, palette_id,
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
+		FROM projects WHERE project_alias = ? AND project_alias != '' LIMIT 1`, alias)
+	project, err := scanProject(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.Project{}, ErrNotFound
+		}
+		return model.Project{}, fmt.Errorf("read project by alias: %w", err)
+	}
+	return project, nil
+}
+
+// UpdateProjectAlias sets or clears a project alias.
+func (s *Store) UpdateProjectAlias(ctx context.Context, projectID string, input model.UpdateProjectAliasInput) (model.Project, error) {
+	alias := strings.TrimSpace(input.Alias)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Project{}, fmt.Errorf("begin alias update: %w", err)
+	}
+	defer tx.Rollback()
+	var exists string
+	if err := tx.QueryRowContext(ctx, "SELECT project_id FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.Project{}, fmt.Errorf("%w: project %s", ErrNotFound, projectID)
+		}
+		return model.Project{}, fmt.Errorf("read project for alias update: %w", err)
+	}
+	now := time.Now().UTC().Round(0)
+	if _, err := tx.ExecContext(ctx, "UPDATE projects SET project_alias = ?, updated_at = ? WHERE project_id = ?", alias, now.Format(time.RFC3339Nano), projectID); err != nil {
+		return model.Project{}, fmt.Errorf("update project alias: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.Project{}, fmt.Errorf("commit alias update: %w", err)
+	}
+	return scanProject(s.db.QueryRowContext(ctx, `SELECT project_id, project_number, item_address, project_name,
+		project_description, project_goal, status, priority, palette_id,
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
+		FROM projects WHERE project_id = ?`, projectID))
+}
+
+// scanProject scans a single project row, including alias.
 func scanProject(scanner interface{ Scan(...any) error }) (model.Project, error) {
 	var project model.Project
 	var createdAt, updatedAt string
 	if err := scanner.Scan(&project.ProjectID, &project.ProjectNumber, &project.ItemAddress, &project.ProjectName,
 		&project.ProjectDescription, &project.ProjectGoal, &project.Status, &project.Priority, &project.PaletteID,
-		&project.ReportedCompletionPct, &project.CalculatedCompletionPct, &createdAt, &updatedAt); err != nil {
+		&project.ReportedCompletionPct, &project.CalculatedCompletionPct, &createdAt, &updatedAt, &project.ProjectAlias); err != nil {
 		return model.Project{}, fmt.Errorf("scan project: %w", err)
 	}
 	var err error
