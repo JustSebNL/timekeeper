@@ -19,6 +19,7 @@ type Project struct {
 	CalculatedCompletionPct float64   `json:"calculated_completion_pct"`
 	CreatedAt               time.Time `json:"created_at"`
 	UpdatedAt               time.Time `json:"updated_at"`
+	ProjectAlias            string    `json:"project_alias,omitempty"`
 }
 
 // CreateProjectInput holds client-supplied top-level project fields.
@@ -28,6 +29,7 @@ type CreateProjectInput struct {
 	Goal        string `json:"goal"`
 	Priority    string `json:"priority"`
 	PaletteID   int    `json:"palette_id"`
+	Alias       string `json:"alias"`
 }
 
 // UpdateProjectMetadataInput holds editable durable top-level Project context.
@@ -39,4 +41,9 @@ type UpdateProjectMetadataInput struct {
 // UpdateProjectStatusInput holds an explicit top-level project workflow state.
 type UpdateProjectStatusInput struct {
 	Status string `json:"status"`
+}
+
+// UpdateProjectAliasInput holds an optional human-readable alias for CLI resolution.
+type UpdateProjectAliasInput struct {
+	Alias string `json:"alias"`
 }

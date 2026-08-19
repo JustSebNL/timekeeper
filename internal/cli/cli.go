@@ -45,7 +45,7 @@ func ResolveBaseURL(args []string, environmentURL string) (string, []string, err
 // Run executes a framework-neutral Time Keeper CLI command.
 func Run(args []string, out, errOut io.Writer, baseURL string) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		_, _ = fmt.Fprint(out, "Usage: tk [--url <api-base-url>] <command>\n\nCommands:\n  list                                        List projects\n  tree <project-id>                           Show an executable hierarchy\n  export <project-id>                         Print a portable Project snapshot as JSON\n  summary <project-id>                        Show a durable Sprint operational snapshot\n  pulse                                       Show local Sprint attention needing follow-up\n  agent progress <id> <lease> [sprint-id] [guardian-url]\n                                              Renew an agent material-progress lease and optionally register a numeric-loopback Guardian\n  agent nudges <id>                           List durable unacknowledged Guardian nudges\n  agent history <id>                          List durable Guardian delivery/recovery history\n  agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge and renew the lease\n  events <project-id>                         List immutable Project activity\n  note <project-id> <content>                 Record a Project note\n  notes <project-id>                          List Project notes\n  p new <name>                                Create a Project\n  p edit <project-id> <goal> <description>    Update Project context\n  p status <project-id> <status>              Set Project status\n  c new <project-id> <name> [parent-category-id] Create a Category\n  c edit <category-id> <goal> <description>    Update Category context\n  c status <category-id> <status>              Set Category status\n  t edit <task-id> <goal> <description>        Update Task context\n  t new <project-id> <category-id> <name> <estimate>\n                                              Create a Task\n  t status <task-id> <status>                 Set Task status\n  st new <task-id> <name> <estimate>          Create a Subtask\n  st status <subtask-id> <status>              Set Subtask status\n  sp new <task|subtask> <owner-id> <name> <estimate> [buffer-percent]\n                                              Create a Sprint\n  sp <start|hold|resume|complete|cancel> <sprint-id> [reason] Transition a Sprint; hold/cancel require a reason\n  sp reason <sprint-id> <reason>                Update why an already-held Sprint is blocked\n  sp next <project-id>                         Atomically claim the oldest runnable Sprint\n  sp attempts <sprint-id>                      List immutable retrieval-attempt evidence\n  sp attempt <sprint-id> <reason>              Record a failed retrieval attempt (fourth makes TimedOut)\n  sp extend <sprint-id> <duration> <reason>   Record justified additional planned time\n  sp extensions <sprint-id>                   List immutable extension history\n  sp entries <sprint-id>                      List recorded work/hold intervals\n  llm new <name> <provider> <base-url> <model> [system-prompt]\n                                              Register a loopback LLM pipeline\n  plan <generate|apply> <project-id> <pipeline-id|draft-id>\n                                              Generate or apply a reviewed planning draft\n  plan list <project-id>                       List planning drafts\n  doctor                                      Check whether Time Keeper is reachable\n")
+		_, _ = fmt.Fprint(out, "Usage: tk [--url <api-base-url>] <command>\n\nCommands:\n  list                                        List projects\n  tree <project-id>                           Show an executable hierarchy\n  export <project-id>                         Print a portable Project snapshot as JSON\n  summary <project-id>                        Show a durable Sprint operational snapshot\n  pulse                                       Show local Sprint attention needing follow-up\n  agent progress <id> <lease> [sprint-id] [guardian-url]\n                                              Renew an agent material-progress lease and optionally register a numeric-loopback Guardian\n  agent nudges <id>                           List durable unacknowledged Guardian nudges\n  agent history <id>                          List durable Guardian delivery/recovery history\n  agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge and renew the lease\n  events <project-id>                         List immutable Project activity\n  note <project-id> <content>                 Record a Project note\n  notes <project-id>                          List Project notes\n  p new <name>                                Create a Project\n  p edit <project-id> <goal> <description>    Update Project context\n  p status <project-id> <status>              Set Project status\n  p alias <project-id> <alias>                Set Project alias\n  p unalias <project-id>                      Clear Project alias\n  aliases                                     List project aliases\n  c new <project-id> <name> [parent-category-id] Create a Category\n  c edit <category-id> <goal> <description>    Update Category context\n  c status <category-id> <status>              Set Category status\n  t edit <task-id> <goal> <description>        Update Task context\n  t new <project-id> <category-id> <name> <estimate>\n                                              Create a Task\n  t status <task-id> <status>                 Set Task status\n  st new <task-id> <name> <estimate>          Create a Subtask\n  st status <subtask-id> <status>              Set Subtask status\n  sp new <task|subtask> <owner-id> <name> <estimate> [buffer-percent]\n                                              Create a Sprint\n  sp <start|hold|resume|complete|cancel> <sprint-id> [reason] Transition a Sprint; hold/cancel require a reason\n  sp reason <sprint-id> <reason>                Update why an already-held Sprint is blocked\n  sp next <project-id>                         Atomically claim the oldest runnable Sprint\n  sp attempts <sprint-id>                      List immutable retrieval-attempt evidence\n  sp attempt <sprint-id> <reason>              Record a failed retrieval attempt (fourth makes TimedOut)\n  sp extend <sprint-id> <duration> <reason>   Record justified additional planned time\n  sp extensions <sprint-id>                   List immutable extension history\n  sp entries <sprint-id>                      List recorded work/hold intervals\n  llm new <name> <provider> <base-url> <model> [system-prompt]\n                                              Register a loopback LLM pipeline\n  plan <generate|apply> <project-id> <pipeline-id|draft-id>\n                                              Generate or apply a reviewed planning draft\n  plan list <project-id>                       List planning drafts\n  doctor                                      Check whether Time Keeper is reachable\n")
 		return 0
 	}
 	switch args[0] {
@@ -83,6 +83,8 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return tree(args[1:], out, errOut, baseURL)
 	case "doctor":
 		return doctor(out, errOut, baseURL)
+	case "aliases":
+		return listAliases(out, errOut, baseURL)
 	default:
 		_, _ = fmt.Fprintf(errOut, "unknown command %q\nRun tk help for usage.\n", args[0])
 		return 2
@@ -1234,6 +1236,12 @@ func project(args []string, out, errOut io.Writer, baseURL string) int {
 	if len(args) == 3 && args[0] == "status" && strings.TrimSpace(args[1]) != "" && strings.TrimSpace(args[2]) != "" {
 		return projectStatus(args[1], args[2], out, errOut, baseURL)
 	}
+	if len(args) == 3 && args[0] == "alias" && strings.TrimSpace(args[1]) != "" {
+		return projectAlias(args[1:], out, errOut, baseURL)
+	}
+	if len(args) == 2 && args[0] == "unalias" && strings.TrimSpace(args[1]) != "" {
+		return projectUnalias(args[1:], out, errOut, baseURL)
+	}
 	if len(args) != 2 || args[0] != "new" || strings.TrimSpace(args[1]) == "" {
 		_, _ = fmt.Fprintln(errOut, "usage: tk p new <project-name>")
 		return 2
@@ -1315,7 +1323,7 @@ func projectEdit(projectID, goal, description string, out, errOut io.Writer, bas
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/metadata"
 	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "update Project metadata request: %v\n", err)
+		_, _ = fmt.Fprintln(errOut, "update Project metadata request: ", err)
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
@@ -1338,7 +1346,151 @@ func projectEdit(projectID, goal, description string, out, errOut io.Writer, bas
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(out, "%s\t%s\t%s\n", project.ProjectID, project.Goal, project.Description)
+	_, _ = fmt.Fprintf(out, "%s	%s	%s\n", project.ProjectID, project.Goal, project.Description)
+	return 0
+}
+
+func resolveProjectID(baseURL, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("project id or alias is required")
+	}
+	upper := strings.ToUpper(value)
+	if strings.HasPrefix(upper, "P-") || value == "pulse" {
+		return value, nil
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects"
+	response, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("Time Keeper API unavailable at %s: %w", url, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Time Keeper API returned %s", response.Status)
+	}
+	var payload struct {
+		Items []struct {
+			ProjectID   string `json:"project_id"`
+			ProjectName string `json:"project_name"`
+			ProjectAlias string `json:"project_alias"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return "", fmt.Errorf("Time Keeper API returned invalid JSON: %w", err)
+	}
+	needle := strings.TrimSpace(value)
+	for _, item := range payload.Items {
+		if item.ProjectAlias != "" && item.ProjectAlias == needle {
+			return item.ProjectID, nil
+		}
+	}
+	return value, nil
+}
+
+func projectAlias(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) != 2 || strings.TrimSpace(args[0]) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage: tk p alias <project-id> <alias>")
+		return 2
+	}
+	resolvedID, err := resolveProjectID(baseURL, args[0])
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, err)
+		return 1
+	}
+	body, err := json.Marshal(map[string]string{"alias": args[1]})
+	if err != nil {
+		return 1
+	}
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + resolvedID + "/alias"
+	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "create alias request: ", err)
+		return 1
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		return 1
+	}
+	var project struct {
+		ProjectID    string `json:"project_id"`
+		ProjectAlias string `json:"project_alias"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&project); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(out, "%s	%s\n", project.ProjectID, project.ProjectAlias)
+	return 0
+}
+
+func projectUnalias(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage: tk p unalias <project-id>")
+		return 2
+	}
+	resolvedID, err := resolveProjectID(baseURL, args[0])
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, err)
+		return 1
+	}
+	body, err := json.Marshal(map[string]string{"alias": ""})
+	if err != nil {
+		return 1
+	}
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + resolvedID + "/alias"
+	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "clear alias request: ", err)
+		return 1
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		return 1
+	}
+	_, _ = fmt.Fprintf(out, "%s	\n", resolvedID)
+	return 0
+}
+
+func listAliases(out, errOut io.Writer, baseURL string) int {
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects"
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Get(url)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		return 1
+	}
+	var payload struct {
+		Items []model.Project `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
+		return 1
+	}
+	for _, project := range payload.Items {
+		if strings.TrimSpace(project.ProjectAlias) != "" {
+			_, _ = fmt.Fprintf(out, "%s	%s	%s\n", project.ProjectID, project.ProjectAlias, project.ProjectName)
+		}
+	}
 	return 0
 }
 

@@ -50,6 +50,7 @@ func NewWithRuntime(database *store.Store, runtime RuntimeStatus) http.Handler {
 	mux.HandleFunc("POST /api/v1/projects", createProject(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/metadata", updateProjectMetadata(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/status", updateProjectStatus(database))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/alias", updateProjectAlias(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/export", projectExport(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/execution-tree", projectExecutionTree(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/operational-summary", projectOperationalSummary(database))
@@ -320,6 +321,24 @@ func updateProjectStatus(database *store.Store) http.HandlerFunc {
 			return
 		}
 		project, err := database.UpdateProjectStatus(r.Context(), r.PathValue("projectID"), input)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, project)
+	}
+}
+
+func updateProjectAlias(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input model.UpdateProjectAliasInput
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_project_alias", "Project alias input must be valid JSON.")
+			return
+		}
+		project, err := database.UpdateProjectAlias(r.Context(), r.PathValue("projectID"), input)
 		if err != nil {
 			writeStoreError(w, err)
 			return
