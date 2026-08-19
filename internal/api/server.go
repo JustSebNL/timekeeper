@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/JustSebNL/timekeeper/internal/lifecycle"
 	"github.com/JustSebNL/timekeeper/internal/model"
@@ -17,12 +18,34 @@ import (
 	"github.com/JustSebNL/timekeeper/internal/store"
 )
 
-// New returns the versioned HTTP API handler shared by every Time Keeper client.
+// RuntimeStatus reports opt-in local runtime capabilities. It is informational:
+// the Store remains authoritative for durable work and recovery evidence.
+type RuntimeStatus struct {
+	PulseGuardianEnabled         bool  `json:"pulse_guardian_enabled"`
+	PulseGuardianIntervalSeconds int64 `json:"pulse_guardian_interval_seconds"`
+	// RecoveryPolicy is the fixed, allowlist-described recovery behaviour the
+	// local receiver performs. It is evidence, not an executable capability.
+	RecoveryPolicy string `json:"recovery_policy,omitempty"`
+}
+
+// New returns the API with no process-local recovery worker assumed.
 func New(database *store.Store) http.Handler {
+	return NewWithRuntime(database, RuntimeStatus{})
+}
+
+// NewWithRuntime exposes process-local runtime configuration without coupling the
+// Store to server flags or a framework-specific process supervisor.
+func NewWithRuntime(database *store.Store, runtime RuntimeStatus) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health)
 	mux.HandleFunc("GET /api/v1/llm-pipelines", listLLMPipelines(database))
 	mux.HandleFunc("POST /api/v1/llm-pipelines", createLLMPipeline(database))
+	mux.HandleFunc("GET /api/v1/pulse", pulse(database))
+	mux.HandleFunc("GET /api/v1/guardian/status", guardianStatus(database, runtime))
+	mux.HandleFunc("POST /api/v1/agents/{agentID}/progress", reportAgentProgress(database))
+	mux.HandleFunc("GET /api/v1/agents/{agentID}/nudges/history", listPulseNudgeHistory(database))
+	mux.HandleFunc("GET /api/v1/agents/{agentID}/nudges", listPendingPulseNudges(database))
+	mux.HandleFunc("POST /api/v1/agents/{agentID}/nudges/{nudgeID}/ack", acknowledgePulseNudge(database))
 	mux.HandleFunc("GET /api/v1/projects", listProjects(database))
 	mux.HandleFunc("POST /api/v1/projects", createProject(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/metadata", updateProjectMetadata(database))
@@ -30,6 +53,8 @@ func New(database *store.Store) http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/export", projectExport(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/execution-tree", projectExecutionTree(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/operational-summary", projectOperationalSummary(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/attention", projectAttention(database))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/sprints/claim-next", claimNextSprint(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/events", listProjectEvents(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/planning-drafts/{draftID}/apply", applyPlanningDraft(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/planning-drafts/generate", generatePlanningDraft(database))
@@ -56,6 +81,10 @@ func New(database *store.Store) http.Handler {
 	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/hold", transitionSprint(database, "hold"))
 	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/resume", transitionSprint(database, "resume"))
 	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/complete", transitionSprint(database, "complete"))
+	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/hold-reason", updateSprintHoldReason(database))
+	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/cancel", transitionSprint(database, "cancel"))
+	mux.HandleFunc("GET /api/v1/sprints/{sprintID}/retrieval-attempts", listSprintRetrievalAttempts(database))
+	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/retrieval-attempts", recordSprintRetrievalAttempt(database))
 	mux.HandleFunc("GET /api/v1/sprints/{sprintID}/extensions", listSprintTimeExtensions(database))
 	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/extensions", addSprintTimeExtension(database))
 	mux.HandleFunc("GET /api/v1/sprints/{sprintID}/time-entries", listTimeEntries(database))
@@ -96,6 +125,110 @@ func requireJSONForMutations(next http.Handler) http.Handler {
 
 func health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func guardianStatus(database *store.Store, runtime RuntimeStatus) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		registered, err := database.RegisteredGuardianURLs(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "guardian_status_failed", "Could not read registered Guardian callbacks.")
+			return
+		}
+		status := map[string]any{
+			"pulse_guardian_enabled":          runtime.PulseGuardianEnabled,
+			"pulse_guardian_interval_seconds": runtime.PulseGuardianIntervalSeconds,
+			"recovery_policy":                 runtime.RecoveryPolicy,
+			"registered_callbacks":            registered,
+		}
+		writeJSON(w, http.StatusOK, status)
+	}
+}
+
+// pulse returns local, read-only attention items. Delivery and scheduling remain the caller's responsibility.
+func pulse(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		value, err := database.PulseAt(r.Context(), time.Now().UTC().Round(0))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "pulse_failed", "Could not calculate the local Pulse.")
+			return
+		}
+		writeJSON(w, http.StatusOK, value)
+	}
+}
+
+func reportAgentProgress(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input model.AgentPulseProgressInput
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_agent_progress", "Agent progress input must be valid JSON.")
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			writeError(w, http.StatusBadRequest, "invalid_agent_progress", "Agent progress input must contain one JSON object.")
+			return
+		}
+		progress, err := database.ReportAgentProgress(r.Context(), r.PathValue("agentID"), input)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_agent_progress", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, progress)
+	}
+}
+
+func listPendingPulseNudges(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		items, err := database.ListPendingPulseNudges(r.Context(), r.PathValue("agentID"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_agent_id", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+func listPulseNudgeHistory(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		items, err := database.ListPulseNudgeHistory(r.Context(), r.PathValue("agentID"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_agent_id", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+func acknowledgePulseNudge(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		var input map[string]json.RawMessage
+		if err := decoder.Decode(&input); err != nil || input == nil || len(input) != 0 {
+			writeError(w, http.StatusBadRequest, "invalid_pulse_nudge_acknowledgement", "Pulse nudge acknowledgement must be an empty JSON object.")
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			writeError(w, http.StatusBadRequest, "invalid_pulse_nudge_acknowledgement", "Pulse nudge acknowledgement must contain one JSON object.")
+			return
+		}
+		nudgeID, err := strconv.ParseInt(r.PathValue("nudgeID"), 10, 64)
+		if err != nil || nudgeID < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_pulse_nudge", "Nudge ID must be a positive integer.")
+			return
+		}
+		nudge, err := database.AcknowledgePulseNudge(r.Context(), nudgeID, r.PathValue("agentID"))
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "pulse_nudge_not_found", "Pulse nudge was not found.")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_pulse_nudge_acknowledgement", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, nudge)
+	}
 }
 
 func listLLMPipelines(database *store.Store) http.HandlerFunc {
@@ -259,6 +392,21 @@ func projectOperationalSummary(database *store.Store) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, summary)
+	}
+}
+
+func projectAttention(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		attention, err := database.ProjectAttention(r.Context(), r.PathValue("projectID"))
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "project_not_found", "Project was not found.")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "project_attention_failed", "Could not load project attention.")
+			return
+		}
+		writeJSON(w, http.StatusOK, attention)
 	}
 }
 
@@ -697,6 +845,21 @@ func createSubtaskSprint(database *store.Store) http.HandlerFunc {
 	}
 }
 
+func claimNextSprint(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sprint, err := database.ClaimNextSprint(r.Context(), r.PathValue("projectID"))
+		if err != nil {
+			if errors.Is(err, store.ErrNoRunnableSprint) {
+				writeError(w, http.StatusConflict, "no_runnable_sprint", "This Project has no runnable Open Sprint.")
+				return
+			}
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, sprint)
+	}
+}
+
 func transitionSprint(database *store.Store, action string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
@@ -730,6 +893,73 @@ func transitionSprint(database *store.Store, action string) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, sprint)
+	}
+}
+
+func updateSprintHoldReason(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Reason string `json:"reason"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_hold_reason", "Hold reason input must be valid JSON.")
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			writeError(w, http.StatusBadRequest, "invalid_hold_reason", "Hold reason input must contain one JSON object.")
+			return
+		}
+		sprint, err := database.UpdateSprintHoldReason(r.Context(), r.PathValue("sprintID"), input.Reason)
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "sprint_not_found", "Sprint was not found.")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusConflict, "invalid_hold_reason", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, sprint)
+	}
+}
+
+func recordSprintRetrievalAttempt(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Reason string `json:"reason"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_retrieval_attempt", "Retrieval attempt input must be valid JSON.")
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			writeError(w, http.StatusBadRequest, "invalid_retrieval_attempt", "Retrieval attempt input must contain one JSON object.")
+			return
+		}
+		attempt, err := database.RecordSprintRetrievalAttempt(r.Context(), r.PathValue("sprintID"), input.Reason)
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "sprint_not_found", "Sprint was not found.")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusConflict, "invalid_retrieval_attempt", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, attempt)
+	}
+}
+
+func listSprintRetrievalAttempts(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		items, err := database.ListSprintRetrievalAttempts(r.Context(), r.PathValue("sprintID"))
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
 }
 

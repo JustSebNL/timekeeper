@@ -4,6 +4,8 @@
       'use strict';
       const api = '/api/v1/projects';
       const projects = document.querySelector('#projects');
+      const pulseTarget = document.querySelector('#pulse');
+      const guardianTarget = document.querySelector('#guardian');
       const message = document.querySelector('#message');
       const connection = document.querySelector('#connection');
       const form = document.querySelector('#project-form');
@@ -107,11 +109,23 @@
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'sprint-action';
-        button.textContent = action;
+        button.textContent = action === 'hold' ? 'Place On Hold' : action;
         button.addEventListener('click', async () => {
+          let reason = '';
+          if (action === 'hold' || action === 'cancel') {
+            const verb = action === 'hold' ? 'On Hold' : 'cancelled';
+            const supplied = window.prompt('Why is this Sprint ' + verb + '? This can be any blocker: dependency, decision, user input, or another constraint.', action === 'hold' ? (sprint.hold_reason || '') : '');
+            if (supplied === null) return;
+            reason = supplied.trim();
+            if (!reason) {
+              message.className = 'error';
+              message.textContent = action === 'hold' ? 'Placing a Sprint On Hold requires a reason.' : 'Cancelling a Sprint requires a reason.';
+              return;
+            }
+          }
           button.disabled = true;
           try {
-            await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/' + action, { method: 'POST', body: '{}' });
+            await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/' + action, { method: 'POST', body: JSON.stringify({reason}) });
             await refresh();
           } catch (error) {
             message.className = 'error';
@@ -123,12 +137,54 @@
         return button;
       }
 
+      function sprintHoldReasonButton(sprint, refresh) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'sprint-action';
+        button.textContent = 'Update hold reason';
+        button.addEventListener('click', async () => {
+          const supplied = window.prompt('Why is this Sprint still On Hold?', sprint.hold_reason || '');
+          if (supplied === null) return;
+          const reason = supplied.trim();
+          if (!reason) { message.className = 'error'; message.textContent = 'An On Hold Sprint needs a reason.'; return; }
+          button.disabled = true;
+          try { await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/hold-reason', { method: 'POST', body: JSON.stringify({reason}) }); await refresh(); }
+          catch (error) { message.className = 'error'; message.textContent = error.message; }
+          finally { button.disabled = false; }
+        });
+        return button;
+      }
+
       function sprintExtensionPanel(sprint, refresh) {
         const panel = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Extend Sprint'; const form = document.createElement('form');
         const duration = document.createElement('input'); duration.required = true; duration.placeholder = 'Additional minutes'; duration.type = 'number'; duration.min = '1'; duration.step = '1'; duration.setAttribute('aria-label', 'Additional minutes');
         const reason = document.createElement('textarea'); reason.required = true; reason.maxLength = 10000; reason.placeholder = 'Extension reason'; reason.setAttribute('aria-label', 'Extension reason'); const submit = document.createElement('button'); submit.type = 'submit'; submit.textContent = 'Record extension'; const feedback = document.createElement('span'); feedback.className = 'inline-feedback'; const history = document.createElement('ul');
         async function loadHistory() { const response = await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/extensions'); history.replaceChildren(); for (const extension of response.items || []) { const item = document.createElement('li'); item.textContent = '+' + extension.duration_seconds + 's · ' + extension.reason; history.append(item); } }
         form.append(duration, reason, submit, feedback); form.addEventListener('submit', async event => { event.preventDefault(); submit.disabled = true; try { await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/extensions', { method: 'POST', body: JSON.stringify({duration_seconds: Number(duration.value) * 60, reason: reason.value.trim()}) }); await loadHistory(); await refresh(); } catch (error) { feedback.className = 'inline-feedback error'; feedback.textContent = error.message; } finally { submit.disabled = false; } }); panel.addEventListener('toggle', () => { if (panel.open) { loadHistory().catch(error => { feedback.className = 'inline-feedback error'; feedback.textContent = error.message; }); } }); panel.append(summary, form, history); return panel;
+      }
+
+      function sprintRetrievalAttemptPanel(sprint, refresh) {
+        const panel = document.createElement('details');
+        const summary = document.createElement('summary'); summary.textContent = 'Retrieval attempts';
+        const form = document.createElement('form');
+        const reason = document.createElement('textarea'); reason.required = true; reason.maxLength = 10000; reason.placeholder = 'Why this retrieval attempt did not produce material progress'; reason.setAttribute('aria-label', 'Retrieval attempt reason');
+        const submit = document.createElement('button'); submit.type = 'submit'; submit.textContent = 'Record attempt';
+        const feedback = document.createElement('span'); feedback.className = 'inline-feedback';
+        const history = document.createElement('ul');
+        async function loadHistory() {
+          const response = await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/retrieval-attempts');
+          history.replaceChildren();
+          for (const attempt of response.items || []) { const item = document.createElement('li'); item.textContent = 'Attempt ' + attempt.attempt_number + '/4 · ' + attempt.reason + (attempt.timed_out ? ' · TimedOut' : ''); history.append(item); }
+        }
+        form.append(reason, submit, feedback);
+        form.addEventListener('submit', async event => {
+          event.preventDefault(); submit.disabled = true;
+          try { const result = await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/retrieval-attempts', { method: 'POST', body: JSON.stringify({reason: reason.value.trim()}) }); reason.value = ''; await loadHistory(); if (result.timed_out) feedback.textContent = 'Fourth attempt recorded. This Sprint is now TimedOut.'; await refresh(); }
+          catch (error) { feedback.className = 'inline-feedback error'; feedback.textContent = error.message; }
+          finally { submit.disabled = false; }
+        });
+        panel.addEventListener('toggle', () => { if (panel.open) loadHistory().catch(error => { feedback.className = 'inline-feedback error'; feedback.textContent = error.message; }); });
+        panel.append(summary, form, history); return panel;
       }
 
       function sprintTimeEntryPanel(sprint) {
@@ -161,15 +217,18 @@
 
       function appendSprintList(parent, entries, prefix, refresh) {
         if (!entries.length) return;
-        const actions = { Open: ['start'], Active: ['hold', 'complete'], 'On Hold': ['resume'] };
+        const actions = { Open: ['start', 'hold', 'cancel'], Active: ['hold', 'complete', 'cancel'], 'On Hold': ['resume', 'cancel'] };
         const items = document.createElement('ul');
         for (const sprint of entries) {
           const item = document.createElement('li');
           const text = document.createElement('span');
-          text.textContent = prefix + ' ' + label(sprint) + ' · ' + sprint.status;
+          const holdDetail = sprint.status === 'On Hold' && sprint.hold_reason ? ' · On Hold: ' + sprint.hold_reason : '';
+          text.textContent = prefix + ' ' + label(sprint) + ' · ' + sprint.status + holdDetail;
           item.append(text);
           for (const action of actions[sprint.status] || []) item.append(sprintActionButton(sprint, action, refresh));
+          if (sprint.status === 'On Hold') item.append(sprintHoldReasonButton(sprint, refresh));
           item.append(sprintExtensionPanel(sprint, refresh));
+          if (sprint.status !== 'Completed' && sprint.status !== 'TimedOut') item.append(sprintRetrievalAttemptPanel(sprint, refresh));
           item.append(sprintTimeEntryPanel(sprint));
           items.append(item);
         }
@@ -374,10 +433,10 @@
         return form;
       }
 
-      function renderExecutionTree(tree, summary, notes, events, pipelines, drafts, refresh) {
+      function renderExecutionTree(tree, summary, attention, notes, events, pipelines, drafts, refresh) {
         const root = document.createElement('div');
         root.className = 'tree';
-        root.append(renderProjectStatus(tree.project, refresh), renderProjectMetadata(tree.project, refresh), renderOperationalSummary(summary), renderPlanningDrafts(tree.project.project_id, pipelines, drafts, refresh), renderProjectEvents(events), renderProjectNotes(tree.project.project_id, notes, refresh));
+        root.append(renderProjectStatus(tree.project, refresh), renderProjectMetadata(tree.project, refresh), renderOperationalSummary(summary), renderProjectAttention(attention), renderPlanningDrafts(tree.project.project_id, pipelines, drafts, refresh), renderProjectEvents(events), renderProjectNotes(tree.project.project_id, notes, refresh));
         root.append(createInlineForm({
           namePlaceholder: 'New category', submitLabel: 'Add category', estimate: false,
           endpoint: api + '/' + encodeURIComponent(tree.project.project_id) + '/categories',
@@ -449,15 +508,16 @@
         button.disabled = true;
         target.textContent = 'Loading execution tree…';
         try {
-          const [tree, summary, noteResponse, eventResponse, pipelineResponse, draftResponse] = await Promise.all([
+          const [tree, summary, attention, noteResponse, eventResponse, pipelineResponse, draftResponse] = await Promise.all([
             request(api + '/' + encodeURIComponent(projectID) + '/execution-tree'),
             request(api + '/' + encodeURIComponent(projectID) + '/operational-summary'),
+            request(api + '/' + encodeURIComponent(projectID) + '/attention'),
             request(api + '/' + encodeURIComponent(projectID) + '/notes'),
             request(api + '/' + encodeURIComponent(projectID) + '/events'),
             request('/api/v1/llm-pipelines'),
             request(api + '/' + encodeURIComponent(projectID) + '/planning-drafts')
           ]);
-          target.replaceChildren(renderExecutionTree(tree, summary, noteResponse.items || [], eventResponse.items || [], pipelineResponse.items || [], draftResponse.items || [], () => loadExecutionTree(projectID, target, button)));
+          target.replaceChildren(renderExecutionTree(tree, summary, attention.items || [], noteResponse.items || [], eventResponse.items || [], pipelineResponse.items || [], draftResponse.items || [], async () => { await loadExecutionTree(projectID, target, button); await loadPulse(); }));
         } catch (error) {
           target.textContent = error.message;
         } finally {
@@ -493,7 +553,83 @@
         table.append(body); projects.append(table);
       }
 
+      function renderPulse(snapshot) {
+        const attention = Array.isArray(snapshot.attention) ? snapshot.attention : [];
+        pulseTarget.replaceChildren();
+        if (!attention.length) {
+          pulseTarget.className = 'empty';
+          pulseTarget.textContent = 'Clear. No active Sprint has exceeded its declared plan.';
+          return;
+        }
+        pulseTarget.className = 'pulse-attention';
+        const list = document.createElement('ul');
+        for (const item of attention) {
+          const row = document.createElement('li');
+          row.textContent = item.name + ' · ' + item.sprint_id + ' · ' + item.overdue_duration_seconds + 's overdue (' + item.active_duration_seconds + 's active / ' + item.planned_duration_seconds + 's planned)';
+          list.append(row);
+        }
+        const next = document.createElement('p');
+        next.className = 'status';
+        next.textContent = 'Suggested next local check: ' + snapshot.recommended_next_pulse_seconds + 's.';
+        pulseTarget.append(list, next);
+      }
+
+      async function loadGuardianStatus() {
+        try {
+          const status = await request('/api/v1/guardian/status');
+          guardianTarget.replaceChildren();
+          if (!status.pulse_guardian_enabled) {
+            const note = document.createElement('div');
+            note.className = 'empty';
+            note.textContent = 'Disabled. Start with TIMEKEEPER_PULSE_GUARDIAN_INTERVAL=5m to evaluate registered local recovery leases.';
+            guardianTarget.append(note);
+            return;
+          }
+          const enabled = document.createElement('div');
+          enabled.className = 'status';
+          enabled.textContent = 'Enabled · checks registered progress leases every ' + status.pulse_guardian_interval_seconds + 's.';
+          guardianTarget.append(enabled);
+
+          const policy = document.createElement('div');
+          policy.className = 'recovery-policy';
+          policy.textContent = 'Recovery policy: ' + (status.recovery_policy || 'unspecified');
+          guardianTarget.append(policy);
+
+          const callbacks = status.registered_callbacks || [];
+          const cbLabel = document.createElement('div');
+          cbLabel.className = 'recovery-callbacks';
+          if (callbacks.length === 0) {
+            cbLabel.className = 'empty warning';
+            cbLabel.textContent = 'No local recovery callback registered. Detection runs, but no recovery action will be taken.';
+          } else {
+            cbLabel.textContent = 'Registered recovery callbacks:';
+            const list = document.createElement('ul');
+            for (const cb of callbacks) {
+              const item = document.createElement('li');
+              item.textContent = cb.agent_id + ' → ' + cb.guardian_url;
+              list.append(item);
+            }
+            cbLabel.append(list);
+          }
+          guardianTarget.append(cbLabel);
+        } catch (error) {
+          guardianTarget.className = 'empty error';
+          guardianTarget.textContent = error.message;
+        }
+      }
+
+      async function loadPulse() {
+        try {
+          renderPulse(await request('/api/v1/pulse'));
+        } catch (error) {
+          pulseTarget.className = 'empty error';
+          pulseTarget.textContent = error.message;
+        }
+      }
+
       async function load() {
+        void loadPulse();
+        void loadGuardianStatus();
         try { const data = await request(api); render(data.items || []); connection.textContent = 'Local SQLite API connected'; }
         catch (error) { projects.textContent = error.message; projects.className = 'empty'; connection.textContent = 'Local API unavailable'; }
       }
@@ -508,11 +644,28 @@
         finally { submit.disabled = false; }
       });
       load();
+      function renderProjectAttention(items) {
+        const section = document.createElement('section');
+        const title = document.createElement('strong'); title.textContent = 'Attention beyond Pulse';
+        section.append(title);
+        if (!items.length) {
+          const clear = document.createElement('div'); clear.className = 'empty'; clear.textContent = 'Clear. No held, TimedOut, or stranded Open Sprint needs a decision.';
+          section.append(clear); return section;
+        }
+        const list = document.createElement('ul');
+        for (const item of items) {
+          const row = document.createElement('li');
+          row.textContent = item.kind + ' · ' + item.name + ' · ' + item.sprint_id + (item.hold_reason ? ' · ' + item.hold_reason : '') + ' · ' + item.detail;
+          list.append(row);
+        }
+        section.append(list); return section;
+      }
+
       function renderOperationalSummary(summary) {
         const section = document.createElement('section');
         const title = document.createElement('strong'); title.textContent = 'Operational snapshot';
         const detail = document.createElement('div');
-        detail.textContent = summary.total_sprints + ' Sprint(s) · ' + summary.active_sprints + ' active · ' + summary.held_sprints + ' on hold · ' + summary.estimated_duration_seconds + 's estimate + ' + summary.buffer_duration_seconds + 's buffer + ' + summary.extension_duration_seconds + 's extensions = ' + summary.planned_duration_seconds + 's planned · ' + summary.recorded_work_seconds + 's recorded work · ' + summary.recorded_hold_seconds + 's recorded hold';
+        detail.textContent = summary.total_sprints + ' Sprint(s) · ' + summary.active_sprints + ' active · ' + summary.held_sprints + ' on hold · ' + summary.timed_out_sprints + ' TimedOut · ' + summary.cancelled_sprints + ' cancelled · ' + summary.estimated_duration_seconds + 's estimate + ' + summary.buffer_duration_seconds + 's buffer + ' + summary.extension_duration_seconds + 's extensions = ' + summary.planned_duration_seconds + 's planned · ' + summary.recorded_work_seconds + 's recorded work · ' + summary.recorded_hold_seconds + 's recorded hold';
         section.append(title, detail); return section;
       }
       function renderProjectEvents(events) {

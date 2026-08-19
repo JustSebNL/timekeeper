@@ -4,7 +4,7 @@ Review date: 2026-08-10
 
 ## Scope
 
-This review covers the local Go HTTP server, SQLite authority, dashboard, `tk` CLI, VS Code companion, portable export, SQLite backup mode, and installer posture in the current source tree.
+This review covers the local Go HTTP server, SQLite authority, read-only Sprint Pulse attention endpoint, default-on Pulse Guardian delivery loop, dashboard, `tk` CLI, VS Code companion, portable export, SQLite backup mode, and installer posture in the current source tree.
 
 ## Security boundary
 
@@ -23,6 +23,8 @@ Consequences:
 | Asset | Current protection | Remaining responsibility |
 |---|---|---|
 | SQLite state | parameterized SQL, foreign keys, WAL, SQLite snapshot backup | protect the database directory with OS permissions and backups at rest |
+| Sprint Pulse attention | a `GET`-only calculation from durable Sprint history; no notification rows, background worker, outbound HTTP, or delivery credentials | callers decide whether and when to poll; Pulse data remains inside the existing loopback-only local-process boundary |
+| Pulse Guardian | default-on periodic lease evaluation (5m; override via `-pulse-guardian-interval`, disable with empty interval); durable Pending/Acknowledged nudge and delivery evidence; callback URL restricted to plain HTTP numeric loopback with an explicit port; 3-second timeout; redirects refused; a 2xx response plus `X-Timekeeper-Pulse-Accepted: v1` is required; confirmed callbacks are not repeatedly delivered before acknowledgement | same-user processes can still register/update a Guardian; callback acceptance proves only receipt, not recovery; registered local Guardian must own any interrupt/restart action and acknowledge only after recovery |
 | Browser-rendered Project data | explicit DOM construction with `textContent`; dashboard contract forbids `innerHTML`; HTML, CSS, and JS are static same-origin assets; CSP constrains scripts/styles/connections to same origin and disables object/base/frame embedding | keep untrusted data out of markup/attributes and preserve the explicit asset allowlist |
 | Mutation endpoints require `application/json`, cap bodies at 1 MiB, and reject unknown fields | local clients remain trusted by the local-only boundary |
 | HTTP exposure | loopback-only configuration, no CORS opt-in, `nosniff`, frame denial, no-referrer, no-store headers | keep default binding local |
@@ -40,7 +42,7 @@ Server startup now rejects wildcard and remote interfaces before database startu
 
 ### Closed: unsafe installer surface
 
-`install.sh` is a deliberately narrow local-source bootstrap, not a release installer. It accepts only a clean checkout whose official `origin` and locally verified `origin/main` exactly match `HEAD`; it archives that pinned commit, stages the result in a fixed user-owned root, refuses existing destinations, and records the source commit. It neither downloads code, elevates privileges, modifies `PATH`, manages a service, nor starts a server. Disposable harness tests prove the clean-source, destination-refusal, and no-start boundary.
+`install.sh` is a deliberately narrow local-source bootstrap, not a release installer. It accepts only the clean checkout it is run from, whose official `origin` and locally verified `origin/main` exactly match `HEAD`. It archives that pinned commit and stages the result under the checkout's ignored `.timekeeper/app` root. A later run refreshes the app files there while preserving its existing runtime state. It neither downloads code, elevates privileges, modifies `PATH`, manages a service, nor starts a server. Disposable harness tests prove the clean-source, repository-contained, state-preserving refresh, and no-start boundary.
 
 ### Closed: incomplete SQLite file copying
 
@@ -49,6 +51,12 @@ Backup mode uses SQLite's `VACUUM INTO` rather than copying a main database file
 ### Mitigated: browser form mutation attempts
 
 Mutation endpoints require `application/json`. Dashboard and `tk` use that type; ordinary cross-site HTML form requests use form content types and are rejected. The service also emits no CORS permission headers. This is a mitigation, not an authentication boundary.
+
+### Mitigated: Pulse Guardian callback escalation
+
+A stuck agent cannot reliably poll its own attention state, so Guardian lease evaluation runs independently of the watched agent's work loop. The callback is constrained to a user-configured, plain HTTP numeric-loopback URL with an explicit port; names, remote addresses, userinfo, query strings, fragments, redirects, and non-2xx responses are rejected. The callback must explicitly return `X-Timekeeper-Pulse-Accepted: v1`; receipt is still not recovery. Nudge state, delivery attempts, first confirmed delivery, acknowledgement, and owner are durable SQLite evidence. Failed deliveries retry on later configured Guardian ticks, while accepted-but-unacknowledged nudges are not spammed.
+
+Time Keeper deliberately does not execute arbitrary commands or control processes. A separately owned local Guardian adapter makes any interrupt/restart/replacement decision. This avoids a data-plane callback becoming a generic code-execution surface, but it means an installed Time Keeper alone cannot know how a particular agent runtime should be interrupted.
 
 ### Closed: VS Code companion broad-access risk
 

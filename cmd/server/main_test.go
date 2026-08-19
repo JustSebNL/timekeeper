@@ -238,8 +238,8 @@ func TestDashboardShowsOnlyLegalSprintActions(t *testing.T) {
 	if strings.Contains(string(body), "'On Hold': ['resume', 'complete']") {
 		t.Fatal("dashboard must not present complete for an On Hold Sprint")
 	}
-	if !strings.Contains(string(body), "'On Hold': ['resume']") {
-		t.Fatal("dashboard must present resume for an On Hold Sprint")
+	if !strings.Contains(string(body), "'On Hold': ['resume', 'cancel']") {
+		t.Fatal("dashboard must present resume and reasoned cancellation for an On Hold Sprint")
 	}
 }
 
@@ -361,7 +361,7 @@ func TestDashboardServesCurrentFrameworkNeutralUI(t *testing.T) {
 		}
 		assets.Write(assetResponse.Body.Bytes())
 	}
-	for _, marker := range []string{"/api/v1/projects", "/execution-tree", "/operational-summary", "/events", "/notes", "renderExecutionTree", "renderOperationalSummary", "planned_duration_seconds", "renderProjectEvents", "renderProjectNotes", "createInlineForm", "Buffer percent", "sprintActionButton", "durationToSeconds", "sprint.status", "X-Agent-ID"} {
+	for _, marker := range []string{"/api/v1/projects", "/api/v1/pulse", "/execution-tree", "/operational-summary", "/events", "/notes", "renderExecutionTree", "renderOperationalSummary", "renderPulse", "planned_duration_seconds", "renderProjectEvents", "renderProjectNotes", "createInlineForm", "Buffer percent", "sprintActionButton", "durationToSeconds", "sprint.status", "X-Agent-ID"} {
 		if !strings.Contains(assets.String(), marker) {
 			t.Fatalf("dashboard assets missing required marker %q", marker)
 		}

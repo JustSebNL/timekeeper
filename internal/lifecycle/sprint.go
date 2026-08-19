@@ -21,11 +21,25 @@ var sprintTransitions = map[string]SprintTransitionRule{
 	"Open:start": {
 		From: "Open", Action: "start", To: "Active", OpenInterval: "work",
 	},
+	// A Sprint can be placed On Hold before execution begins. This records an
+	// honest blocker without inventing work time just to make the state fit.
+	"Open:hold": {
+		From: "Open", Action: "hold", To: "On Hold", OpenInterval: "hold",
+	},
 	"Active:hold": {
 		From: "Active", Action: "hold", To: "On Hold", CloseInterval: "work", OpenInterval: "hold",
 	},
 	"On Hold:resume": {
 		From: "On Hold", Action: "resume", To: "Active", CloseInterval: "hold", OpenInterval: "work",
+	},
+	"Open:cancel": {
+		From: "Open", Action: "cancel", To: "Cancelled",
+	},
+	"Active:cancel": {
+		From: "Active", Action: "cancel", To: "Cancelled", CloseInterval: "work",
+	},
+	"On Hold:cancel": {
+		From: "On Hold", Action: "cancel", To: "Cancelled", CloseInterval: "hold",
 	},
 	"Active:complete": {
 		From: "Active", Action: "complete", To: "Completed", CloseInterval: "work",

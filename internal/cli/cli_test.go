@@ -74,10 +74,30 @@ func TestRunHelpListsImplementedExtensionAndPlanningCommands(t *testing.T) {
 	if code := cli.Run([]string{"help"}, &out, &errOut, "http://127.0.0.1:1618"); code != 0 {
 		t.Fatalf("code=%d", code)
 	}
-	for _, command := range []string{"Usage: tk [--url <api-base-url>] <command>", "sp extend <sprint-id> <duration> <reason>", "sp extensions <sprint-id>", "sp entries <sprint-id>", "p edit <project-id> <goal> <description>", "t edit <task-id> <goal> <description>", "p status <project-id>", "c status <category-id>", "t status <task-id>", "st status <subtask-id>", "llm new", "plan <generate|apply>"} {
+	for _, command := range []string{"Usage: tk [--url <api-base-url>] <command>", "sp extend <sprint-id> <duration> <reason>", "sp extensions <sprint-id>", "sp entries <sprint-id>", "sp next <project-id>", "sp attempt <sprint-id> <reason>", "sp attempts <sprint-id>", "p edit <project-id> <goal> <description>", "t edit <task-id> <goal> <description>", "p status <project-id>", "c status <category-id>", "t status <task-id>", "st status <subtask-id>", "llm new", "plan <generate|apply>"} {
 		if !strings.Contains(out.String(), command) {
 			t.Fatalf("help missing %q: %s", command, out.String())
 		}
+	}
+}
+
+func TestRunPulsePrintsAttentionItems(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/pulse" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"format":"timekeeper-pulse/v1","recommended_next_pulse_seconds":60,"attention":[{"kind":"sprint_overdue","project_id":"P-10000","sprint_id":"SP-10001","name":"Finish Pulse","planned_duration_seconds":90,"active_duration_seconds":120,"overdue_duration_seconds":30}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var out, errOut bytes.Buffer
+	code := cli.Run([]string{"pulse"}, &out, &errOut, server.URL)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, errOut.String())
+	}
+	if got := out.String(); got != "sprint_overdue\tP-10000\tSP-10001\tactive=120s\tplanned=90s\toverdue=30s\tFinish Pulse\n" {
+		t.Fatalf("pulse output = %q", got)
 	}
 }
 
@@ -96,7 +116,7 @@ func TestRunSummaryShowsProjectOperationalSnapshot(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %s", code, errOut.String())
 	}
-	if got := out.String(); got != "P-10000	sprints=3	active=1	held=1	estimated=3600s	buffer=600s	extensions=300s	planned=4500s	recorded-work=120s\n" {
+	if got := out.String(); got != "P-10000	sprints=3	active=1	held=1	timed-out=0	cancelled=0	estimated=3600s	buffer=600s	extensions=300s	planned=4500s	recorded-work=120s\n" {
 		t.Fatalf("summary output = %q", got)
 	}
 }

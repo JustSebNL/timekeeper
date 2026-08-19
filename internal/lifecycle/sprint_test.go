@@ -15,8 +15,12 @@ func TestSprintTransitionPolicyDefinesLegalTransitions(t *testing.T) {
 		openInterval     string
 	}{
 		{from: "Open", action: "start", to: "Active", openInterval: "work"},
+		{from: "Open", action: "hold", to: "On Hold", openInterval: "hold"},
 		{from: "Active", action: "hold", to: "On Hold", closeInterval: "work", openInterval: "hold"},
 		{from: "On Hold", action: "resume", to: "Active", closeInterval: "hold", openInterval: "work"},
+		{from: "Open", action: "cancel", to: "Cancelled"},
+		{from: "Active", action: "cancel", to: "Cancelled", closeInterval: "work"},
+		{from: "On Hold", action: "cancel", to: "Cancelled", closeInterval: "hold"},
 		{from: "Active", action: "complete", to: "Completed", closeInterval: "work"},
 	}
 
