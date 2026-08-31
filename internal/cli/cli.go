@@ -85,6 +85,8 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return doctor(out, errOut, baseURL)
 	case "aliases":
 		return listAliases(out, errOut, baseURL)
+	case "api-help":
+		return apiHelp(out, errOut, baseURL)
 	default:
 		_, _ = fmt.Fprintf(errOut, "unknown command %q\nRun tk help for usage.\n", args[0])
 		return 2
@@ -1519,6 +1521,37 @@ func doctor(out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	_, _ = fmt.Fprintf(out, "Time Keeper doctor\n\n[ok] API reachable: %s\n[ok] health status: %s\n\nTime Keeper is ready.\n", baseURL, payload.Status)
+	return 0
+}
+
+// apiHelp fetches and displays all available API routes from the server.
+func apiHelp(out, errOut io.Writer, baseURL string) int {
+	url := strings.TrimRight(baseURL, "/") + "/api/help"
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Get(url)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "API unreachable: %s (%v)\n", url, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(errOut, "API returned %s\n", response.Status)
+		return 1
+	}
+	var payload struct {
+		Service string              `json:"service"`
+		Version string              `json:"version"`
+		Routes  []map[string]string `json:"routes"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Failed to decode API help: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(out, "Time Keeper API — %s v%s\n\n", payload.Service, payload.Version)
+	for _, r := range payload.Routes {
+		_, _ = fmt.Fprintf(out, "  %-6s %-55s %s\n", r["method"], r["path"], r["desc"])
+	}
+	_, _ = fmt.Fprintf(out, "\n%d routes\n", len(payload.Routes))
 	return 0
 }
 
