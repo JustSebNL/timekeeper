@@ -5,7 +5,20 @@
 # All artifacts live under the repo's .timekeeper/ directory.
 set -Eeuo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Resolve repo root: the script lives at .timekeeper/app/scripts/service/,
+# so we walk up until we find the repo root (where install.sh / go.mod live).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$SCRIPT_DIR"
+while [[ "$REPO" != "/" ]]; do
+  if [[ -f "$REPO/install.sh" && -f "$REPO/go.mod" ]]; then
+    break
+  fi
+  REPO="$(dirname "$REPO")"
+done
+if [[ "$REPO" == "/" ]]; then
+  echo "[service:err] could not find repo root (no install.sh + go.mod marker)" >&2
+  exit 1
+fi
 STATE_ROOT="$REPO/.timekeeper"
 SERVICE_DIR="$STATE_ROOT/service"
 LOG_DIR="$STATE_ROOT/log"
