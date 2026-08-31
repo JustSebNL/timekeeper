@@ -834,7 +834,14 @@ func (s *Store) ListProjects(ctx context.Context) ([]model.Project, error) {
 		}
 		tree, err := s.ProjectExecutionTree(ctx, project.ProjectID)
 		if err != nil {
-			return nil, fmt.Errorf("calculate project completion %s: %w", project.ProjectID, err)
+			// A completion-calculation failure for one project must not take
+			// down the entire project list (and every caller that depends on
+			// it). Log it and fall back to a zero completion so the project
+			// is still listed and usable.
+			fmt.Printf("warn: project %s completion calc failed: %v\n", project.ProjectID, err)
+			project.CalculatedCompletionPct = 0
+			projects = append(projects, project)
+			continue
 		}
 		project.CalculatedCompletionPct = tree.Project.CalculatedCompletionPct
 		projects = append(projects, project)

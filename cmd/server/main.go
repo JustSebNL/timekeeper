@@ -66,7 +66,93 @@ func validateServerConfig(addr, uiPath string) error {
 	return nil
 }
 
+func showHelp() {
+	_, _ = fmt.Print(`usage: timekeeper [-v | --version] [-h | --help]
+                  <command> [<args>]
+
+Time Keeper is a local project execution memory. These commands manage
+projects, categories, tasks, sprints, and planning drafts.
+
+View state (read-only)
+  list          List projects
+  tree <id>     Show an executable hierarchy
+  export <id>   Print a portable project snapshot as JSON
+  summary <id>  Show a durable sprint operational snapshot
+  pulse         Show local sprint attention needing follow-up
+  events <id>   List immutable project activity
+  notes <id>    List project notes
+  aliases       List project aliases
+  doctor        Check whether Time Keeper is reachable
+  api-help      List all available API routes
+
+Projects
+  p new <name>                             Create a project
+  p edit <id> <goal> <description>         Update project context
+  p status <id> <status>                   Set project status (Open/Completed/Cancelled)
+  p alias <id> <alias>                     Set project alias
+  p unalias <id>                           Clear project alias
+
+Categories
+  c new <proj> <name> [parent-id]          Create a category
+  c edit <id> <goal> <description>         Update category context
+  c status <id> <status>                   Set category status
+
+Tasks
+  t new <proj> <cat> <name> <estimate>     Create a task (estimate: 30m, 2h)
+  t edit <id> <goal> <description>         Update task context
+  t status <id> <status>                   Set task status (Open/Completed/Cancelled)
+
+Subtasks
+  st new <task> <name> <estimate>          Create a subtask
+  st status <id> <status>                  Set subtask status
+
+Sprints
+  sp new <task|subtask> <owner> <name> <estimate> [buffer]
+                                           Create a sprint
+  sp start <id>                            Start a sprint
+  sp hold <id> <reason>                    Hold a sprint
+  sp resume <id>                           Resume a sprint
+  sp complete <id>                         Complete a sprint
+  sp cancel <id> <reason>                  Cancel a sprint
+  sp reason <id> <reason>                  Update hold reason
+  sp next <proj>                           Claim the oldest runnable sprint
+  sp attempts <id>                         List retrieval-attempt evidence
+  sp attempt <id> <reason>                 Record a failed retrieval attempt
+  sp extend <id> <duration> <reason>       Add justified planned time
+  sp extensions <id>                       List extension history
+  sp entries <id>                          List work/hold intervals
+
+Notes
+  note <id> <content>                      Record a project note
+
+Planning drafts (LLM)
+  plan generate <proj> <pipeline-id>       Generate a planning draft via LLM
+  plan apply <proj> <draft-id>             Apply a reviewed planning draft
+  plan list <proj>                         List planning drafts
+  llm new <name> <provider> <url> <model>  Register a loopback LLM pipeline
+
+Agent / Guardian
+  agent progress <id> <lease> [sprint] [url]  Renew agent progress lease
+  agent nudges <id>                           List pending Guardian nudges
+  agent history <id>                          List Guardian delivery/recovery history
+  agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge
+
+Server (start the HTTP service)
+  timekeeper -addr 127.0.0.1:1618 -db .timekeeper/timekeeper.db -ui web/timekeeper.html
+
+Run 'tk <command> --help' for details on a specific command.
+`)
+}
+
 func main() {
+	if len(os.Args) == 1 || os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h" {
+		showHelp()
+		return
+	}
+	if os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v" {
+		_, _ = fmt.Println("TimeKeeper 1.0")
+		return
+	}
 	addr := flag.String("addr", "127.0.0.1:1618", "HTTP listen address")
 	dbPath := flag.String("db", "timekeeper.db", "SQLite database path")
 	uiPath := flag.String("ui", "web/timekeeper.html", "dashboard HTML path")
@@ -135,26 +221,11 @@ func runBackup(ctx context.Context, database *store.Store, destination string) (
 
 func dashboard(path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		assets := map[string]string{
-			"/":               path,
-			"/timekeeper.css": filepath.Join(filepath.Dir(path), "timekeeper.css"),
-			"/timekeeper.js":  filepath.Join(filepath.Dir(path), "timekeeper.js"),
-		}
-		asset, ok := assets[r.URL.Path]
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		absolute, err := filepath.Abs(asset)
-		if err != nil {
-			http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
-			return
-		}
-		if _, err := os.Stat(absolute); err != nil {
-			http.Error(w, "dashboard unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		http.ServeFile(w, r, absolute)
+		// Serve the web directory statically. index.html redirects to timekeeper.html.
+		webDir := filepath.Dir(path)
+		fs := http.FileServer(http.Dir(webDir))
+		// Strip prefix so paths resolve relative to webDir
+		http.StripPrefix("/", fs).ServeHTTP(w, r)
 	}
 }
 

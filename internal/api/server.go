@@ -38,6 +38,7 @@ func New(database *store.Store) http.Handler {
 func NewWithRuntime(database *store.Store, runtime RuntimeStatus) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health)
+	mux.HandleFunc("GET /api/help", apiHelp)
 	mux.HandleFunc("GET /api/v1/llm-pipelines", listLLMPipelines(database))
 	mux.HandleFunc("POST /api/v1/llm-pipelines", createLLMPipeline(database))
 	mux.HandleFunc("GET /api/v1/pulse", pulse(database))
@@ -126,6 +127,70 @@ func requireJSONForMutations(next http.Handler) http.Handler {
 
 func health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// apiHelp lists all available API routes with method, path, and description.
+func apiHelp(w http.ResponseWriter, _ *http.Request) {
+	routes := []map[string]string{
+		{"method": "GET", "path": "/health", "desc": "Health check — returns {status: ok}"},
+		{"method": "GET", "path": "/api/help", "desc": "This help listing"},
+		{"method": "GET", "path": "/api/v1/llm-pipelines", "desc": "List LLM pipelines"},
+		{"method": "POST", "path": "/api/v1/llm-pipelines", "desc": "Create an LLM pipeline"},
+		{"method": "GET", "path": "/api/v1/pulse", "desc": "Local attention items needing follow-up"},
+		{"method": "GET", "path": "/api/v1/guardian/status", "desc": "Guardian runtime status + registered callbacks"},
+		{"method": "POST", "path": "/api/v1/agents/{agentID}/progress", "desc": "Renew agent progress lease"},
+		{"method": "GET", "path": "/api/v1/agents/{agentID}/nudges", "desc": "List pending Guardian nudges"},
+		{"method": "GET", "path": "/api/v1/agents/{agentID}/nudges/history", "desc": "Guardian nudge delivery/recovery history"},
+		{"method": "POST", "path": "/api/v1/agents/{agentID}/nudges/{nudgeID}/ack", "desc": "Acknowledge a Guardian nudge"},
+		{"method": "GET", "path": "/api/v1/projects", "desc": "List projects"},
+		{"method": "POST", "path": "/api/v1/projects", "desc": "Create a project"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/metadata", "desc": "Update project context"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/status", "desc": "Set project status"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/alias", "desc": "Set project alias"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/export", "desc": "Export project snapshot as JSON"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/execution-tree", "desc": "Show executable hierarchy"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/operational-summary", "desc": "Sprint operational snapshot"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/attention", "desc": "Project attention items"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/sprints/claim-next", "desc": "Claim next sprint"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/events", "desc": "List project activity events"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/planning-drafts", "desc": "List planning drafts"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/planning-drafts", "desc": "Create planning draft"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/planning-drafts/generate", "desc": "Generate planning draft via LLM"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/planning-drafts/{draftID}/apply", "desc": "Apply a planning draft"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/notes", "desc": "List project notes"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/notes", "desc": "Record a project note"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/categories", "desc": "List categories"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/categories", "desc": "Create a category"},
+		{"method": "POST", "path": "/api/v1/categories/{categoryID}/metadata", "desc": "Update category context"},
+		{"method": "POST", "path": "/api/v1/categories/{categoryID}/status", "desc": "Set category status"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/tasks", "desc": "List tasks"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/tasks", "desc": "Create a task"},
+		{"method": "GET", "path": "/api/v1/tasks/{taskID}/subtasks", "desc": "List subtasks"},
+		{"method": "POST", "path": "/api/v1/tasks/{taskID}/subtasks", "desc": "Create a subtask"},
+		{"method": "POST", "path": "/api/v1/tasks/{taskID}/metadata", "desc": "Update task context"},
+		{"method": "POST", "path": "/api/v1/tasks/{taskID}/status", "desc": "Set task status"},
+		{"method": "GET", "path": "/api/v1/tasks/{taskID}/sprints", "desc": "List task sprints"},
+		{"method": "POST", "path": "/api/v1/tasks/{taskID}/sprints", "desc": "Create a sprint"},
+		{"method": "POST", "path": "/api/v1/subtasks/{subtaskID}/status", "desc": "Set subtask status"},
+		{"method": "GET", "path": "/api/v1/subtasks/{subtaskID}/sprints", "desc": "List subtask sprints"},
+		{"method": "POST", "path": "/api/v1/subtasks/{subtaskID}/sprints", "desc": "Create subtask sprint"},
+		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/start", "desc": "Start a sprint"},
+		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/hold", "desc": "Hold a sprint"},
+		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/resume", "desc": "Resume a sprint"},
+		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/complete", "desc": "Complete a sprint"},
+		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/cancel", "desc": "Cancel a sprint"},
+		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/hold-reason", "desc": "Update sprint hold reason"},
+		{"method": "GET", "path": "/api/v1/sprints/{sprintID}/retrieval-attempts", "desc": "List sprint retrieval attempts"},
+		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/retrieval-attempts", "desc": "Record sprint retrieval attempt"},
+		{"method": "GET", "path": "/api/v1/sprints/{sprintID}/extensions", "desc": "List sprint time extensions"},
+		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/extensions", "desc": "Add sprint time extension"},
+		{"method": "GET", "path": "/api/v1/sprints/{sprintID}/time-entries", "desc": "List time entries"},
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"service": "TimeKeeper",
+		"version": "1.0",
+		"routes": routes,
+	})
 }
 
 func guardianStatus(database *store.Store, runtime RuntimeStatus) http.HandlerFunc {
