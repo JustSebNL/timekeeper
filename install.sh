@@ -193,3 +193,4 @@ rmdir "$STAGE"
 printf 'Source commit: %s\n' "$COMMIT"
 printf 'Run: ./.timekeeper/app/timekeeper\n'
 printf 'Then use: ./.timekeeper/app/tk list\n'
+printf 'Run as OS service: ./.timekeeper/app/tk service install\n'

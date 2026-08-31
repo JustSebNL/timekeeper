@@ -85,6 +85,31 @@ Then open `http://127.0.0.1:1618/` in a browser. In another terminal, these are 
 
 The server listens only on your own machine. Stop it with `Ctrl+C` when you are done.
 
+## Run as a OS service
+
+TimeKeeper can install itself as a system service so it starts automatically at boot.
+
+```text
+# Install and start the service
+./.timekeeper/app/tk service install
+
+# Check status
+./.timekeeper/app/tk service status
+
+# View logs
+./.timekeeper/app/tk service logs
+
+# Stop / restart / remove
+./.timekeeper/app/tk service stop
+./.timekeeper/app/tk service restart
+./.timekeeper/app/tk service uninstall
+```
+
+- **Windows**: uses [NSSM](https://nssm.cc) (auto-detected or set `TIMEKEEPER_NSSM`). Installs with `SERVICE_DELAYED_AUTO_START` so it starts shortly after boot.
+- **Linux**: uses systemd (user scope, linger-enabled) so it runs without an active login session.
+
+All service artifacts (unit files, logs, NSSM config) live under `.timekeeper/service/` and `.timekeeper/log/`.
+
 ## A simple way to use it
 
 1. Create a Project for the outcome you want.

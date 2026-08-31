@@ -15,24 +15,9 @@ import (
 // that runs TimeKeeper. It delegates to scripts/service/service-manager.sh,
 // which handles Windows (NSSM) and Linux (systemd) specifics.
 func serviceManager(args []string, out, errOut io.Writer, baseURL string) int {
-	repoRoot := os.Getenv("TIMEKEEPER_REPO")
-	if repoRoot == "" {
-		// Try to infer from binary location or working directory
-		if exe, err := os.Executable(); err == nil {
-			exe = filepath.Clean(exe)
-			// Typical layout: .timekeeper/app/bin/tk -> repo root is 3 levels up
-			if rel, err := filepath.Rel(filepath.Dir(filepath.Dir(filepath.Dir(exe))), "."); err == nil && rel != "." {
-				repoRoot = "."
-			}
-		}
-		if repoRoot == "" {
-			repoRoot = "."
-		}
-	}
-
-	script := filepath.Join(repoRoot, "scripts", "service", "service-manager.sh")
-	if _, err := os.Stat(script); err != nil {
-		_, _ = fmt.Fprintf(errOut, "service manager script not found: %s\n", script)
+	script := findServiceScript()
+	if script == "" {
+		_, _ = fmt.Fprintln(errOut, "service manager script not found — expected at scripts/service/service-manager.sh")
 		return 1
 	}
 
@@ -56,4 +41,50 @@ func serviceManager(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	return 0
+}
+
+// findServiceScript locates service-manager.sh. It checks, in order:
+//   1. TIMEKEEPER_SERVICE_SCRIPT (explicit override)
+//   2. Alongside the installed binary: .timekeeper/app/scripts/service/service-manager.sh
+//   3. Repo-root relative: scripts/service/service-manager.sh
+//   4. Working directory: scripts/service/service-manager.sh
+func findServiceScript() string {
+	if explicit := os.Getenv("TIMEKEEPER_SERVICE_SCRIPT"); explicit != "" {
+		if _, err := os.Stat(explicit); err == nil {
+			return explicit
+		}
+	}
+
+	candidates := []string{}
+
+	// Path 2: alongside the installed binary (.timekeeper/app/bin/tk -> ../scripts/service/...)
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(filepath.Clean(exe))
+		candidates = append(candidates, filepath.Join(exeDir, "..", "scripts", "service", "service-manager.sh"))
+	}
+
+	// Path 3: repo root (TIMEKEEPER_REPO or inferred from binary: .timekeeper/app/bin -> 3 levels up)
+	if repoRoot := os.Getenv("TIMEKEEPER_REPO"); repoRoot != "" {
+		candidates = append(candidates, filepath.Join(repoRoot, "scripts", "service", "service-manager.sh"))
+	} else if exe, err := os.Executable(); err == nil {
+		repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Clean(exe))))
+		candidates = append(candidates, filepath.Join(repoRoot, "scripts", "service", "service-manager.sh"))
+	}
+
+	// Path 4: current working directory
+	candidates = append(candidates, filepath.Join("scripts", "service", "service-manager.sh"))
+
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		abs, err := filepath.Abs(c)
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat(abs); err == nil {
+			return abs
+		}
+	}
+	return ""
 }
