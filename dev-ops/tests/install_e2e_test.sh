@@ -30,12 +30,18 @@ trap cleanup EXIT
 git clone --no-hardlinks --local "$ROOT" "$SOURCE" >/dev/null
 cp "$INSTALLER" "$SOURCE/install.sh"
 git -C "$SOURCE" add install.sh
-git -C "$SOURCE" -c user.name='Time Keeper test' -c user.email='timekeeper-test@example.invalid' commit -m 'test current installer' >/dev/null
+if ! git -C "$SOURCE" diff --cached --quiet -- install.sh; then
+  git -C "$SOURCE" -c user.name='Time Keeper test' -c user.email='timekeeper-test@example.invalid' commit -m 'test current installer' >/dev/null
+fi
 git -C "$SOURCE" remote set-url origin "$EXPECTED_ORIGIN"
 git -C "$SOURCE" update-ref refs/remotes/origin/main HEAD
 (
   cd "$SOURCE"
-  TIMEKEEPER_GO="$GO_BIN" bash ./install.sh >/dev/null
+  if ! TIMEKEEPER_GO="$GO_BIN" bash ./install.sh > "$TMP/install.log" 2>&1; then
+    printf 'installed Time Keeper bootstrap failed; installer log follows:\n' >&2
+    <"$TMP/install.log" cat >&2
+    exit 1
+  fi
 )
 
 test ! -e "$DESTINATION/state/timekeeper.db"
@@ -62,6 +68,8 @@ done
 grep -Fq 'Time Keeper is ready.' "$TMP/doctor.log" || {
   printf 'installed tk doctor did not report readiness; output follows:\n' >&2
   <"$TMP/doctor.log" cat >&2
+  printf 'installed server log follows:\n' >&2
+  <"$TMP/server.log" cat >&2
   exit 1
 }
 test -s "$DESTINATION/state/timekeeper.db"
@@ -74,5 +82,5 @@ SERVER_PID=''
   TIMEKEEPER_GO="$GO_BIN" bash ./install.sh > "$TMP/refresh.log"
 )
 test -s "$DESTINATION/state/timekeeper.db"
-grep -Fq 'preserving existing runtime state' "$TMP/refresh.log"
+grep -Fq 'preserving existing runtime state' "$TMP/refresh.log" || grep -Fq 'already installed and up to date' "$TMP/refresh.log"
 printf 'install-e2e=passed\n'

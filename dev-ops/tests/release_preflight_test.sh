@@ -11,7 +11,7 @@ for required in \
   'RELEASE_PREFLIGHT_VALIDATES_LOCAL_BOOTSTRAP' \
   '"$GO_BIN" test ./... -count=1' \
   '"$GO_BIN" vet ./...' \
-  'node --check "$ROOT/.timekeeper/web/timekeeper.js"' \
+  'node --check "$ROOT/web/timekeeper.js"' \
   'project_local_state_test.sh' \
   'copyright_attribution_contract_test.sh' \
   'public_documentation_contract_test.sh' \
