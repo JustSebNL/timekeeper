@@ -9,6 +9,15 @@
   const guardianTarget = document.querySelector('#guardian');
   const message = document.querySelector('#message');
   const connection = document.querySelector('#connection');
+  const sidebarAPIStatus = document.querySelector('#sidebar-api-status');
+  const projectFilter = document.querySelector('#project-filter');
+  const refreshDashboard = document.querySelector('#refresh-dashboard');
+  const statProjects = document.querySelector('#stat-projects');
+  const statOpen = document.querySelector('#stat-open');
+  const statActive = document.querySelector('#stat-active');
+  const statAttention = document.querySelector('#stat-attention');
+  const navProjectCount = document.querySelector('#nav-project-count');
+  const navAttentionCount = document.querySelector('#nav-attention-count');
   const form = document.querySelector('#project-form');
   const submit = document.querySelector('#submit');
   const agentID = localStorage.getItem('timekeeper_agent_id') || crypto.randomUUID();
@@ -922,7 +931,18 @@
     }
   }
 
+  function filterProjectCards() {
+    const query = (projectFilter?.value || '').trim().toLowerCase();
+    for (const card of projects.querySelectorAll('.project-card')) {
+      card.hidden = Boolean(query) && !card.textContent.toLowerCase().includes(query);
+    }
+  }
+
   function render(items) {
+    statProjects.textContent = items.length;
+    statOpen.textContent = items.filter(item => item.status === 'Open' || item.status === 'Active').length;
+    statActive.textContent = '—';
+    navProjectCount.textContent = items.length;
     projects.replaceChildren();
     if (!items.length) {
       projects.textContent = 'No projects yet. Create the first one.';
@@ -990,10 +1010,14 @@
 
       projects.append(card);
     }
+    filterProjectCards();
   }
 
   function renderPulse(snapshot) {
     const attention = Array.isArray(snapshot.attention) ? snapshot.attention : [];
+    if (Number.isFinite(snapshot.active_sprints)) statActive.textContent = snapshot.active_sprints;
+    statAttention.textContent = attention.length;
+    navAttentionCount.textContent = attention.length;
     pulseTarget.replaceChildren();
     if (!attention.length) {
       pulseTarget.className = 'empty';
@@ -1071,12 +1095,19 @@
     void loadGuardianStatus();
     try {
       const data = await request(api);
-      render(data.items || []);
-      connection.textContent = 'Local SQLite API connected';
+      const items = data.items || [];
+      render(items);
+      const summaries = await Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/operational-summary').catch(() => null)));
+      statActive.textContent = summaries.reduce((total, summary) => total + (summary?.active_sprints || 0), 0);
+      connection.textContent = 'Local API connected';
+      sidebarAPIStatus.textContent = 'Online';
+      sidebarAPIStatus.style.color = 'var(--green)';
     } catch (error) {
       projects.textContent = error.message;
       projects.className = 'empty';
       connection.textContent = 'Local API unavailable';
+      sidebarAPIStatus.textContent = 'Offline';
+      sidebarAPIStatus.style.color = 'var(--red)';
     }
   }
 
@@ -1099,6 +1130,11 @@
     }
   });
 
+  projectFilter?.addEventListener('input', filterProjectCards);
+  refreshDashboard?.addEventListener('click', () => {
+    refreshDashboard.disabled = true;
+    Promise.resolve(load()).finally(() => { refreshDashboard.disabled = false; });
+  });
   load();
 
   function renderProjectAttention(items) {

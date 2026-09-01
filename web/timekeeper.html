@@ -1,45 +1,13 @@
 <!doctype html>
 <!-- Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved. -->
-<html lang="en" data-timekeeper-ui="v1">
+<!-- Compatibility entrypoint; the canonical Time Keeper dashboard is index.html. -->
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="refresh" content="0; url=/index.html">
   <title>Time Keeper</title>
-  <link rel="stylesheet" href="/timekeeper.css">
 </head>
 <body>
-  <main>
-    <header>
-      <div><h1>Time Keeper<small>PROJECT EXECUTION MEMORY</small></h1></div>
-      <div class="status" id="connection">Connecting to local API…</div>
-    </header>
-    <div class="grid">
-      <section class="card">
-        <h2>Create project</h2>
-        <form id="project-form">
-          <label for="name">Name</label><input id="name" name="name" required maxlength="200" autocomplete="off">
-          <label for="goal">Goal</label><input id="goal" name="goal" maxlength="1000">
-          <label for="description">Description</label><textarea id="description" name="description" maxlength="10000"></textarea>
-          <button id="submit" type="submit">Create project</button>
-        </form>
-        <div id="message" role="status"></div>
-      </section>
-      <section class="card">
-        <h2>Open projects</h2>
-        <div id="projects" class="empty">Loading…</div>
-      </section>
-      <section class="card pulse-card" aria-live="polite">
-        <h2>Pulse</h2>
-        <p class="pulse-copy">Local work that has exceeded its declared Sprint plan.</p>
-        <div id="pulse" class="empty">Checking attention…</div>
-      </section>
-      <section class="card" aria-live="polite">
-        <h2>Pulse Guardian</h2>
-        <p class="pulse-copy">Independent local recovery is opt-in; a callback must be registered by the watched agent.</p>
-        <div id="guardian" class="empty">Checking Guardian…</div>
-      </section>
-    </div>
-  </main>
-  <script src="/timekeeper.js"></script>
+  <p>Redirecting to <a href="/index.html">Time Keeper dashboard</a>…</p>
 </body>
 </html>

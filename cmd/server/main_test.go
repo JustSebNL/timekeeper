@@ -128,7 +128,7 @@ func TestDashboardUsesOneLocalPipelineFormImplementation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read dashboard: %v", err)
 	}
-	if strings.Count(string(body), "system_prompt:systemPrompt.value.trim()") != 1 || !strings.Contains(string(body), "function renderLocalPipelineForm") {
+	if strings.Count(string(body), "system_prompt:") != 1 || !strings.Contains(string(body), "function renderLocalPipelineForm") {
 		t.Fatal("dashboard pipeline creation must share one form implementation")
 	}
 }
@@ -320,7 +320,7 @@ func TestRunBackupCreatesSnapshotAndReportsPath(t *testing.T) {
 
 func TestDashboardAvoidsHTMLStringInsertion(t *testing.T) {
 	var all strings.Builder
-	for _, asset := range []string{"timekeeper.html", "timekeeper.js"} {
+	for _, asset := range []string{"index.html", "timekeeper.js"} {
 		body, err := os.ReadFile(filepath.Join("..", "..", "web", asset))
 		if err != nil {
 			t.Fatalf("read dashboard asset %s: %v", asset, err)
@@ -333,7 +333,7 @@ func TestDashboardAvoidsHTMLStringInsertion(t *testing.T) {
 }
 
 func TestDashboardServesCurrentFrameworkNeutralUI(t *testing.T) {
-	uiPath := filepath.Join("..", "..", "web", "timekeeper.html")
+	uiPath := filepath.Join("..", "..", "web", "index.html")
 	if _, err := os.Stat(uiPath); err != nil {
 		t.Fatalf("current dashboard missing: %v", err)
 	}
@@ -346,13 +346,13 @@ func TestDashboardServesCurrentFrameworkNeutralUI(t *testing.T) {
 		t.Fatalf("dashboard status = %d", response.Code)
 	}
 	body := response.Body.String()
-	for _, marker := range []string{"data-timekeeper-ui=\"v1\"", "/timekeeper.css", "/timekeeper.js"} {
+	for _, marker := range []string{"data-timekeeper-ui=\"v2\"", "/timekeeper.css", "/timekeeper.js"} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("dashboard shell missing required marker %q", marker)
 		}
 	}
 	var assets strings.Builder
-	for _, route := range []string{"/timekeeper.css", "/timekeeper.js"} {
+	for _, route := range []string{"/timekeeper.css", "/timekeeper.js", "/vendor/bootstrap-5.3.8.min.css"} {
 		assetRequest := httptest.NewRequest(http.MethodGet, route, nil)
 		assetResponse := httptest.NewRecorder()
 		dashboard(uiPath).ServeHTTP(assetResponse, assetRequest)

@@ -1,10 +1,10 @@
 # Time Keeper Threat Review
 
-Review date: 2026-08-10
+Review date: 2026-09-01
 
 ## Scope
 
-This review covers the local Go HTTP server, SQLite authority, read-only Sprint Pulse attention endpoint, default-on Pulse Guardian delivery loop, dashboard, `tk` CLI, VS Code companion, portable export, SQLite backup mode, and installer posture in the current source tree.
+This review covers the local Go HTTP server, SQLite authority, read-only Sprint Pulse attention endpoint, default-on Pulse Guardian delivery loop, dashboard and its repository-contained Bootstrap `5.3.8` asset, `tk` CLI, VS Code companion, portable export, SQLite backup mode, and installer posture in the current source tree.
 
 ## Security boundary
 
@@ -26,6 +26,7 @@ Consequences:
 | Sprint Pulse attention | a `GET`-only calculation from durable Sprint history; no notification rows, background worker, outbound HTTP, or delivery credentials | callers decide whether and when to poll; Pulse data remains inside the existing loopback-only local-process boundary |
 | Pulse Guardian | default-on periodic lease evaluation (5m; override via `-pulse-guardian-interval`, disable with empty interval); durable Pending/Acknowledged nudge and delivery evidence; callback URL restricted to plain HTTP numeric loopback with an explicit port; 3-second timeout; redirects refused; a 2xx response plus `X-Timekeeper-Pulse-Accepted: v1` is required; confirmed callbacks are not repeatedly delivered before acknowledgement | same-user processes can still register/update a Guardian; callback acceptance proves only receipt, not recovery; registered local Guardian must own any interrupt/restart action and acknowledge only after recovery |
 | Browser-rendered Project data | explicit DOM construction with `textContent`; dashboard contract forbids `innerHTML`; HTML, CSS, and JS are static same-origin assets; CSP constrains scripts/styles/connections to same origin and disables object/base/frame embedding | keep untrusted data out of markup/attributes and preserve the explicit asset allowlist |
+| Dashboard vendor asset | Bootstrap `5.3.8` is vendored under `web/vendor/`, served same-origin, loaded before the custom Time Keeper stylesheet, and never fetched from a CDN at runtime | update the pinned file deliberately and re-run asset-route and CSP checks |
 | Mutation endpoints require `application/json`, cap bodies at 1 MiB, and reject unknown fields | local clients remain trusted by the local-only boundary |
 | HTTP exposure | loopback-only configuration, no CORS opt-in, `nosniff`, frame denial, no-referrer, no-store headers | keep default binding local |
 | VS Code companion | uses only the public HTTP API; validates a configured numeric-loopback HTTP origin; no SQLite access, shell execution, arbitrary SQL, workspace file reads, server startup, or persistent task cache | a same-user local process remains within the existing local-process trust boundary; do not add remote endpoints or automatic code-context submission without a distinct security review |

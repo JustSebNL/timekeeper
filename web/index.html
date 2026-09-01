@@ -1,11 +1,112 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<!-- Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved. -->
+<html lang="en" data-timekeeper-ui="v2">
 <head>
-    <meta charset="utf-8">
-    <meta http-equiv="refresh" content="0; url=timekeeper.html">
-    <title>TimeKeeper</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Time Keeper · Project operations</title>
+  <link rel="stylesheet" href="/vendor/bootstrap-5.3.8.min.css">
+  <link rel="stylesheet" href="/timekeeper.css">
 </head>
 <body>
-    <p>Redirecting to <a href="timekeeper.html">TimeKeeper dashboard</a>...</p>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true">TK</div>
+        <div>
+          <div class="brand-name">TIME KEEPER</div>
+          <div class="brand-caption">PROJECT OPERATIONS</div>
+        </div>
+      </div>
+
+      <div class="workspace-switcher">
+        <span class="workspace-dot"></span>
+        <span class="workspace-copy"><strong>Local workspace</strong><small>SQLite memory</small></span>
+        <span class="workspace-chevron" aria-hidden="true">⌄</span>
+      </div>
+
+      <div class="nav-label">Workspace</div>
+      <nav class="nav-list">
+        <a class="nav-item active" href="#overview"><span class="nav-icon">⌂</span><span>Overview</span><span class="nav-key">1</span></a>
+        <a class="nav-item" href="#projects-panel"><span class="nav-icon">▦</span><span>Projects</span><span class="nav-count" id="nav-project-count">0</span></a>
+        <a class="nav-item" href="#pulse-card"><span class="nav-icon">◒</span><span>Pulse</span><span class="nav-count attention-count" id="nav-attention-count">0</span></a>
+        <a class="nav-item" href="#guardian-card"><span class="nav-icon">◈</span><span>Guardian</span></a>
+      </nav>
+
+      <div class="nav-label nav-label-spaced">Manage</div>
+      <nav class="nav-list">
+        <a class="nav-item" href="#new-project"><span class="nav-icon">＋</span><span>New project</span></a>
+        <a class="nav-item" href="#projects-panel"><span class="nav-icon">◌</span><span>Activity</span></a>
+      </nav>
+
+      <div class="sidebar-spacer"></div>
+      <div class="system-status">
+        <div class="system-status-heading"><span class="live-dot"></span> System status</div>
+        <div class="system-status-row"><span>API</span><strong id="sidebar-api-status">Checking</strong></div>
+        <div class="system-status-row"><span>Storage</span><strong>SQLite</strong></div>
+      </div>
+      <div class="sidebar-footer"><span class="avatar">S</span><span><strong>Seb</strong><small>Local operator</small></span><span class="footer-more">•••</span></div>
+    </aside>
+
+    <main class="main-content container-fluid" id="overview">
+      <header class="topbar">
+        <div class="breadcrumbs"><span>Workspace</span><b>/</b><strong>Overview</strong></div>
+        <div class="topbar-actions">
+          <label class="search-box" for="project-filter"><span aria-hidden="true">⌕</span><input class="form-control" id="project-filter" type="search" placeholder="Search projects…" autocomplete="off"><kbd>/</kbd></label>
+          <button class="icon-button" type="button" title="Refresh dashboard" id="refresh-dashboard">↻</button>
+          <div class="connection-chip"><span class="live-dot"></span><span id="connection">Connecting…</span></div>
+        </div>
+      </header>
+
+      <section class="page-heading">
+        <div>
+          <p class="eyebrow">Tuesday, local time</p>
+          <h1>Good to see you, Seb <span aria-hidden="true">✦</span></h1>
+          <p class="page-subtitle">A focused view of the work that matters now.</p>
+        </div>
+        <a class="primary-action" href="#new-project"><span>＋</span> New project</a>
+      </section>
+
+      <section class="metric-grid" aria-label="Workspace summary">
+        <article class="metric-card metric-purple"><div class="metric-top"><span class="metric-label">Total projects</span><span class="metric-icon">▦</span></div><strong class="metric-value" id="stat-projects">—</strong><span class="metric-foot">Tracked in this workspace</span></article>
+        <article class="metric-card metric-cyan"><div class="metric-top"><span class="metric-label">Open projects</span><span class="metric-icon">◉</span></div><strong class="metric-value" id="stat-open">—</strong><span class="metric-foot">Ready for execution</span></article>
+        <article class="metric-card metric-green"><div class="metric-top"><span class="metric-label">Active focus</span><span class="metric-icon">◒</span></div><strong class="metric-value" id="stat-active">—</strong><span class="metric-foot">Sprints currently running</span></article>
+        <article class="metric-card metric-amber"><div class="metric-top"><span class="metric-label">Needs attention</span><span class="metric-icon">!</span></div><strong class="metric-value" id="stat-attention">—</strong><span class="metric-foot">Pulse items to review</span></article>
+      </section>
+
+      <div class="dashboard-grid">
+        <section class="panel panel-create" id="new-project">
+          <div class="panel-heading"><div><p class="eyebrow">Quick action</p><h2>Create project</h2></div><span class="panel-menu">•••</span></div>
+          <p class="panel-description">Start a new execution memory with a clear goal and context.</p>
+          <form id="project-form">
+            <label for="name">Project name</label><input class="form-control" id="name" name="name" required maxlength="200" autocomplete="off" placeholder="e.g. Product launch">
+            <label for="goal">Goal <span class="optional">optional</span></label><input class="form-control" id="goal" name="goal" maxlength="1000" placeholder="What does success look like?">
+            <label for="description">Description <span class="optional">optional</span></label><textarea class="form-control" id="description" name="description" maxlength="10000" placeholder="Add useful context for future-you…"></textarea>
+            <button class="btn btn-primary form-submit" id="submit" type="submit">Create project <span>→</span></button>
+          </form>
+          <div id="message" role="status"></div>
+        </section>
+
+        <section class="panel panel-projects" id="projects-panel">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Execution memory</p><h2>Projects</h2></div><span class="panel-link">View all <span>→</span></span></div>
+          <div class="table-head"><span>Project</span><span>Status</span><span>Progress</span><span></span></div>
+          <div id="projects" class="project-list empty">Loading projects…</div>
+        </section>
+
+        <section class="panel panel-pulse" id="pulse-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Live monitoring</p><h2>Pulse</h2></div><span class="pulse-orb" aria-hidden="true">◒</span></div>
+          <p class="panel-description">Work that has moved beyond its declared Sprint plan.</p>
+          <div id="pulse" class="empty">Checking attention…</div>
+        </section>
+
+        <section class="panel panel-guardian" id="guardian-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Safety layer</p><h2>Pulse Guardian</h2></div><span class="guardian-shield" aria-hidden="true">◇</span></div>
+          <p class="panel-description">Independent local recovery leases and callbacks.</p>
+          <div id="guardian" class="empty">Checking Guardian…</div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script src="/timekeeper.js"></script>
 </body>
 </html>

@@ -10,11 +10,19 @@
 *.db-wal
 *.vsix
 /data/
+dev/private-scratch-probe.txt
 .timekeeper/app/
 .timekeeper/bin/
 .timekeeper/state/
 .timekeeper/service/
 .timekeeper/log/
+.timekeeper/web/
+.timekeeper/recovery/
+.timekeeper/dogfood-core/
+.timekeeper/guardian-*/
+.timekeeper/install-*/
+.timekeeper/*.out
+.timekeeper/*.json
 .timekeeper/*.db
 .timekeeper/*.db-shm
 .timekeeper/*.db-wal
@@ -22,6 +30,8 @@
 .timekeeper/*.lock
 .timekeeper/.last_update
 .timekeeper/.install.*
+/timekeeper-linux*
+/tk-linux*
 
 # Local environment/editor state
 .env

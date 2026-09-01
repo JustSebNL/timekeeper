@@ -9,7 +9,7 @@ GO_BIN="${TIMEKEEPER_GO:-go}"
 STATE_DIR="${TIMEKEEPER_STATE_DIR:-$ROOT/.timekeeper}"
 ADDR="${TIMEKEEPER_ADDR:-127.0.0.1:1618}"
 DB_PATH="${TIMEKEEPER_DB:-$STATE_DIR/timekeeper.db}"
-UI_PATH="${TIMEKEEPER_UI:-$ROOT/.timekeeper/web/timekeeper.html}"
+UI_PATH="${TIMEKEEPER_UI:-$ROOT/.timekeeper/web/index.html}"
 # The Guardian is a required backbone service: it evaluates registered local
 # recovery leases on a bounded interval. Empty disables it (for explicit opt-out
 # via TIMEKEEPER_PULSE_GUARDIAN_INTERVAL=""). Defaults to 5m.
