@@ -20,10 +20,10 @@ if ! command -v node >/dev/null 2>&1; then
   printf 'Time Keeper release preflight requires Node.js to syntax-check the dashboard script.\n' >&2
   exit 69
 fi
-for asset in .timekeeper/web/index.html .timekeeper/web/timekeeper.css .timekeeper/web/timekeeper.js .timekeeper/web/vendor/bootstrap-5.3.8.min.css; do
+for asset in web/index.html web/timekeeper.css web/timekeeper.js web/vendor/bootstrap-5.3.8.min.css; do
   [[ -f "$ROOT/$asset" && -r "$ROOT/$asset" ]] || { printf 'Missing dashboard asset: %s\n' "$asset" >&2; exit 66; }
 done
-node --check "$ROOT/.timekeeper/web/timekeeper.js"
+node --check "$ROOT/web/timekeeper.js"
 bash "$ROOT/dev-ops/tests/project_local_state_test.sh"
 bash "$ROOT/dev-ops/tests/project_content_scope_test.sh"
 bash "$ROOT/dev-ops/tests/copyright_attribution_contract_test.sh"
