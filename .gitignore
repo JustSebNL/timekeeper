@@ -32,6 +32,7 @@ dev/private-scratch-probe.txt
 .timekeeper/.install.*
 /timekeeper-linux*
 /tk-linux*
+NUL
 
 # Local environment/editor state
 .env
