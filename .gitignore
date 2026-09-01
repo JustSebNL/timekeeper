@@ -10,8 +10,18 @@
 *.db-wal
 *.vsix
 /data/
-/.timekeeper/
-/dev/
+.timekeeper/app/
+.timekeeper/bin/
+.timekeeper/state/
+.timekeeper/service/
+.timekeeper/log/
+.timekeeper/*.db
+.timekeeper/*.db-shm
+.timekeeper/*.db-wal
+.timekeeper/*.log
+.timekeeper/*.lock
+.timekeeper/.last_update
+.timekeeper/.install.*
 
 # Local environment/editor state
 .env
