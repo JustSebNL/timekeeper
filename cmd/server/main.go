@@ -155,7 +155,7 @@ func main() {
 	}
 	addr := flag.String("addr", "127.0.0.1:1618", "HTTP listen address")
 	dbPath := flag.String("db", "timekeeper.db", "SQLite database path")
-	uiPath := flag.String("ui", "web/timekeeper.html", "dashboard HTML path")
+	uiPath := flag.String("ui", ".timekeeper/web/timekeeper.html", "dashboard HTML path")
 	backupTo := flag.String("backup-to", "", "create a SQLite backup at this new path, then exit")
 	pulseGuardianInterval := flag.Duration("pulse-guardian-interval", 0, "run the local Pulse Guardian at this interval; 0 disables it")
 	flag.Parse()
