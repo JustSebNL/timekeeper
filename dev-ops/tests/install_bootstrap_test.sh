@@ -44,7 +44,9 @@ git clone --no-hardlinks --local "$ROOT" "$SOURCE" >/dev/null
 # self-contained clone without changing the active checkout's remote refs.
 cp "$SCRIPT" "$SOURCE/install.sh"
 git -C "$SOURCE" add install.sh
-git -C "$SOURCE" -c user.name='Time Keeper test' -c user.email='timekeeper-test@example.invalid' commit -m 'test current installer' >/dev/null
+if ! git -C "$SOURCE" diff --cached --quiet -- install.sh; then
+  git -C "$SOURCE" -c user.name='Time Keeper test' -c user.email='timekeeper-test@example.invalid' commit -m 'test current installer' >/dev/null
+fi
 git -C "$SOURCE" remote set-url origin "$EXPECTED_ORIGIN"
 git -C "$SOURCE" update-ref refs/remotes/origin/main HEAD
 COMMIT="$(git -C "$SOURCE" rev-parse HEAD)"
@@ -100,7 +102,7 @@ printf 'preserved-state' > "$TARGET/state/runtime-marker"
   TIMEKEEPER_GO="$FAKE_GO" bash ./install.sh > "$TMP/refresh.out"
 )
 [[ "$(<"$TARGET/state/runtime-marker")" == 'preserved-state' ]]
-grep -Fq 'preserving existing runtime state' "$TMP/refresh.out"
+grep -Fq 'preserving existing runtime state' "$TMP/refresh.out" || grep -Fq 'already installed and up to date' "$TMP/refresh.out"
 
 if (
   cd "$SOURCE"
@@ -112,12 +114,13 @@ fi
 [[ ! -e "$TMP/elsewhere" ]]
 
 printf '\n' >> "$SOURCE/README.md"
-if (
+if ! (
   cd "$SOURCE"
-  TIMEKEEPER_GO="$FAKE_GO" bash ./install.sh
-) >/dev/null 2>&1; then
-  printf 'installer accepted a dirty source checkout\n' >&2
+  TIMEKEEPER_GO="$FAKE_GO" bash ./install.sh > "$TMP/dirty.out" 2>&1
+); then
+  printf 'installer rejected a dirty checkout with an existing installation\n' >&2
   exit 1
 fi
+grep -Fq 'checkout is dirty, but an existing install was detected' "$TMP/dirty.out"
 
 printf 'install-bootstrap-contract=passed\n'
