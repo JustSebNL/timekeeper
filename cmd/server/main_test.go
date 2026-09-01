@@ -367,3 +367,24 @@ func TestDashboardServesCurrentFrameworkNeutralUI(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardProvidesRecentActivityPanel(t *testing.T) {
+	html, err := os.ReadFile(filepath.Join("..", "..", "web", "index.html"))
+	if err != nil {
+		t.Fatalf("read dashboard HTML: %v", err)
+	}
+	for _, marker := range []string{`id="activity-card"`, `id="activity"`, "Recent activity"} {
+		if !strings.Contains(string(html), marker) {
+			t.Fatalf("dashboard HTML missing %q", marker)
+		}
+	}
+	js, err := os.ReadFile(filepath.Join("..", "..", "web", "timekeeper.js"))
+	if err != nil {
+		t.Fatalf("read dashboard JavaScript: %v", err)
+	}
+	for _, marker := range []string{"function renderRecentActivity", "function loadRecentActivity", "/events"} {
+		if !strings.Contains(string(js), marker) {
+			t.Fatalf("dashboard JavaScript missing %q", marker)
+		}
+	}
+}

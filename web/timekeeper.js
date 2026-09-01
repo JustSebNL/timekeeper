@@ -7,6 +7,7 @@
   const projects = document.querySelector('#projects');
   const pulseTarget = document.querySelector('#pulse');
   const guardianTarget = document.querySelector('#guardian');
+  const activityTarget = document.querySelector('#activity');
   const message = document.querySelector('#message');
   const connection = document.querySelector('#connection');
   const sidebarAPIStatus = document.querySelector('#sidebar-api-status');
@@ -1090,6 +1091,56 @@
     }
   }
 
+  function formatActivityTime(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'just now';
+    return date.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'});
+  }
+
+  function renderRecentActivity(items) {
+    activityTarget.replaceChildren();
+    if (!items.length) {
+      activityTarget.className = 'activity-list empty';
+      activityTarget.textContent = 'No recorded activity yet.';
+      return;
+    }
+    activityTarget.className = 'activity-list';
+    for (const entry of items.slice(0, 8)) {
+      const row = document.createElement('div');
+      row.className = 'activity-item';
+      const dot = document.createElement('span');
+      dot.className = 'activity-dot';
+      dot.setAttribute('aria-hidden', 'true');
+      const copy = document.createElement('div');
+      copy.className = 'activity-copy';
+      const project = document.createElement('div');
+      project.className = 'activity-project';
+      project.textContent = entry.projectName;
+      const messageText = document.createElement('div');
+      messageText.className = 'activity-message';
+      messageText.textContent = entry.event.message || entry.event.event_type || 'Project activity recorded';
+      const timestamp = document.createElement('time');
+      timestamp.className = 'activity-time';
+      timestamp.dateTime = entry.event.created_at || '';
+      timestamp.textContent = formatActivityTime(entry.event.created_at);
+      copy.append(project, messageText);
+      row.append(dot, copy, timestamp);
+      activityTarget.append(row);
+    }
+  }
+
+  async function loadRecentActivity(items) {
+    const responses = await Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/events').catch(() => ({items: []}))));
+    const activity = [];
+    for (let index = 0; index < responses.length; index += 1) {
+      for (const event of responses[index].items || []) {
+        activity.push({event, projectName: items[index].project_name || items[index].project_id});
+      }
+    }
+    activity.sort((left, right) => new Date(right.event.created_at).getTime() - new Date(left.event.created_at).getTime());
+    renderRecentActivity(activity);
+  }
+
   async function load() {
     void loadPulse();
     void loadGuardianStatus();
@@ -1097,7 +1148,10 @@
       const data = await request(api);
       const items = data.items || [];
       render(items);
-      const summaries = await Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/operational-summary').catch(() => null)));
+      const [summaries] = await Promise.all([
+        Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/operational-summary').catch(() => null))),
+        loadRecentActivity(items)
+      ]);
       statActive.textContent = summaries.reduce((total, summary) => total + (summary?.active_sprints || 0), 0);
       connection.textContent = 'Local API connected';
       sidebarAPIStatus.textContent = 'Online';
@@ -1105,6 +1159,8 @@
     } catch (error) {
       projects.textContent = error.message;
       projects.className = 'empty';
+      activityTarget.className = 'activity-list empty error';
+      activityTarget.textContent = 'Activity unavailable.';
       connection.textContent = 'Local API unavailable';
       sidebarAPIStatus.textContent = 'Offline';
       sidebarAPIStatus.style.color = 'var(--red)';
@@ -1131,6 +1187,18 @@
   });
 
   projectFilter?.addEventListener('input', filterProjectCards);
+  document.querySelectorAll('.nav-item[href^="#"]').forEach(item => {
+    item.addEventListener('click', () => {
+      document.querySelectorAll('.nav-item.active').forEach(active => active.classList.remove('active'));
+      item.classList.add('active');
+    });
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) {
+      event.preventDefault();
+      projectFilter?.focus();
+    }
+  });
   refreshDashboard?.addEventListener('click', () => {
     refreshDashboard.disabled = true;
     Promise.resolve(load()).finally(() => { refreshDashboard.disabled = false; });

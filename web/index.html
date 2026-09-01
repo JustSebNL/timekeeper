@@ -36,7 +36,7 @@
       <div class="nav-label nav-label-spaced">Manage</div>
       <nav class="nav-list">
         <a class="nav-item" href="#new-project"><span class="nav-icon">＋</span><span>New project</span></a>
-        <a class="nav-item" href="#projects-panel"><span class="nav-icon">◌</span><span>Activity</span></a>
+        <a class="nav-item" href="#activity-card"><span class="nav-icon">◌</span><span>Activity</span></a>
       </nav>
 
       <div class="sidebar-spacer"></div>
@@ -97,6 +97,12 @@
           <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Live monitoring</p><h2>Pulse</h2></div><span class="pulse-orb" aria-hidden="true">◒</span></div>
           <p class="panel-description">Work that has moved beyond its declared Sprint plan.</p>
           <div id="pulse" class="empty">Checking attention…</div>
+        </section>
+
+        <section class="panel panel-activity" id="activity-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Audit trail</p><h2>Recent activity</h2></div><span class="panel-link">Live <span class="live-dot"></span></span></div>
+          <p class="panel-description">Immutable changes recorded across the workspace.</p>
+          <div id="activity" class="activity-list empty">Loading activity…</div>
         </section>
 
         <section class="panel panel-guardian" id="guardian-card" aria-live="polite">
