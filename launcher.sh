@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#
+# Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 # launcher.sh — TimeKeeper resilient launcher
 #   - checks the canonical health endpoint before touching any process
 #   - only recovers/starts when TK is absent or unhealthy
@@ -15,7 +15,7 @@ set -u
 REPO="/mnt/d/dev/codebase/dev/TimeKeeper"
 BIN="$REPO/.timekeeper/app/bin/timekeeper"
 DB="$REPO/.timekeeper/timekeeper.db"
-UI="$REPO/.timekeeper/web/timekeeper.html"
+UI="$REPO/.timekeeper/web/index.html"
 ADDR="127.0.0.1:1618"
 PORT="1618"
 UPDATE_INTERVAL_HOURS=24
@@ -144,7 +144,7 @@ fi
 # paths into D:\mnt\d\... — so it MUST be launched with RELATIVE paths from
 # the repo root (this is how the healthy :1621 instance runs).
 log "starting TK on :$PORT (relative paths from $REPO)"
-setsid nohup "$BIN" -addr "$ADDR" -db .timekeeper/timekeeper.db -ui .timekeeper/web/timekeeper.html -pulse-guardian-interval 5m \
+setsid nohup "$BIN" -addr "$ADDR" -db .timekeeper/timekeeper.db -ui .timekeeper/web/index.html -pulse-guardian-interval 5m \
   >> "$LOG" 2>&1 &
 
 # ─── 4. Verify it came up ───────────────────────────────────────────────────

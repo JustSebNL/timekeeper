@@ -138,7 +138,7 @@ Agent / Guardian
   agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge
 
 Server (start the HTTP service)
-  timekeeper -addr 127.0.0.1:1618 -db .timekeeper/timekeeper.db -ui web/timekeeper.html
+  timekeeper -addr 127.0.0.1:1618 -db .timekeeper/timekeeper.db -ui web/index.html
 
 Run 'tk <command> --help' for details on a specific command.
 `)
@@ -155,7 +155,7 @@ func main() {
 	}
 	addr := flag.String("addr", "127.0.0.1:1618", "HTTP listen address")
 	dbPath := flag.String("db", "timekeeper.db", "SQLite database path")
-	uiPath := flag.String("ui", ".timekeeper/web/timekeeper.html", "dashboard HTML path")
+	uiPath := flag.String("ui", ".timekeeper/web/index.html", "dashboard HTML path")
 	backupTo := flag.String("backup-to", "", "create a SQLite backup at this new path, then exit")
 	pulseGuardianInterval := flag.Duration("pulse-guardian-interval", 0, "run the local Pulse Guardian at this interval; 0 disables it")
 	flag.Parse()
@@ -221,7 +221,7 @@ func runBackup(ctx context.Context, database *store.Store, destination string) (
 
 func dashboard(path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Serve the web directory statically. index.html redirects to timekeeper.html.
+		// Serve the web directory statically. index.html is the canonical dashboard entrypoint.
 		webDir := filepath.Dir(path)
 		fs := http.FileServer(http.Dir(webDir))
 		// Strip prefix so paths resolve relative to webDir

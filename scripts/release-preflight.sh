@@ -20,7 +20,7 @@ if ! command -v node >/dev/null 2>&1; then
   printf 'Time Keeper release preflight requires Node.js to syntax-check the dashboard script.\n' >&2
   exit 69
 fi
-for asset in .timekeeper/web/timekeeper.html .timekeeper/web/timekeeper.css .timekeeper/web/timekeeper.js; do
+for asset in .timekeeper/web/index.html .timekeeper/web/timekeeper.css .timekeeper/web/timekeeper.js .timekeeper/web/vendor/bootstrap-5.3.8.min.css; do
   [[ -f "$ROOT/$asset" && -r "$ROOT/$asset" ]] || { printf 'Missing dashboard asset: %s\n' "$asset" >&2; exit 66; }
 done
 node --check "$ROOT/.timekeeper/web/timekeeper.js"

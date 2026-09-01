@@ -42,7 +42,8 @@ test ! -e "$DESTINATION/state/timekeeper.db"
 test -x "$DESTINATION/timekeeper"
 test -x "$DESTINATION/tk"
 test -s "$DESTINATION/INSTALLATION.env"
-test -f "$(dirname "$DESTINATION")/web/timekeeper.html"
+test -f "$(dirname "$DESTINATION")/web/index.html"
+test -f "$(dirname "$DESTINATION")/web/vendor/bootstrap-5.3.8.min.css"
 
 TIMEKEEPER_ADDR="127.0.0.1:$PORT" "$DESTINATION/timekeeper" >"$TMP/server.log" 2>&1 &
 SERVER_PID="$!"

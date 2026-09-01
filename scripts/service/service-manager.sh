@@ -27,7 +27,7 @@ CLI_BIN="$STATE_ROOT/app/bin/tk"
 GUARDIAN_BIN="$STATE_ROOT/app/bin/guardian"
 ADDR="${TIMEKEEPER_ADDR:-127.0.0.1:1618}"
 DB_PATH="$STATE_ROOT/timekeeper.db"
-UI_PATH="$REPO/.timekeeper/web/timekeeper.html"
+UI_PATH="$REPO/.timekeeper/web/index.html"
 GUARDIAN_ADDR="${TIMEKEEPER_GUARDIAN_RECEIVER_ADDR:-127.0.0.1:1619}"
 GUARDIAN_AGENT="${TIMEKEEPER_GUARDIAN_RECEIVER_AGENT:-xatia}"
 GUARDIAN_INTERVAL="${TIMEKEEPER_PULSE_GUARDIAN_INTERVAL:-5m}"
@@ -106,7 +106,7 @@ win_install() {
   # Install the service
   "$nssm" install "$SERVICE_NAME" "$BIN"
   "$nssm" set "$SERVICE_NAME" AppDirectory "$REPO"
-  "$nssm" set "$SERVICE_NAME" AppParameters "-addr $ADDR -db .timekeeper/timekeeper.db -ui .timekeeper/web/timekeeper.html -pulse-guardian-interval $GUARDIAN_INTERVAL"
+  "$nssm" set "$SERVICE_NAME" AppParameters "-addr $ADDR -db .timekeeper/timekeeper.db -ui .timekeeper/web/index.html -pulse-guardian-interval $GUARDIAN_INTERVAL"
   "$nssm" set "$SERVICE_NAME" DisplayName "TimeKeeper — Project Execution Memory"
   "$nssm" set "$SERVICE_NAME" Description "Local project execution memory for AI agents. Runs on loopback $ADDR."
   "$nssm" set "$SERVICE_NAME" Start SERVICE_DELAYED_AUTO_START

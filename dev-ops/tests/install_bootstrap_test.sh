@@ -83,7 +83,8 @@ TARGET="$SOURCE/.timekeeper/app"
   TIMEKEEPER_GO="$FAKE_GO" bash ./install.sh > "$TMP/install.out"
 )
 [[ -f "$TARGET/app/README.md" ]]
-[[ -f "$TARGET/../web/timekeeper.html" ]]
+[[ -f "$TARGET/../web/index.html" ]]
+[[ -f "$TARGET/../web/vendor/bootstrap-5.3.8.min.css" ]]
 [[ -x "$TARGET/bin/timekeeper" ]]
 [[ -x "$TARGET/bin/tk" ]]
 [[ -x "$TARGET/timekeeper" ]]

@@ -91,7 +91,7 @@ trap cleanup EXIT
 mkdir -p "$INSTALL_ROOT/app" "$INSTALL_ROOT/bin" "$INSTALL_ROOT/state" "$STATE_ROOT/web"
 chmod 700 "$INSTALL_ROOT" "$INSTALL_ROOT/bin" "$INSTALL_ROOT/state" "$STATE_ROOT/web"
 git -C "$SOURCE" archive --format=tar "$COMMIT" | tar -xf - -C "$INSTALL_ROOT/app"
-[[ -f "$INSTALL_ROOT/app/go.mod" && -f "$INSTALL_ROOT/app/web/timekeeper.html" ]] || fail 'verified source archive is missing required application files.'
+[[ -f "$INSTALL_ROOT/app/go.mod" && -f "$INSTALL_ROOT/app/web/index.html" ]] || fail 'verified source archive is missing required application files.'
 # Move web assets to .timekeeper/web/ (served from there, outside the app tree so refreshes preserve customizations)
 mv "$INSTALL_ROOT/app/web/"* "$STATE_ROOT/web/"
 rmdir "$INSTALL_ROOT/app/web"
@@ -130,7 +130,7 @@ set -Eeuo pipefail
 ROOT="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd -P)"
 ADDR="\${TIMEKEEPER_ADDR:-127.0.0.1:1618}"
 DB_PATH="\${TIMEKEEPER_DB:-\$ROOT/state/timekeeper.db}"
-UI_PATH="${TIMEKEEPER_UI:-$ROOT/../web/timekeeper.html}"
+UI_PATH="${TIMEKEEPER_UI:-$ROOT/../web/index.html}"
 PULSE_GUARDIAN_INTERVAL="\${TIMEKEEPER_PULSE_GUARDIAN_INTERVAL:-5m}"
 GUARDIAN_RECEIVER_ADDR="\${TIMEKEEPER_GUARDIAN_RECEIVER_ADDR:-127.0.0.1:1619}"
 GUARDIAN_RECEIVER_AGENT="\${TIMEKEEPER_GUARDIAN_RECEIVER_AGENT:-xatia}"

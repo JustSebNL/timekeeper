@@ -57,7 +57,11 @@ The installer keeps everything it creates inside this clone:
 ```text
 TimeKeeper/
   .timekeeper/
-    app/        the installed app and local state
+    app/        installed source, wrappers, and binaries
+    state/      SQLite runtime state
+    web/        served dashboard assets; index.html is the entrypoint
+    service/    optional local service definitions
+    log/        local service and launcher logs
 ```
 
 It does not put files in your home folder, change your `PATH`, install a service, download code, or start a server without you asking.
@@ -82,6 +86,8 @@ Then open `http://127.0.0.1:1618/` in a browser. In another terminal, these are 
 ./.timekeeper/app/tk list
 ./.timekeeper/app/tk tree <project-id>
 ```
+
+The browser dashboard is served from the local loopback service's canonical `index.html` entrypoint. In the source checkout, it is `web/index.html`; after bootstrap, the served copy is `.timekeeper/web/index.html`. The dashboard loads the repository-contained Bootstrap `5.3.8` stylesheet from `.timekeeper/web/vendor/bootstrap-5.3.8.min.css` and then applies Time Keeper's custom dashboard theme. It does not depend on a CDN or an external font service. `web/timekeeper.html` is retained only as a compatibility redirect to `index.html`.
 
 The server listens only on your own machine. Stop it with `Ctrl+C` when you are done.
 

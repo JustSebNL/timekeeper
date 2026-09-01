@@ -64,6 +64,10 @@ Estimates and durations use Go duration syntax, for example `90m`, `2h`, or `1h3
 
 `tk doctor` performs a non-mutating `/health` readiness check against the configured endpoint and reports a recovery hint when the API is unavailable.
 
+## Dashboard entrypoint
+
+The canonical browser dashboard is served at `http://127.0.0.1:1618/` from `index.html`. In a source checkout the document is `web/index.html`; the narrow local bootstrap serves the copied document from `.timekeeper/web/index.html`. The dashboard loads the vendored Bootstrap `5.3.8` stylesheet first and Time Keeper's custom stylesheet second. `web/timekeeper.html` is only a compatibility redirect and is not the primary UI document.
+
 `tk pulse` prints every Active Sprint whose recorded and current active time has exceeded its estimate, buffer, and approved extensions. It is a read-only local attention check: it does not create reminder records, start a timer, send a notification, or contact another service. `clear\tnext=60s` means there is no such Sprint at this instant.
 
 ## Pulse Guardian
