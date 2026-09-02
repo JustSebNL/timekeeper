@@ -1119,11 +1119,14 @@
       const messageText = document.createElement('div');
       messageText.className = 'activity-message';
       messageText.textContent = entry.event.message || entry.event.event_type || 'Project activity recorded';
+      const eventType = document.createElement('span');
+      eventType.className = 'activity-type';
+      eventType.textContent = (entry.event.event_type || 'project event').split('_').join(' ');
       const timestamp = document.createElement('time');
       timestamp.className = 'activity-time';
       timestamp.dateTime = entry.event.created_at || '';
       timestamp.textContent = formatActivityTime(entry.event.created_at);
-      copy.append(project, messageText);
+      copy.append(project, eventType, messageText);
       row.append(dot, copy, timestamp);
       activityTarget.append(row);
     }
