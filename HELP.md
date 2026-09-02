@@ -66,7 +66,9 @@ Estimates and durations use Go duration syntax, for example `90m`, `2h`, or `1h3
 
 ## Dashboard entrypoint
 
-The canonical browser dashboard is served at `http://127.0.0.1:1618/` from `index.html`. In a source checkout the document is `web/index.html`; the narrow local bootstrap serves the copied document from `.timekeeper/web/index.html`. The dashboard loads the vendored Bootstrap `5.3.8` stylesheet first and Time Keeper's custom stylesheet second. `web/timekeeper.html` is only a compatibility redirect and is not the primary UI document.
+The canonical browser dashboard is served at `http://127.0.0.1:1618/` from `index.html`. In a source checkout the document is `web/index.html`; the narrow local bootstrap serves the copied document from `.timekeeper/web/index.html`. The dashboard loads the vendored Bootstrap `5.3.8` stylesheet first and Time Keeper's custom stylesheet second. It exposes live project metrics, Pulse/Guardian status, and Recent Activity from immutable Project events. `web/timekeeper.html` is only a compatibility redirect and is not the primary UI document.
+
+The server performs one lightweight loopback `GET /health` keep-alive every five minutes by default. It does not write to SQLite, prevent Windows or WSL sleep, or replace OS service recovery. Pass `-keep-alive-interval 0` to disable it. `scripts/service/kick-server.sh` and `scripts/service/kick-server.bat` are failure-only recovery hooks: they stay silent when `/health` is healthy and restart the service or launcher only after a failed health check.
 
 `tk pulse` prints every Active Sprint whose recorded and current active time has exceeded its estimate, buffer, and approved extensions. It is a read-only local attention check: it does not create reminder records, start a timer, send a notification, or contact another service. `clear\tnext=60s` means there is no such Sprint at this instant.
 

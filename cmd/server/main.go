@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -138,7 +139,7 @@ Agent / Guardian
   agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge
 
 Server (start the HTTP service)
-  timekeeper -addr 127.0.0.1:1618 -db .timekeeper/timekeeper.db -ui web/index.html
+  timekeeper -addr 127.0.0.1:1618 -db .timekeeper/timekeeper.db -ui web/index.html -keep-alive-interval 5m
 
 Run 'tk <command> --help' for details on a specific command.
 `)
@@ -156,6 +157,7 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:1618", "HTTP listen address")
 	dbPath := flag.String("db", "timekeeper.db", "SQLite database path")
 	uiPath := flag.String("ui", ".timekeeper/web/index.html", "dashboard HTML path")
+	keepAliveInterval := flag.Duration("keep-alive-interval", 5*time.Minute, "local dashboard keep-alive interval; 0 disables it")
 	backupTo := flag.String("backup-to", "", "create a SQLite backup at this new path, then exit")
 	pulseGuardianInterval := flag.Duration("pulse-guardian-interval", 0, "run the local Pulse Guardian at this interval; 0 disables it")
 	flag.Parse()
@@ -189,6 +191,9 @@ func main() {
 		})
 		log.Printf("Pulse Guardian enabled with %s interval", *pulseGuardianInterval)
 	}
+	if *keepAliveInterval > 0 {
+		go runKeepAlive(context.Background(), *addr, *keepAliveInterval)
+	}
 
 	apiHandler := api.NewWithRuntime(database, api.RuntimeStatus{
 		PulseGuardianEnabled:         *pulseGuardianInterval > 0,
@@ -210,6 +215,37 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Time Keeper server: %v", err)
 	}
+}
+
+// runKeepAlive makes a low-frequency loopback health request so a local
+// service remains active in environments that suspend otherwise-idle WSL
+// workloads. It deliberately does not touch SQLite, write logs, or keep the
+// host awake; service and OS power policy remain the real lifecycle owners.
+func runKeepAlive(ctx context.Context, addr string, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	client := &http.Client{Timeout: 2 * time.Second}
+	for {
+		select {
+		case <-ticker.C:
+			keepAliveOnce(ctx, client, addr)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func keepAliveOnce(ctx context.Context, client *http.Client, addr string) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/health", nil)
+	if err != nil {
+		return
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
 }
 
 func runBackup(ctx context.Context, database *store.Store, destination string) (string, error) {

@@ -87,7 +87,9 @@ Then open `http://127.0.0.1:1618/` in a browser. In another terminal, these are 
 ./.timekeeper/app/tk tree <project-id>
 ```
 
-The browser dashboard is served from the local loopback service's canonical `index.html` entrypoint. In the source checkout, it is `web/index.html`; after bootstrap, the served copy is `.timekeeper/web/index.html`. The dashboard loads the repository-contained Bootstrap `5.3.8` stylesheet from `.timekeeper/web/vendor/bootstrap-5.3.8.min.css` and then applies Time Keeper's custom dashboard theme. It does not depend on a CDN or an external font service. `web/timekeeper.html` is retained only as a compatibility redirect to `index.html`.
+The browser dashboard is served from the local loopback service's canonical `index.html` entrypoint. In the source checkout, it is `web/index.html`; after bootstrap, the served copy is `.timekeeper/web/index.html`. The dashboard loads the repository-contained Bootstrap `5.3.8` stylesheet from `.timekeeper/web/vendor/bootstrap-5.3.8.min.css` and then applies Time Keeper's custom dashboard theme. It includes live project metrics, Pulse/Guardian status, and a Recent Activity view backed by immutable Project events. It does not depend on a CDN or an external font service. `web/timekeeper.html` is retained only as a compatibility redirect to `index.html`.
+
+The server performs one lightweight loopback `GET /health` keep-alive every five minutes by default. It does not write to SQLite, prevent Windows or WSL sleep, or replace OS service recovery. Set `-keep-alive-interval 0` to disable it. `scripts/service/kick-server.sh` and `scripts/service/kick-server.bat` are failure-only recovery hooks: they stay silent when `/health` is healthy and restart the service or launcher only after a failed health check.
 
 The server listens only on your own machine. Stop it with `Ctrl+C` when you are done.
 
