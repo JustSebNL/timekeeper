@@ -12,6 +12,8 @@ tk list
 tk tree <project-id>
 tk export <project-id> > project-export.json
 tk summary <project-id>
+tk usage <project-id>
+tk usage record <project-id> <session-id> <agent-id> <model> <turn> <input> <output> [cache-write] [cache-read] [messages] [sprint-id]
 tk pulse
 tk agent progress <agent-id> <lease> [sprint-id] [guardian-url]
 tk agent nudges <agent-id>

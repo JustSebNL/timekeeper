@@ -7,6 +7,17 @@
   const projects = document.querySelector('#projects');
   const pulseTarget = document.querySelector('#pulse');
   const guardianTarget = document.querySelector('#guardian');
+  const usageCoverage = document.querySelector('#usage-coverage');
+  const usageTokens = document.querySelector('#usage-tokens');
+  const usageSessions = document.querySelector('#usage-sessions');
+  const usageInput = document.querySelector('#usage-input');
+  const usageOutput = document.querySelector('#usage-output');
+  const usageBreakdownBar = document.querySelector('#usage-breakdown-bar');
+  const usageLegend = document.querySelector('#usage-legend');
+  const usageProjects = document.querySelector('#usage-projects');
+  const usageTimeline = document.querySelector('#usage-timeline');
+  const usageSessionList = document.querySelector('#usage-session-list');
+  const focusTarget = document.querySelector('#focus');
   const activityTarget = document.querySelector('#activity');
   const message = document.querySelector('#message');
   const connection = document.querySelector('#connection');
@@ -1144,6 +1155,217 @@
     renderRecentActivity(activity);
   }
 
+  function formatSeconds(value) {
+    const seconds = Math.max(0, Number(value) || 0);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    if (hours) return hours + 'h ' + minutes + 'm';
+    return minutes + 'm';
+  }
+
+  function renderFocus(items, summaries) {
+    focusTarget.replaceChildren();
+    if (!items.length) {
+      focusTarget.className = 'focus-list empty';
+      focusTarget.textContent = 'No projects to focus on yet.';
+      return;
+    }
+    focusTarget.className = 'focus-list';
+    for (let index = 0; index < items.length; index += 1) {
+      const project = items[index];
+      const summary = summaries[index];
+      if (!summary) continue;
+      const row = document.createElement('div');
+      row.className = 'focus-row';
+      const projectInfo = document.createElement('div');
+      projectInfo.className = 'focus-project';
+      const name = document.createElement('strong');
+      name.textContent = project.project_name;
+      const status = document.createElement('small');
+      status.textContent = project.status + ' · ' + summary.total_sprints + ' sprint(s)';
+      projectInfo.append(name, status);
+      const progress = document.createElement('div');
+      progress.className = 'focus-progress';
+      const track = document.createElement('div');
+      track.className = 'focus-progress-track';
+      const fill = document.createElement('div');
+      fill.className = 'focus-progress-fill';
+      fill.style.width = Math.max(0, Math.min(100, Number(project.calculated_completion_pct || 0))) + '%';
+      track.append(fill);
+      const progressLabel = document.createElement('span');
+      progressLabel.className = 'focus-progress-label';
+      progressLabel.textContent = Number(project.calculated_completion_pct || 0).toFixed(1) + '% complete';
+      progress.append(track, progressLabel);
+      row.append(projectInfo, progress);
+      const metrics = [
+        ['Active', summary.active_sprints],
+        ['On hold', summary.held_sprints],
+        ['Planned', formatSeconds(summary.planned_duration_seconds)],
+        ['Recorded', formatSeconds(summary.recorded_work_seconds)]
+      ];
+      for (const [labelText, value] of metrics) {
+        const metric = document.createElement('div');
+        metric.className = 'focus-metric';
+        const label = document.createElement('span');
+        label.textContent = labelText;
+        const number = document.createElement('strong');
+        number.textContent = value;
+        metric.append(label, number);
+        row.append(metric);
+      }
+      focusTarget.append(row);
+    }
+    if (!focusTarget.children.length) {
+      focusTarget.className = 'focus-list empty';
+      focusTarget.textContent = 'Project focus data unavailable.';
+    }
+  }
+
+  function compactTokenCount(value) {
+    if (value >= 1000000000) return (value / 1000000000).toFixed(1) + 'B';
+    if (value >= 1000000) return (value / 1000000).toFixed(1) + 'M';
+    if (value >= 1000) return (value / 1000).toFixed(1) + 'K';
+    return String(value);
+  }
+
+  function renderUsage(entries) {
+    const sessions = entries.flatMap(entry => (entry.summary?.sessions || []).map(session => ({session, projectName: entry.projectName})));
+    const totals = sessions.reduce((sum, entry) => {
+      sum.input += entry.session.input_tokens || 0;
+      sum.output += entry.session.output_tokens || 0;
+      sum.cacheCreation += entry.session.cache_creation_tokens || 0;
+      sum.cacheRead += entry.session.cache_read_tokens || 0;
+      return sum;
+    }, {input: 0, output: 0, cacheCreation: 0, cacheRead: 0});
+    const totalTokens = totals.input + totals.output + totals.cacheCreation + totals.cacheRead;
+    usageTokens.textContent = compactTokenCount(totalTokens);
+    usageSessions.textContent = sessions.length;
+    usageInput.textContent = compactTokenCount(totals.input);
+    usageOutput.textContent = compactTokenCount(totals.output);
+    usageCoverage.textContent = sessions.length ? sessions.length + ' recorded' : 'Awaiting data';
+    usageBreakdownBar.replaceChildren();
+    usageLegend.replaceChildren();
+    const types = [
+      ['Input', totals.input, 'var(--purple)'],
+      ['Output', totals.output, 'var(--cyan)'],
+      ['Cache write', totals.cacheCreation, 'var(--green)'],
+      ['Cache read', totals.cacheRead, 'var(--amber)']
+    ];
+    for (const [labelText, value, color] of types) {
+      const segment = document.createElement('span');
+      segment.className = 'usage-breakdown-segment';
+      segment.style.width = (totalTokens ? (value / totalTokens * 100) : 0) + '%';
+      segment.style.background = color;
+      usageBreakdownBar.append(segment);
+      const legend = document.createElement('span');
+      legend.className = 'usage-legend-item';
+      const dot = document.createElement('i');
+      dot.className = 'usage-legend-dot';
+      dot.style.background = color;
+      const text = document.createElement('span');
+      text.textContent = labelText;
+      const number = document.createElement('strong');
+      number.textContent = compactTokenCount(value);
+      legend.append(dot, text, number);
+      usageLegend.append(legend);
+    }
+    usageProjects.replaceChildren();
+    usageTimeline.replaceChildren();
+    usageSessionList.replaceChildren();
+    if (!sessions.length) {
+      usageProjects.className = 'usage-projects empty';
+      usageProjects.textContent = 'No agent usage recorded yet. The panel will populate when a connected agent sends its first snapshot.';
+      usageTimeline.className = 'usage-days empty';
+      usageTimeline.textContent = 'No daily usage recorded yet.';
+      usageSessionList.className = 'usage-session-list empty';
+      usageSessionList.textContent = 'No sessions recorded yet.';
+      return;
+    }
+    usageProjects.className = 'usage-projects';
+    const daily = new Map();
+    for (const entry of entries) {
+      for (const day of entry.summary?.days || []) {
+        const current = daily.get(day.date) || {date: day.date, tokens: 0};
+        current.tokens += (day.input_tokens || 0) + (day.output_tokens || 0) + (day.cache_creation_tokens || 0) + (day.cache_read_tokens || 0);
+        daily.set(day.date, current);
+      }
+    }
+    usageTimeline.className = 'usage-days';
+    const dayRows = [...daily.values()].sort((left, right) => left.date.localeCompare(right.date)).slice(-7);
+    if (!dayRows.length) {
+      usageTimeline.className = 'usage-days empty';
+      usageTimeline.textContent = 'No daily usage recorded yet.';
+    } else {
+      const maxDay = Math.max(...dayRows.map(day => day.tokens), 1);
+      for (const day of dayRows) {
+        const column = document.createElement('div');
+        column.className = 'usage-day';
+        const value = document.createElement('span');
+        value.className = 'usage-day-value';
+        value.textContent = compactTokenCount(day.tokens);
+        const bar = document.createElement('span');
+        bar.className = 'usage-day-bar';
+        bar.style.height = Math.max(3, day.tokens / maxDay * 46) + 'px';
+        bar.title = day.date + ': ' + day.tokens.toLocaleString() + ' tokens';
+        const label = document.createElement('span');
+        label.className = 'usage-day-label';
+        label.textContent = day.date.slice(5);
+        column.append(value, bar, label);
+        usageTimeline.append(column);
+      }
+    }
+    usageSessionList.className = 'usage-session-list';
+    for (const entry of sessions.slice().sort((left, right) => {
+      const leftTotal = (left.session.input_tokens || 0) + (left.session.output_tokens || 0) + (left.session.cache_creation_tokens || 0) + (left.session.cache_read_tokens || 0);
+      const rightTotal = (right.session.input_tokens || 0) + (right.session.output_tokens || 0) + (right.session.cache_creation_tokens || 0) + (right.session.cache_read_tokens || 0);
+      return rightTotal - leftTotal;
+    }).slice(0, 6)) {
+      const row = document.createElement('div');
+      row.className = 'usage-session-row';
+      const copy = document.createElement('div');
+      copy.className = 'usage-session-main';
+      const title = document.createElement('div');
+      title.className = 'usage-session-title';
+      title.textContent = entry.session.title || entry.session.session_id;
+      const meta = document.createElement('div');
+      meta.className = 'usage-session-meta';
+      meta.textContent = entry.projectName + ' · ' + (entry.session.agent_id || 'unknown agent') + ' · ' + (entry.session.model || 'unknown model');
+      const tokens = document.createElement('span');
+      tokens.className = 'usage-session-tokens';
+      tokens.textContent = compactTokenCount((entry.session.input_tokens || 0) + (entry.session.output_tokens || 0) + (entry.session.cache_creation_tokens || 0) + (entry.session.cache_read_tokens || 0));
+      copy.append(title, meta);
+      row.append(copy, tokens);
+      usageSessionList.append(row);
+    }
+    const projectTotals = new Map();
+    for (const entry of sessions) {
+      const value = (entry.session.input_tokens || 0) + (entry.session.output_tokens || 0) + (entry.session.cache_creation_tokens || 0) + (entry.session.cache_read_tokens || 0);
+      projectTotals.set(entry.projectName, (projectTotals.get(entry.projectName) || 0) + value);
+    }
+    const rows = [...projectTotals.entries()].sort((left, right) => right[1] - left[1]).slice(0, 6);
+    const max = rows[0]?.[1] || 1;
+    for (const [projectName, value] of rows) {
+      const card = document.createElement('div');
+      card.className = 'usage-project';
+      const heading = document.createElement('div');
+      heading.className = 'usage-project-heading';
+      const name = document.createElement('strong');
+      name.textContent = projectName;
+      const amount = document.createElement('span');
+      amount.className = 'usage-project-value';
+      amount.textContent = compactTokenCount(value);
+      heading.append(name, amount);
+      const track = document.createElement('div');
+      track.className = 'usage-project-track';
+      const fill = document.createElement('div');
+      fill.className = 'usage-project-fill';
+      fill.style.width = (value / max * 100) + '%';
+      track.append(fill);
+      card.append(heading, track);
+      usageProjects.append(card);
+    }
+  }
+
   async function load() {
     void loadPulse();
     void loadGuardianStatus();
@@ -1151,11 +1373,14 @@
       const data = await request(api);
       const items = data.items || [];
       render(items);
-      const [summaries] = await Promise.all([
+      const [summaries, usageSummaries] = await Promise.all([
         Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/operational-summary').catch(() => null))),
+        Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/usage-summary').catch(() => null))),
         loadRecentActivity(items)
       ]);
       statActive.textContent = summaries.reduce((total, summary) => total + (summary?.active_sprints || 0), 0);
+      renderFocus(items, summaries);
+      renderUsage(usageSummaries.map((summary, index) => ({summary, projectName: items[index].project_name || items[index].project_id})));
       connection.textContent = 'Local API connected';
       sidebarAPIStatus.textContent = 'Online';
       sidebarAPIStatus.style.color = 'var(--green)';
@@ -1164,6 +1389,11 @@
       projects.className = 'empty';
       activityTarget.className = 'activity-list empty error';
       activityTarget.textContent = 'Activity unavailable.';
+      focusTarget.className = 'focus-list empty error';
+      focusTarget.textContent = 'Project focus unavailable.';
+      usageCoverage.textContent = 'Unavailable';
+      usageProjects.className = 'usage-projects empty error';
+      usageProjects.textContent = 'Token usage unavailable.';
       connection.textContent = 'Local API unavailable';
       sidebarAPIStatus.textContent = 'Offline';
       sidebarAPIStatus.style.color = 'var(--red)';

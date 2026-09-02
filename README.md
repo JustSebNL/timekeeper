@@ -15,6 +15,7 @@ It is a local workspace for the things that usually get lost between conversatio
 - Keeps a durable history of changes, notes, time spent, holds, and extensions.
 - Surfaces active Sprints that have exceeded their declared plan through a local Pulse.
 - Can run an independent local Pulse Guardian that detects an agent which stopped reporting material progress and sends a durable attention-recovery signal to an explicitly registered loopback Guardian.
+- Accepts explicit cumulative agent usage snapshots and exposes truthful Project token summaries, while leaving unknown pricing and uncovered sessions visible.
 - Lets an agent or a person inspect the same plan from the dashboard, the `tk` command, or the local API.
 - Keeps the plan and history on the local machine. It does not need a cloud account.
 
@@ -42,7 +43,7 @@ Over time, Time Keeper should help agents see which models spend tokens without 
 
 That means connecting the time and outcome of a piece of work with the model that handled it. An agent should be able to spot a model that burns a large budget, loops on a task, or creates work that later has to be redone. The point is not to crown a permanent winner. It is to choose the model that is earning its place for this job.
 
-That insight is a direction, not a finished feature. Time Keeper does not yet collect or score token use automatically.
+That insight is a direction, not a finished automatic integration. Time Keeper can now accept explicit cumulative agent usage snapshots and show token totals, but it does not scrape arbitrary agent transcripts or claim complete coverage automatically.
 
 ## Install and run
 

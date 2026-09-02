@@ -51,6 +51,19 @@ X-LLM-Model: supplied only when known
 12. Persist returned public IDs and Item Addresses in the framework's own task context.
 13. Treat every response as the source of truth; do not derive IDs or reconstruct history from chat.
 
+## Agent usage snapshots
+
+When an adapter can report usage, send cumulative counters at each completed turn. Keep one stable session ID for the conversation and increase `turn_seq` monotonically:
+
+```bash
+curl -sS -X POST http://127.0.0.1:1618/api/v1/projects/P-10053/usage-sessions/session-42/snapshots \
+  -H 'Content-Type: application/json' \
+  -H 'X-Agent-ID: agent:worker-7' \
+  -d '{"agent_id":"agent:worker-7","model":"gpt-5","turn_seq":7,"input_tokens":12000,"output_tokens":1800,"cache_creation_tokens":500,"cache_read_tokens":2400,"messages":14}'
+```
+
+Counters are cumulative; Time Keeper returns the newly observed delta and treats a repeated session/turn as an idempotent no-op. Send a new session ID if the provider resets its counters. Redact credentials, prompt bodies, private transcript paths, and tool output before sending. Only sessions that submit snapshots are covered; unknown pricing is not guessed. Read a Project's aggregate with `GET /api/v1/projects/{projectID}/usage-summary`.
+
 Example portable HTTP calls:
 
 ```bash

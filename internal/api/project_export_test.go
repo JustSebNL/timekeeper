@@ -29,6 +29,9 @@ func TestProjectExportProvidesPortableDurableSnapshot(t *testing.T) {
 	if _, err := database.CreateProjectNote(ctx, project.ProjectID, model.CreateProjectNoteInput{Content: "Keep this context."}, "agent-1"); err != nil {
 		t.Fatalf("create note: %v", err)
 	}
+	if _, err := database.RecordUsageSnapshot(ctx, project.ProjectID, model.UsageSnapshotInput{SessionID: "export-session", AgentID: "agent-1", Model: "local", TurnSeq: 1, InputTokens: 100, OutputTokens: 20}); err != nil {
+		t.Fatalf("record usage: %v", err)
+	}
 
 	response := httptest.NewRecorder()
 	api.New(database).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+project.ProjectID+"/export", nil))
@@ -47,11 +50,17 @@ func TestProjectExportProvidesPortableDurableSnapshot(t *testing.T) {
 			Content string `json:"content"`
 			ActorID string `json:"actor_id"`
 		} `json:"notes"`
+		Usage struct {
+			Totals struct {
+				InputTokens  int64 `json:"input_tokens"`
+				OutputTokens int64 `json:"output_tokens"`
+			} `json:"totals"`
+		} `json:"usage_summary"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&exported); err != nil {
 		t.Fatalf("decode export: %v", err)
 	}
-	if exported.Format != "timekeeper-project-export/v1" || exported.ProjectID != project.ProjectID || exported.Tree.Project.ProjectID != project.ProjectID || len(exported.Notes) != 1 || exported.Notes[0].Content != "Keep this context." || exported.Notes[0].ActorID != "agent-1" {
+	if exported.Format != "timekeeper-project-export/v1" || exported.ProjectID != project.ProjectID || exported.Tree.Project.ProjectID != project.ProjectID || len(exported.Notes) != 1 || exported.Notes[0].Content != "Keep this context." || exported.Notes[0].ActorID != "agent-1" || exported.Usage.Totals.InputTokens != 100 || exported.Usage.Totals.OutputTokens != 20 {
 		t.Fatalf("export = %#v", exported)
 	}
 }
