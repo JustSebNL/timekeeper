@@ -12,6 +12,9 @@ fi
 
 while IFS= read -r path; do
   case "$path" in
+    harness/SKILL.md|harness/skills/*/SKILL.md)
+      # Approved project-local TimeKeeper harness Skills.
+      ;;
     SKILL.md|*/SKILL.md|skills/*|*/skills/*)
       printf 'tracked-skill-material-is-not-a-project-harness=%s\n' "$path" >&2
       exit 1
