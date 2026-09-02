@@ -30,6 +30,7 @@ bash "$ROOT/dev-ops/tests/copyright_attribution_contract_test.sh"
 bash "$ROOT/dev-ops/tests/public_documentation_contract_test.sh"
 bash "$ROOT/dev-ops/tests/install_bootstrap_test.sh"
 bash "$ROOT/dev-ops/tests/install_e2e_test.sh"
+bash "$ROOT/dev-ops/tests/keep_alive_contract_test.sh"
 
 mkdir -p "$WORK_ROOT"
 chmod 700 "$WORK_ROOT"

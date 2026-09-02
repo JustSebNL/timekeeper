@@ -388,3 +388,20 @@ func TestDashboardProvidesRecentActivityPanel(t *testing.T) {
 		}
 	}
 }
+
+func TestKeepAliveOnceUsesHealthEndpoint(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			t.Fatalf("keep-alive path = %q", r.URL.Path)
+		}
+		called = true
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	keepAliveOnce(context.Background(), server.Client(), strings.TrimPrefix(server.URL, "http://"))
+	if !called {
+		t.Fatal("keep-alive did not call /health")
+	}
+}
