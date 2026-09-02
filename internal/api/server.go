@@ -55,7 +55,9 @@ func NewWithRuntime(database *store.Store, runtime RuntimeStatus) http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/export", projectExport(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/execution-tree", projectExecutionTree(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/operational-summary", projectOperationalSummary(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/usage-summary", projectUsageSummary(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/attention", projectAttention(database))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots", recordUsageSnapshot(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/sprints/claim-next", claimNextSprint(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/events", listProjectEvents(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/planning-drafts/{draftID}/apply", applyPlanningDraft(database))
@@ -150,6 +152,8 @@ func apiHelp(w http.ResponseWriter, _ *http.Request) {
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/export", "desc": "Export project snapshot as JSON"},
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/execution-tree", "desc": "Show executable hierarchy"},
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/operational-summary", "desc": "Sprint operational snapshot"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/usage-summary", "desc": "Agent token usage summary"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots", "desc": "Record cumulative agent usage snapshot"},
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/attention", "desc": "Project attention items"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/sprints/claim-next", "desc": "Claim next sprint"},
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/events", "desc": "List project activity events"},
@@ -189,7 +193,7 @@ func apiHelp(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service": "TimeKeeper",
 		"version": "1.0",
-		"routes": routes,
+		"routes":  routes,
 	})
 }
 
@@ -435,15 +439,21 @@ func projectExport(database *store.Store) http.HandlerFunc {
 			writeStoreError(w, err)
 			return
 		}
+		usage, err := database.ProjectUsageSummary(r.Context(), projectID)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, struct {
 			Format    string                          `json:"format"`
 			ProjectID string                          `json:"project_id"`
 			Tree      model.ExecutionTree             `json:"execution_tree"`
 			Summary   model.ProjectOperationalSummary `json:"operational_summary"`
+			Usage     model.ProjectUsageSummary       `json:"usage_summary"`
 			Notes     []model.ProjectNote             `json:"notes"`
 			Events    []model.ProjectEvent            `json:"events"`
 		}{
-			Format: "timekeeper-project-export/v1", ProjectID: projectID, Tree: tree, Summary: summary,
+			Format: "timekeeper-project-export/v1", ProjectID: projectID, Tree: tree, Summary: summary, Usage: usage,
 			Notes: notes, Events: events,
 		})
 	}

@@ -1,0 +1,28 @@
+version: 1
+name: timekeeper-agent-harness
+product: TimeKeeper
+api:
+  base_url: http://127.0.0.1:1618
+  health: /health
+  cli: .timekeeper/app/tk
+required_workflow:
+  - doctor
+  - project_landscape
+  - bounded_sprint
+  - progress_record
+  - evidence_before_completion
+  - handoff_note
+recovery:
+  linux_wsl: scripts/service/kick-server.sh
+  windows: scripts/service/kick-server.bat
+  healthy_path: no-op
+skills:
+  - harness/skills/project-landscape/SKILL.md
+  - harness/skills/backlog-sync/SKILL.md
+  - harness/skills/codebase-audit/SKILL.md
+  - harness/skills/timeboxing/SKILL.md
+  - harness/skills/troubleshooting/SKILL.md
+privacy:
+  store_secrets: false
+  store_prompt_bodies: false
+  usage_coverage: explicit_snapshots_only

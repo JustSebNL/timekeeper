@@ -31,6 +31,7 @@
         <a class="nav-item" href="#projects-panel"><span class="nav-icon">▦</span><span>Projects</span><span class="nav-count" id="nav-project-count">0</span></a>
         <a class="nav-item" href="#pulse-card"><span class="nav-icon">◒</span><span>Pulse</span><span class="nav-count attention-count" id="nav-attention-count">0</span></a>
         <a class="nav-item" href="#guardian-card"><span class="nav-icon">◈</span><span>Guardian</span></a>
+        <a class="nav-item" href="#usage-card"><span class="nav-icon">▥</span><span>Usage</span></a>
       </nav>
 
       <div class="nav-label nav-label-spaced">Manage</div>
@@ -105,10 +106,31 @@
           <div id="activity" class="activity-list empty">Loading activity…</div>
         </section>
 
+        <section class="panel panel-usage" id="usage-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Agent telemetry</p><h2>Token usage</h2></div><span class="panel-link" id="usage-coverage">Awaiting data</span></div>
+          <p class="panel-description">Recorded usage from connected agent sessions. Unknown pricing is never guessed.</p>
+          <div class="usage-summary-grid">
+            <div class="usage-stat"><span>Tokens</span><strong id="usage-tokens">—</strong></div>
+            <div class="usage-stat"><span>Sessions</span><strong id="usage-sessions">—</strong></div>
+            <div class="usage-stat"><span>Input</span><strong id="usage-input">—</strong></div>
+            <div class="usage-stat"><span>Output</span><strong id="usage-output">—</strong></div>
+          </div>
+          <div class="usage-breakdown" aria-label="Token type breakdown"><div class="usage-breakdown-bar" id="usage-breakdown-bar"></div><div class="usage-legend" id="usage-legend"></div></div>
+          <div class="usage-timeline"><div class="usage-subheading"><span>Usage over time</span><small>Daily recorded deltas</small></div><div id="usage-timeline" class="usage-days"></div></div>
+          <div class="usage-projects" id="usage-projects"><div class="empty">Loading token usage…</div></div>
+          <div class="usage-sessions"><div class="usage-subheading"><span>Top sessions</span><small>Latest cumulative totals</small></div><div id="usage-session-list" class="usage-session-list"></div></div>
+        </section>
+
         <section class="panel panel-guardian" id="guardian-card" aria-live="polite">
           <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Safety layer</p><h2>Pulse Guardian</h2></div><span class="guardian-shield" aria-hidden="true">◇</span></div>
           <p class="panel-description">Independent local recovery leases and callbacks.</p>
           <div id="guardian" class="empty">Checking Guardian…</div>
+        </section>
+
+        <section class="panel panel-focus" id="focus-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Execution overview</p><h2>Focus overview</h2></div><span class="panel-link">Project health <span>→</span></span></div>
+          <p class="panel-description">A compact view of where planned work stands against recorded execution.</p>
+          <div id="focus" class="focus-list empty">Loading project focus…</div>
         </section>
       </div>
     </main>

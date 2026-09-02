@@ -346,7 +346,7 @@ func TestDashboardServesCurrentFrameworkNeutralUI(t *testing.T) {
 		t.Fatalf("dashboard status = %d", response.Code)
 	}
 	body := response.Body.String()
-	for _, marker := range []string{"data-timekeeper-ui=\"v2\"", "/timekeeper.css", "/timekeeper.js"} {
+	for _, marker := range []string{"data-timekeeper-ui=\"v2\"", `id="focus-card"`, `id="focus"`, `id="usage-card"`, `id="usage-timeline"`, `id="usage-session-list"`, "/timekeeper.css", "/timekeeper.js"} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("dashboard shell missing required marker %q", marker)
 		}
@@ -361,7 +361,7 @@ func TestDashboardServesCurrentFrameworkNeutralUI(t *testing.T) {
 		}
 		assets.Write(assetResponse.Body.Bytes())
 	}
-	for _, marker := range []string{"/api/v1/projects", "/api/v1/pulse", "/execution-tree", "/operational-summary", "/events", "/notes", "renderExecutionTree", "renderOperationalSummary", "renderPulse", "planned_duration_seconds", "renderProjectEvents", "renderProjectNotes", "createInlineForm", "Buffer percent", "sprintActionButton", "durationToSeconds", "sprint.status", "X-Agent-ID"} {
+	for _, marker := range []string{"/api/v1/projects", "/api/v1/pulse", "/execution-tree", "/operational-summary", "/usage-summary", "/events", "/notes", "renderExecutionTree", "renderOperationalSummary", "renderPulse", "renderFocus", "renderUsage", "planned_duration_seconds", "renderProjectEvents", "renderProjectNotes", "createInlineForm", "Buffer percent", "sprintActionButton", "durationToSeconds", "sprint.status", "X-Agent-ID"} {
 		if !strings.Contains(assets.String(), marker) {
 			t.Fatalf("dashboard assets missing required marker %q", marker)
 		}

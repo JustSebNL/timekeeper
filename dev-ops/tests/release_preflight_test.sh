@@ -22,6 +22,7 @@ for required in \
   'install_bootstrap_test.sh' \
   'install_e2e_test.sh' \
   'keep_alive_contract_test.sh' \
+  'harness_contract_test.sh' \
   'project_content_scope_test.sh'; do
   grep -Fq "$required" "$SCRIPT" || { printf 'release preflight is missing required gate: %s\n' "$required" >&2; exit 1; }
 done

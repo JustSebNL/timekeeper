@@ -22,6 +22,8 @@ POST /api/v1/projects/{projectID}/metadata
 POST /api/v1/projects/{projectID}/status
 GET  /api/v1/projects/{projectID}/execution-tree
 GET  /api/v1/projects/{projectID}/operational-summary
+GET  /api/v1/projects/{projectID}/usage-summary
+POST /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots
 GET  /api/v1/projects/{projectID}/attention
 GET  /api/v1/projects/{projectID}/events
 GET  /api/v1/projects/{projectID}/notes
@@ -82,6 +84,35 @@ An Open Sprint may transition directly to `On Hold` for any real blocker without
 ```
 
 A Sprint accepts exactly four attempts. The fourth atomically changes it to `TimedOut`, closes any active or held interval honestly, and records both attempt and timeout events. `TimedOut` remains visible and is not runnable; a fifth attempt is rejected. `GET /api/v1/sprints/{sprintID}/retrieval-attempts` returns the complete evidence history.
+
+## Agent usage and token telemetry
+
+`POST /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots` records one cumulative usage snapshot for an agent session. The `sessionID` path segment is the stable external session identity; `agent_id` and `model` remain data fields. A session may optionally be attributed to one Sprint in the same Project.
+
+```http
+POST /api/v1/projects/P-10053/usage-sessions/session-42/snapshots
+Content-Type: application/json
+
+{
+  "agent_id":"codex",
+  "model":"gpt-5",
+  "sprint_id":"SP-10061",
+  "turn_seq":7,
+  "input_tokens":12000,
+  "output_tokens":1800,
+  "cache_creation_tokens":500,
+  "cache_read_tokens":2400,
+  "context_used":32000,
+  "context_size":128000,
+  "messages":14
+}
+```
+
+Counters are cumulative for the session. `turn_seq` must increase. Repeating the same session/turn is an idempotent no-op and returns `duplicate: true` with a zero delta. A provider counter reset requires a new session identity. The response includes the latest cumulative `session` and the newly observed `delta`.
+
+`GET /api/v1/projects/{projectID}/usage-summary` returns the latest cumulative totals for every recorded agent session in the Project. Input, output, cache creation, cache read, context occupancy, and messages remain separate measurements. This first native slice reports no cost until a trusted local model-price source is configured; unknown pricing must never receive an invented fallback.
+
+Usage records are deliberately not Project activity events: they are telemetry projections with their own idempotent ledger. Integrations must redact credentials, prompt bodies, private transcript paths, and tool output before sending snapshots, and must disclose that only sessions which send snapshots are covered. Project export includes the same `usage_summary` projection.
 
 ## Attention beyond Pulse
 

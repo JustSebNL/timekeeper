@@ -29,6 +29,9 @@ grep -Fqx 'POST /api/v1/sprints/{sprintID}/extensions' API.md
 grep -Fq '## Sprint extensions' API.md
 grep -Fqx 'GET  /api/v1/pulse' API.md
 grep -Fq '## Pulse' API.md
+grep -Fqx 'GET  /api/v1/projects/{projectID}/usage-summary' API.md
+grep -Fqx 'POST /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots' API.md
+grep -Fq '## Agent usage and token telemetry' API.md
 grep -Fqx 'POST /api/v1/agents/{agentID}/progress' API.md
 grep -Fqx 'GET  /api/v1/agents/{agentID}/nudges' API.md
 grep -Fqx 'GET  /api/v1/agents/{agentID}/nudges/history' API.md
@@ -36,6 +39,8 @@ grep -Fqx 'POST /api/v1/agents/{agentID}/nudges/{nudgeID}/ack' API.md
 grep -Fq 'timekeeper-pulse-guardian/v1' API.md
 grep -Fq 'X-Timekeeper-Pulse-Accepted: v1' API.md
 grep -Fqx 'tk pulse' HELP.md
+grep -Fqx 'tk usage <project-id>' HELP.md
+grep -Fq 'tk usage record <project-id> <session-id>' HELP.md
 grep -Fqx 'tk agent progress <agent-id> <lease> [sprint-id] [guardian-url]' HELP.md
 grep -Fqx 'tk agent history <agent-id>' HELP.md
 if grep -Fq 'Pulses' HELP.md; then
@@ -59,6 +64,10 @@ for required_readme_line in \
     exit 1
   }
 done
+grep -Fq 'Accepts explicit cumulative agent usage snapshots' README.md
+grep -Fq '## Agent usage snapshots' AGENT_INTEGRATION.md
+grep -Fq 'TimeKeeper Agent Contract' TIMEKEEPER.md
+grep -Fq 'harness/skills/' TIMEKEEPER.md
 if grep -Eq '(^|[^[:alnum:]_])\./bin/(timekeeper|tk)|-db timekeeper\.db' README.md; then
   printf 'README still documents obsolete root-level runtime paths\n' >&2
   exit 1
