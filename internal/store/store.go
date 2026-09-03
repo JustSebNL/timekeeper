@@ -248,6 +248,41 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at TEXT NOT NULL
 		)`,
 		"CREATE INDEX IF NOT EXISTS project_notes_project_created_idx ON project_notes(project_id, created_at DESC, note_id DESC)",
+		`CREATE TABLE IF NOT EXISTS project_messages (
+			message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+			kind TEXT NOT NULL DEFAULT 'note' CHECK (kind IN ('note','decision','observation','link','lesson','question','answer')),
+			author TEXT NOT NULL DEFAULT '',
+			body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 20000),
+			link TEXT NOT NULL DEFAULT '',
+			tags TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		)`,
+		"CREATE INDEX IF NOT EXISTS project_messages_project_created_idx ON project_messages(project_id, created_at DESC, message_id DESC)",
+		"CREATE INDEX IF NOT EXISTS project_messages_project_kind_idx ON project_messages(project_id, kind, created_at DESC)",
+		`CREATE VIRTUAL TABLE IF NOT EXISTS project_messages_fts USING fts5(
+			body,
+			author,
+			tags,
+			link,
+			content='project_messages',
+			content_rowid='message_id',
+			tokenize='unicode61 remove_diacritics 2'
+		)`,
+		`CREATE TRIGGER IF NOT EXISTS project_messages_ai AFTER INSERT ON project_messages BEGIN
+			INSERT INTO project_messages_fts(rowid, body, author, tags, link)
+			VALUES (new.message_id, new.body, new.author, new.tags, new.link);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS project_messages_ad AFTER DELETE ON project_messages BEGIN
+			INSERT INTO project_messages_fts(project_messages_fts, rowid, body, author, tags, link)
+			VALUES ('delete', old.message_id, old.body, old.author, old.tags, old.link);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS project_messages_au AFTER UPDATE ON project_messages BEGIN
+			INSERT INTO project_messages_fts(project_messages_fts, rowid, body, author, tags, link)
+			VALUES ('delete', old.message_id, old.body, old.author, old.tags, old.link);
+			INSERT INTO project_messages_fts(rowid, body, author, tags, link)
+			VALUES (new.message_id, new.body, new.author, new.tags, new.link);
+		END`,
 		`CREATE TABLE IF NOT EXISTS llm_pipelines (
 			pipeline_id INTEGER PRIMARY KEY AUTOINCREMENT,
 			pipeline_name TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -1239,6 +1274,196 @@ func scanProjectNote(scanner interface{ Scan(...any) error }) (model.ProjectNote
 		return model.ProjectNote{}, fmt.Errorf("parse project note created_at: %w", err)
 	}
 	return note, nil
+}
+
+// CreateProjectMessage persists one message-board entry on a project.
+// The kind is validated against the closed set in model.ValidMessageKinds;
+// unknown kinds are rejected so the dashboard never has to guess about
+// styling. Body length is bounded (matches the table CHECK constraint).
+// The matching FTS5 row is kept in sync by the AFTER INSERT trigger.
+func (s *Store) CreateProjectMessage(ctx context.Context, projectID string, input model.CreateProjectMessageInput) (model.ProjectMessage, error) {
+	input.Body = strings.TrimSpace(input.Body)
+	if input.Body == "" {
+		return model.ProjectMessage{}, errors.New("message body is required")
+	}
+	if len(input.Body) > 20000 {
+		return model.ProjectMessage{}, errors.New("message body must be at most 20000 characters")
+	}
+	if input.Kind == "" {
+		input.Kind = model.MessageKindNote
+	}
+	if !model.IsValidMessageKind(input.Kind) {
+		return model.ProjectMessage{}, fmt.Errorf("invalid message kind %q", input.Kind)
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ProjectMessage{}, fmt.Errorf("%w: project %s", ErrNotFound, projectID)
+		}
+		return model.ProjectMessage{}, fmt.Errorf("read message project: %w", err)
+	}
+	msg := model.ProjectMessage{
+		ProjectID: projectID,
+		Kind:      input.Kind,
+		Author:    strings.TrimSpace(input.Author),
+		Body:      input.Body,
+		Link:      strings.TrimSpace(input.Link),
+		Tags:      strings.TrimSpace(input.Tags),
+		CreatedAt: time.Now().UTC().Round(0),
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO project_messages (project_id, kind, author, body, link, tags, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msg.ProjectID, string(msg.Kind), msg.Author, msg.Body, msg.Link, msg.Tags, msg.CreatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("insert project message: %w", err)
+	}
+	msg.MessageID, err = result.LastInsertId()
+	if err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("read project message id: %w", err)
+	}
+	return msg, nil
+}
+
+// GetProjectMessage returns a single message by id, scoped to the project.
+func (s *Store) GetProjectMessage(ctx context.Context, projectID string, messageID int64) (model.ProjectMessage, error) {
+	var msg model.ProjectMessage
+	var createdAt string
+	err := s.db.QueryRowContext(ctx, `SELECT message_id, project_id, kind, author, body, link, tags, created_at
+		FROM project_messages WHERE project_id = ? AND message_id = ?`, projectID, messageID).
+		Scan(&msg.MessageID, &msg.ProjectID, &msg.Kind, &msg.Author, &msg.Body, &msg.Link, &msg.Tags, &createdAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ProjectMessage{}, fmt.Errorf("%w: message %d", ErrNotFound, messageID)
+		}
+		return model.ProjectMessage{}, fmt.Errorf("get project message: %w", err)
+	}
+	msg.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("parse project message created_at: %w", err)
+	}
+	return msg, nil
+}
+
+// ListProjectMessages returns newest-first messages on a project. kindFilter
+// may be empty to include all kinds. limit caps the result; 0 means no cap.
+func (s *Store) ListProjectMessages(ctx context.Context, projectID string, kindFilter model.MessageKind, limit int) ([]model.ProjectMessage, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: project %s", ErrNotFound, projectID)
+		}
+		return nil, fmt.Errorf("read list messages project: %w", err)
+	}
+	query := `SELECT message_id, project_id, kind, author, body, link, tags, created_at
+		FROM project_messages WHERE project_id = ?`
+	args := []any{projectID}
+	if kindFilter != "" {
+		query += ` AND kind = ?`
+		args = append(args, string(kindFilter))
+	}
+	query += ` ORDER BY created_at DESC, message_id DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list project messages: %w", err)
+	}
+	defer rows.Close()
+	messages := make([]model.ProjectMessage, 0)
+	for rows.Next() {
+		var msg model.ProjectMessage
+		var createdAt string
+		if err := rows.Scan(&msg.MessageID, &msg.ProjectID, &msg.Kind, &msg.Author, &msg.Body, &msg.Link, &msg.Tags, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan project message: %w", err)
+		}
+		msg.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse project message created_at: %w", err)
+		}
+		messages = append(messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate project messages: %w", err)
+	}
+	return messages, nil
+}
+
+// SearchProjectMessages runs an FTS5 query against the project's messages
+// and returns ranked results with snippets. The query is sanitized to a
+// safe MATCH expression: each whitespace-delimited token is wrapped in
+// double-quotes and any embedded double-quotes are stripped, so a user-
+// supplied query string cannot inject MATCH operators or column names.
+func (s *Store) SearchProjectMessages(ctx context.Context, projectID string, query string, limit int) ([]model.ProjectMessageSearchHit, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []model.ProjectMessageSearchHit{}, nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: project %s", ErrNotFound, projectID)
+		}
+		return nil, fmt.Errorf("read search messages project: %w", err)
+	}
+	tokens := sanitizeFtsQuery(query)
+	if tokens == "" {
+		return []model.ProjectMessageSearchHit{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT m.message_id, m.project_id, m.kind, m.author, m.body, m.link, m.tags, m.created_at,
+			snippet(project_messages_fts, 0, '<mark>', '</mark>', '…', 12) AS snip
+		FROM project_messages_fts f
+		JOIN project_messages m ON m.message_id = f.rowid
+		WHERE m.project_id = ? AND project_messages_fts MATCH ?
+		ORDER BY rank
+		LIMIT ?`, projectID, tokens, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search project messages: %w", err)
+	}
+	defer rows.Close()
+	hits := make([]model.ProjectMessageSearchHit, 0)
+	for rows.Next() {
+		var hit model.ProjectMessageSearchHit
+		var createdAt string
+		if err := rows.Scan(&hit.MessageID, &hit.ProjectID, &hit.Kind, &hit.Author, &hit.Body, &hit.Link, &hit.Tags, &createdAt, &hit.Snippet); err != nil {
+			return nil, fmt.Errorf("scan message search hit: %w", err)
+		}
+		hit.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse message search hit created_at: %w", err)
+		}
+		hits = append(hits, hit)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate message search hits: %w", err)
+	}
+	return hits, nil
+}
+
+// sanitizeFtsQuery turns a free-form user query into a safe FTS5 MATCH
+// expression. Each whitespace-delimited token is wrapped in double
+// quotes (with embedded quotes stripped) and joined with spaces. The
+// resulting string is a phrase-prefix-OR query over the user tokens
+// without exposing MATCH operators or column names.
+func sanitizeFtsQuery(q string) string {
+	parts := strings.Fields(q)
+	if len(parts) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		cleaned := strings.ReplaceAll(p, `"`, "")
+		cleaned = strings.TrimSpace(cleaned)
+		if cleaned == "" {
+			continue
+		}
+		out = append(out, `"`+cleaned+`"`)
+	}
+	return strings.Join(out, " ")
 }
 
 // ErrNotFound identifies a requested tracked entity that does not exist.

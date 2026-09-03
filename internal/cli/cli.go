@@ -7,16 +7,88 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/JustSebNL/timekeeper/internal/logging"
 	"github.com/JustSebNL/timekeeper/internal/model"
 )
 
 const defaultBaseURL = "http://127.0.0.1:1618"
+
+// extractVerboseFlag pulls -v/--verbose/--debug from the front of args.
+// Returned args are the remaining positional args. Returned mode is the
+// requested log mode (ModeNormal by default).
+func extractVerboseFlag(args []string) ([]string, logging.Mode) {
+	mode := logging.ModeNormal
+	out := args[:0:0]
+	for _, a := range args {
+		switch a {
+		case "-v", "--verbose", "--debug":
+			mode = logging.ModeDebug
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, mode
+}
+
+// ensureCLILogger initialises a logger for CLI invocations. The CLI doesn't
+// normally write to a file (output is the user-visible stdout), but in debug
+// mode we capture every step + every HTTP exchange to a file too so a CLI
+// crash can be bugfixed after the fact.
+func ensureCLILogger(mode logging.Mode) {
+	if logging.CurrentMode() != logging.ModeNormal || mode == logging.ModeNormal {
+		// Either already set, or normal mode. Default: log to stderr only.
+		// If a logger hasn't been init'd yet and we're normal, just init it
+		// with no file path.
+		logging.Init(logging.Config{Path: "", Mode: mode})
+		return
+	}
+	logPath := os.Getenv("TIMEKEEPER_CLI_LOG")
+	if logPath == "" {
+		logPath = filepath.Join(".timekeeper", "log", "cli.log")
+	}
+	logging.Init(logging.Config{Path: logPath, Mode: mode, MaxSizeMiB: 5, MaxBackups: 3})
+}
+
+// runCommand wraps a CLI subcommand so its start/duration/result are logged
+// at the appropriate level for the current mode. Non-zero exit codes are
+// reported as errors in both modes; full stack only in debug.
+func runCommand(name string, fn func() int) int {
+	start := time.Now()
+	logger := logging.L()
+	if logging.IsDebug() {
+		logger.Debug("cli command start", slog.String("cmd", name))
+	} else {
+		logger.Info("cli", slog.String("cmd", name))
+	}
+	code := fn()
+	dur := time.Since(start)
+	attrs := []any{slog.String("cmd", name), slog.Int("exit", code), slog.Duration("duration", dur)}
+	if code != 0 {
+		logger.Error("cli command failed", append(attrs, slog.String("trace", string(debug.Stack())))...)
+		return code
+	}
+	if logging.IsDebug() {
+		logger.Debug("cli command ok", attrs...)
+	} else {
+		logger.Info("cli ok", attrs...)
+	}
+	return code
+}
+
+func init() {
+	// Default: no file path; debug mode set per-invocation via -v.
+	_ = logging.Init(logging.Config{Path: "", Mode: logging.ModeNormal})
+}
 
 // ResolveBaseURL extracts an optional explicit endpoint before dispatching a CLI command.
 func ResolveBaseURL(args []string, environmentURL string) (string, []string, error) {
@@ -44,19 +116,23 @@ func ResolveBaseURL(args []string, environmentURL string) (string, []string, err
 
 // Run executes a framework-neutral Time Keeper CLI command.
 func Run(args []string, out, errOut io.Writer, baseURL string) int {
+	// Pull -v/--verbose/--debug out of the front of args to flip log mode.
+	args, mode := extractVerboseFlag(args)
+	ensureCLILogger(mode)
+
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		_, _ = fmt.Fprint(out, "Usage: tk [--url <api-base-url>] <command>\n\nCommands:\n  list                                        List projects\n  tree <project-id>                           Show an executable hierarchy\n  export <project-id>                         Print a portable Project snapshot as JSON\n  summary <project-id>                        Show a durable Sprint operational snapshot\n  usage <project-id>                          Show recorded agent token usage\n  usage record <project-id> <session-id> <agent-id> <model> <turn> <input> <output> [cache-write] [cache-read] [messages] [sprint-id]\n  pulse                                       Show local Sprint attention needing follow-up\n  agent progress <id> <lease> [sprint-id] [guardian-url]\n                                              Renew an agent material-progress lease and optionally register a numeric-loopback Guardian\n  agent nudges <id>                           List durable unacknowledged Guardian nudges\n  agent history <id>                          List durable Guardian delivery/recovery history\n  agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge and renew the lease\n  events <project-id>                         List immutable Project activity\n  note <project-id> <content>                 Record a Project note\n  notes <project-id>                          List Project notes\n  p new <name>                                Create a Project\n  p edit <project-id> <goal> <description>    Update Project context\n  p status <project-id> <status>              Set Project status\n  p alias <project-id> <alias>                Set Project alias\n  p unalias <project-id>                      Clear Project alias\n  aliases                                     List project aliases\n  c new <project-id> <name> [parent-category-id] Create a Category\n  c edit <category-id> <goal> <description>    Update Category context\n  c status <category-id> <status>              Set Category status\n  t edit <task-id> <goal> <description>        Update Task context\n  t new <project-id> <category-id> <name> <estimate>\n                                              Create a Task\n  t status <task-id> <status>                 Set Task status\n  st new <task-id> <name> <estimate>          Create a Subtask\n  st status <subtask-id> <status>              Set Subtask status\n  sp new <task|subtask> <owner-id> <name> <estimate> [buffer-percent]\n                                              Create a Sprint\n  sp <start|hold|resume|complete|cancel> <sprint-id> [reason] Transition a Sprint; hold/cancel require a reason\n  sp reason <sprint-id> <reason>                Update why an already-held Sprint is blocked\n  sp next <project-id>                         Atomically claim the oldest runnable Sprint\n  sp attempts <sprint-id>                      List immutable retrieval-attempt evidence\n  sp attempt <sprint-id> <reason>              Record a failed retrieval attempt (fourth makes TimedOut)\n  sp extend <sprint-id> <duration> <reason>   Record justified additional planned time\n  sp extensions <sprint-id>                   List immutable extension history\n  sp entries <sprint-id>                      List recorded work/hold intervals\n  llm new <name> <provider> <base-url> <model> [system-prompt]\n                                              Register a loopback LLM pipeline\n  plan <generate|apply> <project-id> <pipeline-id|draft-id>\n                                              Generate or apply a reviewed planning draft\n  plan list <project-id>                       List planning drafts\n  doctor                                      Check whether Time Keeper is reachable\n  api-help                                    List all available API routes\n  service                                     Manage TimeKeeper OS service (install/uninstall/start/stop/status/logs)\n")
 		return 0
 	}
 	switch args[0] {
 	case "plan":
-		return plan(args[1:], out, errOut, baseURL)
+		return runCommand("plan", func() int { return plan(args[1:], out, errOut, baseURL) })
 	case "llm":
-		return llmPipeline(args[1:], out, errOut, baseURL)
+		return runCommand("llm", func() int { return llmPipeline(args[1:], out, errOut, baseURL) })
 	case "p":
-		return project(args[1:], out, errOut, baseURL)
+		return runCommand("project", func() int { return project(args[1:], out, errOut, baseURL) })
 	case "c":
-		return category(args[1:], out, errOut, baseURL)
+		return runCommand("category", func() int { return category(args[1:], out, errOut, baseURL) })
 	case "t":
 		return task(args[1:], out, errOut, baseURL)
 	case "st":
@@ -79,12 +155,20 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return events(args[1:], out, errOut, baseURL)
 	case "notes":
 		return notes(args[1:], out, errOut, baseURL)
+	case "msg", "messages":
+		return messages(args[1:], out, errOut, baseURL)
 	case "list":
 		return list(out, errOut, baseURL)
 	case "tree":
 		return tree(args[1:], out, errOut, baseURL)
 	case "doctor":
 		return doctor(out, errOut, baseURL)
+	case "open":
+		return openBrowser(args[1:], out, errOut)
+	case "uninstall":
+		return uninstallTimeKeeper(out, errOut, baseURL)
+	case "hosts":
+		return hostsSubcommand(args[1:], out, errOut)
 	case "aliases":
 		return listAliases(out, errOut, baseURL)
 	case "api-help":
@@ -1501,31 +1585,73 @@ func listAliases(out, errOut io.Writer, baseURL string) int {
 }
 
 func doctor(out, errOut io.Writer, baseURL string) int {
-	url := strings.TrimRight(baseURL, "/") + "/health"
-	client := &http.Client{Timeout: 10 * time.Second}
-	response, err := client.Get(url)
-	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "[failed] API unreachable: %s (%v)\nStart Time Keeper, then run tk doctor again.\n", url, err)
+	urls := []string{
+		strings.TrimRight(baseURL, "/") + "/health",
+		"http://timekeeper.local/health",
+		"http://api.timekeeper.local/health",
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	allOK := true
+	canonicalOK := false
+	for _, u := range urls {
+		ok, status, err := probeHealth(client, u)
+		if err != nil {
+			// A connection error means the friendly URL is not
+			// resolvable, the proxy is not listening, or the host
+			// is unreachable. Treat as a failure: the user is
+			// asking "is TimeKeeper usable?" and the answer is
+			// "partially".
+			_, _ = fmt.Fprintf(out, "[failed] %s: %v\n", u, err)
+			allOK = false
+			continue
+		}
+		if !ok {
+			_, _ = fmt.Fprintf(out, "[failed] %s: HTTP %s\n", u, status)
+			allOK = false
+			continue
+		}
+		_, _ = fmt.Fprintf(out, "[ok] %s: %s\n", u, status)
+		if u == urls[0] {
+			canonicalOK = true
+		}
+	}
+	if allOK {
+		_, _ = fmt.Fprintln(out, "\nTime Keeper is ready.")
+		return 0
+	}
+	if canonicalOK {
+		_, _ = fmt.Fprintln(out, "\nTime Keeper is reachable on the canonical address, but the friendly URLs are not.")
+		_, _ = fmt.Fprintln(out, "Run the installer, or set TIMEKEEPER_PROXY_ADDR to a free port, then restart.")
 		return 1
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "[failed] health endpoint returned %s\n", response.Status)
-		return 1
+	_, _ = fmt.Fprintln(out, "\nTime Keeper is not fully ready.")
+	_, _ = fmt.Fprintln(out, "Start the service, then run tk doctor again.")
+	return 1
+}
+
+// probeHealth does a single GET against the health endpoint. It
+// returns (ok, statusString, err). A connection error is reported
+// as err (and status is empty). An HTTP error is reported as !ok
+// with the status string set.
+func probeHealth(client *http.Client, u string) (bool, string, error) {
+	resp, err := client.Get(u)
+	if err != nil {
+		return false, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, resp.Status, nil
 	}
 	var payload struct {
 		Status string `json:"status"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil || payload.Status != "ok" {
-		if err != nil {
-			_, _ = fmt.Fprintf(errOut, "[failed] health endpoint returned invalid JSON: %v\n", err)
-		} else {
-			_, _ = fmt.Fprintf(errOut, "[failed] health endpoint reported status %q\n", payload.Status)
-		}
-		return 1
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return false, resp.Status, fmt.Errorf("invalid JSON: %w", err)
 	}
-	_, _ = fmt.Fprintf(out, "Time Keeper doctor\n\n[ok] API reachable: %s\n[ok] health status: %s\n\nTime Keeper is ready.\n", baseURL, payload.Status)
-	return 0
+	if payload.Status != "ok" {
+		return false, resp.Status, nil
+	}
+	return true, "ok", nil
 }
 
 // apiHelp fetches and displays all available API routes from the server.

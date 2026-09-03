@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/JustSebNL/timekeeper/internal/lifecycle"
+	"github.com/JustSebNL/timekeeper/internal/logging"
 	"github.com/JustSebNL/timekeeper/internal/model"
 	"github.com/JustSebNL/timekeeper/internal/planning"
 	"github.com/JustSebNL/timekeeper/internal/store"
@@ -66,6 +67,10 @@ func NewWithRuntime(database *store.Store, runtime RuntimeStatus) http.Handler {
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/planning-drafts", createPlanningDraft(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/notes", listProjectNotes(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/notes", createProjectNote(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages", listProjectMessages(database))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/messages", createProjectMessage(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages/search", searchProjectMessages(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages/{messageID}", getProjectMessage(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/categories", listCategories(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/categories", createCategory(database))
 	mux.HandleFunc("POST /api/v1/categories/{categoryID}/metadata", updateCategoryMetadata(database))
@@ -92,7 +97,16 @@ func NewWithRuntime(database *store.Store, runtime RuntimeStatus) http.Handler {
 	mux.HandleFunc("GET /api/v1/sprints/{sprintID}/extensions", listSprintTimeExtensions(database))
 	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/extensions", addSprintTimeExtension(database))
 	mux.HandleFunc("GET /api/v1/sprints/{sprintID}/time-entries", listTimeEntries(database))
-	return recoverJSON(requireJSONForMutations(mux))
+	return logging.NewRequestLogger().Wrap(withReqCtx(recoverJSON(requireJSONForMutations(mux))))
+}
+
+// withReqCtx attaches the current *http.Request to the context so logging.Recover
+// can dump the body/headers when a panic fires.
+func withReqCtx(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := logging.WithRequest(r.Context(), r)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func requireJSONForMutations(next http.Handler) http.Handler {
@@ -1108,7 +1122,8 @@ func listTimeEntries(database *store.Store) http.HandlerFunc {
 func recoverJSON(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
-			if recover() != nil {
+			if rec := recover(); rec != nil {
+				logging.Recover(r.Context(), "api/recoverJSON", rec)
 				writeError(w, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			}
 		}()
