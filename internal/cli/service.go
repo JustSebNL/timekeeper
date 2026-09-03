@@ -12,31 +12,42 @@ import (
 )
 
 // serviceManager installs, removes, starts, stops, and queries the OS service
-// that runs TimeKeeper. It delegates to scripts/service/service-manager.sh,
-// which handles Windows (NSSM) and Linux (systemd) specifics.
+// that runs TimeKeeper. It delegates to .timekeeper/scripts/service/service-install.{bat,sh},
+// which handle Windows (NSSM) and Linux (systemd) specifics with local logging.
 func serviceManager(args []string, out, errOut io.Writer, baseURL string) int {
-	script := findServiceScript()
-	if script == "" {
-		_, _ = fmt.Fprintln(errOut, "service manager script not found — expected at scripts/service/service-manager.sh")
+	exe, err := os.Executable()
+	if err != nil {
+		exe = os.Args[0]
+	}
+	exeDir := filepath.Dir(filepath.Clean(exe))
+
+	var script string
+	var shell string
+	if runtime.GOOS == "windows" {
+		shell = "cmd.exe"
+		script = filepath.Join(exeDir, "..", "scripts", "service", "service-install.bat")
+	} else {
+		shell = "bash"
+		script = filepath.Join(exeDir, "..", "scripts", "service", "service-install.sh")
+	}
+	if _, err := os.Stat(script); err != nil {
+		_, _ = fmt.Fprintln(errOut, "service manager script not found — expected at .timekeeper/scripts/service/")
 		return 1
 	}
 
-	shell := "bash"
+	var cmdArgs []string
 	if runtime.GOOS == "windows" {
-		shell = "bash" // WSL / Git Bash
+		cmdArgs = append([]string{"/c", script}, args...)
+	} else {
+		cmdArgs = append([]string{script}, args...)
 	}
-
-	cmd := exec.Command(shell, script)
-	cmd.Args = append(cmd.Args, args...)
+	cmd := exec.Command(shell, cmdArgs...)
 	cmd.Stdout = out
 	cmd.Stderr = errOut
 	cmd.Stdin = os.Stdin
 	cmd.Env = os.Environ()
 
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode()
-		}
 		_, _ = fmt.Fprintf(errOut, "service command failed: %v\n", err)
 		return 1
 	}
@@ -57,21 +68,17 @@ func findServiceScript() string {
 
 	candidates := []string{}
 
-	// Path 2: alongside the installed binary (.timekeeper/app/bin/tk -> ../scripts/service/...)
 	if exe, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(filepath.Clean(exe))
 		candidates = append(candidates, filepath.Join(exeDir, "..", "scripts", "service", "service-manager.sh"))
+		if repoRoot := os.Getenv("TIMEKEEPER_REPO"); repoRoot != "" {
+			candidates = append(candidates, filepath.Join(repoRoot, "scripts", "service", "service-manager.sh"))
+		} else {
+			repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Clean(exe))))
+			candidates = append(candidates, filepath.Join(repoRoot, "scripts", "service", "service-manager.sh"))
+		}
 	}
 
-	// Path 3: repo root (TIMEKEEPER_REPO or inferred from binary: .timekeeper/app/bin -> 3 levels up)
-	if repoRoot := os.Getenv("TIMEKEEPER_REPO"); repoRoot != "" {
-		candidates = append(candidates, filepath.Join(repoRoot, "scripts", "service", "service-manager.sh"))
-	} else if exe, err := os.Executable(); err == nil {
-		repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Clean(exe))))
-		candidates = append(candidates, filepath.Join(repoRoot, "scripts", "service", "service-manager.sh"))
-	}
-
-	// Path 4: current working directory
 	candidates = append(candidates, filepath.Join("scripts", "service", "service-manager.sh"))
 
 	for _, c := range candidates {
