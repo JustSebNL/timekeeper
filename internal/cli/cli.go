@@ -1615,6 +1615,15 @@ func doctor(out, errOut io.Writer, baseURL string) int {
 			canonicalOK = true
 		}
 	}
+
+	// Installation sanity check: the install-commit / install-path that
+	// the running binary was built from. This catches the case where
+	// the user updated their local checkout but the service / launcher
+	// is still running the old binary.
+	if err := reportInstallInfo(out); err != nil {
+		_, _ = fmt.Fprintf(out, "[skip] install info: %v\n", err)
+	}
+
 	if allOK {
 		_, _ = fmt.Fprintln(out, "\nTime Keeper is ready.")
 		return 0
@@ -1627,6 +1636,63 @@ func doctor(out, errOut io.Writer, baseURL string) int {
 	_, _ = fmt.Fprintln(out, "\nTime Keeper is not fully ready.")
 	_, _ = fmt.Fprintln(out, "Start the service, then run tk doctor again.")
 	return 1
+}
+
+// reportInstallInfo prints a one-line summary of the install that the
+// current binary was built from. The installer writes INSTALLATION.env
+// next to the binary; if it is missing (e.g. running from a manually
+// copied binary) the call returns an error and the doctor prints
+// "[skip] install info: ..." rather than failing the whole check.
+func reportInstallInfo(out io.Writer) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// Look for INSTALLATION.env in the binary's directory and one
+	// level up (the install layout puts the file at .timekeeper/app/
+	// while the binary is at .timekeeper/app/bin/).
+	dir := filepath.Dir(exe)
+	for _, rel := range []string{"INSTALLATION.env", filepath.Join("..", "INSTALLATION.env")} {
+		candidate := filepath.Join(dir, rel)
+		body, err := os.ReadFile(candidate)
+		if err != nil {
+			continue
+		}
+		commit := readEnvLine(string(body), "SOURCE_COMMIT")
+		target := readEnvLine(string(body), "TARGET_GOOS")
+		proxyAddr := readEnvLine(string(body), "TIMEKEEPER_PROXY_ADDR")
+		proxyDisabled := readEnvLine(string(body), "TIMEKEEPER_PROXY_DISABLED")
+		short := commit
+		if len(short) > 12 {
+			short = short[:12]
+		}
+		_, _ = fmt.Fprintf(out, "[ok] install: target=%s commit=%s", target, short)
+		if proxyAddr != "" {
+			_, _ = fmt.Fprintf(out, " proxy=%s", proxyAddr)
+		}
+		if proxyDisabled == "1" {
+			_, _ = fmt.Fprint(out, " proxy=disabled")
+		}
+		_, _ = fmt.Fprintln(out)
+		return nil
+	}
+	return fmt.Errorf("INSTALLATION.env not found next to the binary")
+}
+
+// readEnvLine is a tiny KEY=VALUE reader that tolerates shell-style
+// quoting (single or double quotes) so the installer can store the
+// values in a human-readable form.
+func readEnvLine(body, key string) string {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, key+"=") {
+			continue
+		}
+		value := strings.TrimPrefix(line, key+"=")
+		value = strings.Trim(value, "\"'")
+		return value
+	}
+	return ""
 }
 
 // probeHealth does a single GET against the health endpoint. It

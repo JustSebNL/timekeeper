@@ -12,7 +12,7 @@ DESTINATION="$ROOT/.timekeeper/app"
 
 usage() {
   cat <<'USAGE'
-Usage: ./install.sh
+Usage: ./install.sh [--with-port=<addr>] [--without-proxy]
 
 Build Time Keeper from this verified checkout into .timekeeper/app.
 The installed app, its launchers, and its local SQLite state stay with this clone.
@@ -20,6 +20,16 @@ The installed app, its launchers, and its local SQLite state stay with this clon
 The installer does not download code, change PATH, request privileges, create a
 service, or start a server. Stop a running Time Keeper process before refreshing
 an existing installation.
+
+Options:
+  --with-port=<host:port>   Set TIMEKEEPER_PROXY_ADDR explicitly. The friendly
+                            URL proxy will bind to this address instead of the
+                            default 127.0.0.1:80. Persisted to INSTALLATION.env.
+                            Example: --with-port=127.0.0.1:8080
+  --without-proxy           Disable the friendly-URL proxy listener entirely.
+                            Only the canonical 127.0.0.1:1618 address will work.
+                            Persisted to INSTALLATION.env.
+  -h, --help                Show this help.
 USAGE
 }
 
@@ -28,14 +38,42 @@ fail() {
   exit "${2:-64}"
 }
 
-if (($#)); then
-  if [[ "$1" == '--help' || "$1" == '-h' ]]; then
-    usage
-    exit 0
-  fi
-  usage >&2
-  fail 'install.sh takes no arguments; run it from the Time Keeper checkout.'
-fi
+# Parse the small allowlist of flags. Anything else is a hard error so
+# typos like "--without-prox" are caught instead of silently ignored.
+PROXY_ADDR_FOR_INSTALL=""
+PROXY_DISABLED_FOR_INSTALL=0
+while (($#)); do
+  case "$1" in
+    --with-port=*)
+      PROXY_ADDR_FOR_INSTALL="${1#--with-port=}"
+      if [[ ! "$PROXY_ADDR_FOR_INSTALL" =~ ^[^:]+:[0-9]+$ ]]; then
+        fail "--with-port expects host:port, got '$PROXY_ADDR_FOR_INSTALL'"
+      fi
+      ;;
+    --with-port)
+      if [[ $# -lt 2 ]]; then
+        fail '--with-port requires a value (host:port)'
+      fi
+      shift
+      PROXY_ADDR_FOR_INSTALL="$1"
+      if [[ ! "$PROXY_ADDR_FOR_INSTALL" =~ ^[^:]+:[0-9]+$ ]]; then
+        fail "--with-port expects host:port, got '$PROXY_ADDR_FOR_INSTALL'"
+      fi
+      ;;
+    --without-proxy)
+      PROXY_DISABLED_FOR_INSTALL=1
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      fail "unknown argument: $1"
+      ;;
+  esac
+  shift
+done
 
 command -v git >/dev/null 2>&1 || fail 'Git is required to verify this checkout.' 69
 if ! git -C "$SOURCE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -164,6 +202,17 @@ SOURCE_COMMIT=$COMMIT
 TARGET_GOOS=$GOOS
 INSTALLER_STARTS_NO_SERVER=1
 INSTALLATION
+
+# Persist --with-port / --without-proxy choices so re-installs and the
+# service install step both honour them. The service-manager.sh script
+# reads TIMEKEEPER_PROXY_ADDR / TIMEKEEPER_PROXY_DISABLED from
+# INSTALLATION.env at install time.
+if [[ -n "$PROXY_ADDR_FOR_INSTALL" ]]; then
+  printf 'TIMEKEEPER_PROXY_ADDR=%s\n' "$PROXY_ADDR_FOR_INSTALL" >> "$INSTALL_ROOT/INSTALLATION.env"
+fi
+if [[ "$PROXY_DISABLED_FOR_INSTALL" -eq 1 ]]; then
+  printf 'TIMEKEEPER_PROXY_DISABLED=1\n' >> "$INSTALL_ROOT/INSTALLATION.env"
+fi
 chmod 600 "$INSTALL_ROOT/INSTALLATION.env"
 
 if [[ -e "$DESTINATION" && ! -d "$DESTINATION" ]]; then
@@ -201,6 +250,27 @@ printf 'Source commit: %s\n' "$COMMIT"
 printf 'Run: ./.timekeeper/app/timekeeper\n'
 printf 'Then use: ./.timekeeper/app/tk list\n'
 printf 'Run as OS service: ./.timekeeper/app/tk service install\n'
+
+# Linux unprivileged port 80: if the user is root, grant the timekeeper
+# binary the CAP_NET_BIND_SERVICE capability so the friendly-URL proxy
+# can bind 127.0.0.1:80 without running the whole service as root. This
+# is the one-shot, per-binary step that replaces a setuid wrapper (which
+# we deliberately don't ship). No-op on non-Linux targets.
+if [[ "$GOOS" == "linux" ]]; then
+  if [[ "$(id -u 2>/dev/null || echo 1)" -eq 0 ]]; then
+    if command -v setcap >/dev/null 2>&1; then
+      if setcap 'cap_net_bind_service=+ep' "$DESTINATION/bin/timekeeper" 2>/dev/null; then
+        printf 'Granted CAP_NET_BIND_SERVICE to .timekeeper/app/bin/timekeeper (so the friendly-URL proxy can bind 127.0.0.1:80 without root).\n'
+      else
+        printf 'Time Keeper install: could not set CAP_NET_BIND_SERVICE on the binary. The friendly-URL proxy will fall back to a high port (set TIMEKEEPER_PROXY_ADDR to a free unprivileged port).\n' >&2
+      fi
+    else
+      printf 'Time Keeper install: setcap not found; skipping CAP_NET_BIND_SERVICE. Install libcap2-bin if you need the friendly-URL proxy to bind 127.0.0.1:80 without root.\n' >&2
+    fi
+  else
+    printf 'Time Keeper install: not running as root; skipping setcap. If the friendly-URL proxy fails to bind 127.0.0.1:80, run: sudo setcap cap_net_bind_service=+ep .timekeeper/app/bin/timekeeper\n' >&2
+  fi
+fi
 
 # Write the friendly-URL hosts entries. Best-effort: if the user does
 # not have permission to edit the hosts file, the install still

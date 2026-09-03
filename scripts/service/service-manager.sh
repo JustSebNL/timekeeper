@@ -68,21 +68,46 @@ log() { printf '[service] %s\n' "$1"; }
 err() { printf '[service:err] %s\n' "$1" >&2; }
 
 # ─── helpers ────────────────────────────────────────────────────────────────
+# find_nssm prints the resolved nssm.exe path on stdout and returns 0,
+# or prints an actionable error to stderr and returns 1. The error
+# names every location that was checked so the user can put nssm.exe
+# somewhere reachable or set TIMEKEEPER_NSSM.
 find_nssm() {
   local nssm=""
+  local searched=()
   if [[ -n "${TIMEKEEPER_NSSM:-}" && -x "$TIMEKEEPER_NSSM" ]]; then
     nssm="$TIMEKEEPER_NSSM"
-  elif [[ -x "$SERVICE_DIR/nssm/nssm.exe" ]]; then
+  fi
+  if [[ -z "$nssm" ]] && [[ -x "$SERVICE_DIR/nssm/nssm.exe" ]]; then
     nssm="$SERVICE_DIR/nssm/nssm.exe"
-  elif [[ -x "/mnt/d/var/nssm/win64/nssm.exe" ]]; then
+  fi
+  searched+=("$SERVICE_DIR/nssm/nssm.exe")
+  if [[ -z "$nssm" ]] && [[ -x "/mnt/d/var/nssm/win64/nssm.exe" ]]; then
     nssm="/mnt/d/var/nssm/win64/nssm.exe"
-  elif command -v nssm >/dev/null 2>&1; then
+  fi
+  searched+=("/mnt/d/var/nssm/win64/nssm.exe")
+  if [[ -z "$nssm" ]] && command -v nssm >/dev/null 2>&1; then
     nssm="$(command -v nssm)"
   fi
+  searched+=("\$(command -v nssm) on PATH")
   if [[ -n "$nssm" ]]; then
     echo "$nssm"
     return 0
   fi
+  cat >&2 <<EOF
+[service:err] NSSM (the Non-Sucking Service Manager) is required to install
+[service:err] TimeKeeper as a Windows service, but nssm.exe was not found.
+[service:err]
+[service:err] Searched:
+$(printf '  - %s\n' "${searched[@]}" >&2)
+[service:err]
+[service:err] Fix (pick one):
+[service:err]   1) Download nssm 2.24 from https://nssm.cc and copy the
+[service:err]      win64/nssm.exe into $SERVICE_DIR/nssm/nssm.exe
+[service:err]   2) Set TIMEKEEPER_NSSM=/path/to/nssm.exe before running
+[service:err]      tk service install
+[service:err]   3) Put nssm.exe on PATH
+EOF
   return 1
 }
 
@@ -96,10 +121,10 @@ verify_installed() {
 # ─── Windows (NSSM) ────────────────────────────────────────────────────────
 win_install() {
   local nssm
-  nssm="$(find_nssm)" || {
-    err "NSSM not found. Install it or set TIMEKEEPER_NSSM to nssm.exe"
+  if ! nssm="$(find_nssm)"; then
+    # find_nssm already printed the actionable error.
     return 69
-  }
+  fi
   verify_installed || return 1
 
   log "Using NSSM: $nssm"
@@ -113,9 +138,35 @@ win_install() {
     log "Using proxy address: $PROXY_ADDR"
   fi
 
-  # If service already exists, remove it first
+  # Compose the desired service parameters. Keeping this in one
+  # variable is what makes the idempotent check below possible:
+  # compare it byte-for-byte against the live NSSM value.
+  local desired_app_parameters="-addr $ADDR -db .timekeeper/timekeeper.db -ui .timekeeper/web/index.html -pulse-guardian-interval $GUARDIAN_INTERVAL -proxy-addr $PROXY_ADDR"
+  local desired_app_directory="$REPO"
+  local desired_display_name="TimeKeeper — Project Execution Memory"
+  local desired_description="Local project execution memory for AI agents. Runs on loopback $ADDR."
+
+  # Idempotent re-install: if the service is already installed and
+  # every relevant parameter matches the desired value, skip the
+  # remove + re-install cycle. This keeps the live process alive
+  # across `tk service install` re-runs (the original behaviour
+  # always stopped and reinstalled, which interrupted a running
+  # process on every refresh).
   if "$nssm" status "$SERVICE_NAME" >/dev/null 2>&1; then
-    log "Existing service found — removing first"
+    local current_app_parameters current_app_directory current_display_name
+    current_app_parameters="$("$nssm" get "$SERVICE_NAME" AppParameters 2>/dev/null || echo "")"
+    current_app_directory="$("$nssm" get "$SERVICE_NAME" AppDirectory 2>/dev/null || echo "")"
+    current_display_name="$("$nssm" get "$SERVICE_NAME" DisplayName 2>/dev/null || echo "")"
+    if [[ "$current_app_parameters" == "$desired_app_parameters" ]] \
+       && [[ "$current_app_directory" == "$desired_app_directory" ]] \
+       && [[ "$current_display_name" == "$desired_display_name" ]]; then
+      log "Service '$SERVICE_NAME' is already installed with the desired parameters; skipping reinstall."
+      # Make sure it is running, in case it was stopped.
+      "$nssm" status "$SERVICE_NAME" 2>/dev/null | grep -q RUNNING || "$nssm" start "$SERVICE_NAME"
+      log "Service is up. Logs: $LOG_DIR/service.log"
+      return 0
+    fi
+    log "Existing service has stale parameters; updating in place."
     "$nssm" stop "$SERVICE_NAME" >/dev/null 2>&1 || true
     "$nssm" remove "$SERVICE_NAME" confirm >/dev/null 2>&1 || true
     sleep 1
@@ -123,10 +174,10 @@ win_install() {
 
   # Install the service
   "$nssm" install "$SERVICE_NAME" "$BIN"
-  "$nssm" set "$SERVICE_NAME" AppDirectory "$REPO"
-  "$nssm" set "$SERVICE_NAME" AppParameters "-addr $ADDR -db .timekeeper/timekeeper.db -ui .timekeeper/web/index.html -pulse-guardian-interval $GUARDIAN_INTERVAL -proxy-addr $PROXY_ADDR"
-  "$nssm" set "$SERVICE_NAME" DisplayName "TimeKeeper — Project Execution Memory"
-  "$nssm" set "$SERVICE_NAME" Description "Local project execution memory for AI agents. Runs on loopback $ADDR."
+  "$nssm" set "$SERVICE_NAME" AppDirectory "$desired_app_directory"
+  "$nssm" set "$SERVICE_NAME" AppParameters "$desired_app_parameters"
+  "$nssm" set "$SERVICE_NAME" DisplayName "$desired_display_name"
+  "$nssm" set "$SERVICE_NAME" Description "$desired_description"
   "$nssm" set "$SERVICE_NAME" Start SERVICE_DELAYED_AUTO_START
   "$nssm" set "$SERVICE_NAME" AppStdout "$LOG_DIR/service.log"
   "$nssm" set "$SERVICE_NAME" AppStderr "$LOG_DIR/service.error.log"
@@ -147,7 +198,9 @@ win_install() {
 
 win_uninstall() {
   local nssm
-  nssm="$(find_nssm)" || { err "NSSM not found"; return 69; }
+  if ! nssm="$(find_nssm)"; then
+    return 69
+  fi
 
   if ! "$nssm" status "$SERVICE_NAME" >/dev/null 2>&1; then
     log "Service '$SERVICE_NAME' is not installed"
@@ -161,28 +214,28 @@ win_uninstall() {
 
 win_start() {
   local nssm
-  nssm="$(find_nssm)" || { err "NSSM not found"; return 69; }
+  if ! nssm="$(find_nssm)"; then return 69; fi
   "$nssm" start "$SERVICE_NAME"
   log "Service started"
 }
 
 win_stop() {
   local nssm
-  nssm="$(find_nssm)" || { err "NSSM not found"; return 69; }
+  if ! nssm="$(find_nssm)"; then return 69; fi
   "$nssm" stop "$SERVICE_NAME"
   log "Service stopped"
 }
 
 win_restart() {
   local nssm
-  nssm="$(find_nssm)" || { err "NSSM not found"; return 69; }
+  if ! nssm="$(find_nssm)"; then return 69; fi
   "$nssm" restart "$SERVICE_NAME"
   log "Service restarted"
 }
 
 win_status() {
   local nssm
-  nssm="$(find_nssm)" || { err "NSSM not found"; return 69; }
+  if ! nssm="$(find_nssm)"; then return 69; fi
   if "$nssm" status "$SERVICE_NAME" >/dev/null 2>&1; then
     log "Service '$SERVICE_NAME' is installed"
     "$nssm" status "$SERVICE_NAME"

@@ -176,7 +176,7 @@ a fully clean uninstall.
 ## Open TODOs for the installer
 
 These are the items the installer is *not* yet doing but should, in
-priority order:
+priority order. **Status as of the latest sync:**
 
 1. **Detect port 80 conflict and present the three-option choice**
    documented in `docs/friendly-url.md` ("Free port 80", "Pick a
@@ -191,43 +191,50 @@ priority order:
    "use this port" override that the WSL .sh can read from
    `INSTALLATION.env` even when the probe is a no-op.
 
-2. **Idempotent re-install of the OS service.** `tk service install`
-   currently always removes + reinstalls. That works, but it
-   interrupts the live process. A "no-op if already installed with
-   matching parameters" path would be friendlier for `cron`-style
-   update flows.
+2. **Idempotent re-install of the OS service.** **Status: shipped.**
+   `tk service install` now compares the desired service parameters
+   (`AppParameters`, `AppDirectory`, `DisplayName`) against the live
+   NSSM values; on a match it skips the remove + restart cycle and
+   just ensures the service is running. On a mismatch (e.g. a new
+   `TIMEKEEPER_PROXY_ADDR`) it removes and reinstalls as before. The
+   live process is no longer interrupted on every refresh.
 
 3. **Verify NSSM is present on Windows before promising the service
-   install will work.** The `find_nssm` helper in
-   `scripts/service/service-manager.sh` already does this and
-   returns 69 if missing, but the error message could be more
-   actionable ("NSSM not found at <X>; download from
-   https://nssm.cc and place at /mnt/d/var/nssm/win64/nssm.exe or
-   set TIMEKEEPER_NSSM").
+   install will work.** **Status: shipped.** `find_nssm` in
+   `scripts/service/service-manager.sh` now prints a structured
+   error that lists every location that was checked, the download
+   URL, and the three ways to fix it (place at the standard path,
+   set `TIMEKEEPER_NSSM`, or put on PATH).
 
-4. **Add an `install.sh --with-port <addr>` flag** that explicitly
-   documents the port-80 conflict and lets the user pick a
-   different proxy address at install time, persisting the choice
-   via `TIMEKEEPER_PROXY_ADDR` in `INSTALLATION.env` so the service
-   inherits it.
+4. **Add an `install.sh --with-port <addr>` flag.** **Status: shipped.**
+   `./install.sh --with-port=127.0.0.1:8080` sets
+   `TIMEKEEPER_PROXY_ADDR` and persists it; `./install.sh
+   --without-proxy` disables the proxy listener and persists
+   `TIMEKEEPER_PROXY_DISABLED=1`. The flags are documented in
+   `install.sh --help`. The persisted values are honoured by
+   `service-manager.sh` on the next `tk service install`.
 
-5. **Document macOS** launchd install path in the README. The
-   project supports it via the service-manager.sh platform check,
-   but the user-facing install flow only documents Windows NSSM
-   and Linux systemd. macOS users get nothing to copy from.
+5. **Document macOS** launchd install path in the README. **Status:
+   shipped.** A `macOS (manual launchd setup)` subsection of the
+   README walks through the four-step manual flow: build via
+   `install.sh`, drop a LaunchAgent plist, `launchctl load -w` and
+   `launchctl start`, then `launchctl unload` for removal. The
+   plist is provided in full.
 
-6. **Test the Linux port-80 unprivileged path with `setcap`.** The
-   `setcap cap_net_bind_service=+ep /path/to/timekeeper` one-shot
-   is documented in `friendly-url.md` but never tested by the
-   installer. Adding a `sudo setcap` step in `install.sh` (gated
-   on the user being root, with a graceful skip) would close the
-   most common Linux install failure mode.
+6. **Test the Linux port-80 unprivileged path with `setcap`.** **Status:
+   shipped in `install.sh`.** When the user is root on Linux and
+   `setcap` is on PATH, the install grants `cap_net_bind_service=+ep`
+   to the timekeeper binary so the friendly-URL proxy can bind
+   127.0.0.1:80 without the whole service running as root. Non-root
+   users get a one-line instruction to run the same `setcap` command
+   themselves; missing `setcap` (libcap2-bin not installed) is
+   detected and reported.
 
-7. **Verify the install path is part of `tk doctor`.** Today
-   `tk doctor` probes the API endpoints but not whether the
-   install is at the expected commit. An `INSTALLATION.env`
-   read with a "service installed from commit <X>" line would
-   make update-flow debugging faster.
+7. **Verify the install path is part of `tk doctor`.** **Status:
+   shipped.** `tk doctor` now reads `INSTALLATION.env` next to the
+   binary and reports the install target, source commit (short hash),
+   and the persisted proxy choice. Catches the case where the
+   service is running an old build after a refresh.
 
 ## What ships vs. what's experimental
 
@@ -238,10 +245,11 @@ priority order:
 | Install-time port-80 probe + 3-option prompt (native Linux) | ships |
 | `TIMEKEEPER_PROXY_ADDR` env override | ships |
 | Persisted `INSTALLATION.env` choice for re-installs | ships |
+| `./install.sh --with-port` / `--without-proxy` flags | ships |
+| `setcap` step in `install.sh` (Linux unprivileged port 80) | ships |
+| `tk service install` idempotent (no-op on matching params) | ships |
+| `find_nssm` actionable error with all searched paths | ships |
+| macOS launchd flow in README | ships |
+| `tk doctor` install-commit + target + proxy choice line | ships |
 | Install-time port-80 probe on WSL | not yet (TODO 1 follow-up) |
 | Install-time port-80 probe on native Windows (.bat) | not yet (TODO 1 follow-up) |
-| Idempotent service re-install | not yet (TODO 2) |
-| `install.sh --with-port` flag | not yet (TODO 4) |
-| macOS launchd install flow | not yet (TODO 5) |
-| `setcap` step in `install.sh` | not yet (TODO 6) |
-| Install-commit check in `tk doctor` | not yet (TODO 7) |
