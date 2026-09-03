@@ -201,3 +201,10 @@ printf 'Source commit: %s\n' "$COMMIT"
 printf 'Run: ./.timekeeper/app/timekeeper\n'
 printf 'Then use: ./.timekeeper/app/tk list\n'
 printf 'Run as OS service: ./.timekeeper/app/tk service install\n'
+
+# Write the friendly-URL hosts entries. Best-effort: if the user does
+# not have permission to edit the hosts file, the install still
+# succeeds and `tk doctor` will report the friendly URLs as failed.
+# The user can re-run the installer from an elevated context, or edit
+# the hosts file manually (the README documents the manual step).
+"$DESTINATION/bin/$(basename "$cli_binary")" hosts add || printf 'Time Keeper install: could not write friendly-URL hosts entries (run as Administrator / with sudo, or edit %s manually)\n' "/etc/hosts"

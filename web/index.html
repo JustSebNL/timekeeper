@@ -132,6 +132,25 @@
           <p class="panel-description">A compact view of where planned work stands against recorded execution.</p>
           <div id="focus" class="focus-list empty">Loading project focus…</div>
         </section>
+
+        <section class="panel panel-messages" id="messages-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Project memory</p><h2>Message board</h2></div><span class="panel-link" id="messages-project-label">No project selected</span></div>
+          <p class="panel-description">Long-term, project-scoped memory. Search a project's decisions, observations, and lessons without re-pouring them into a context window.</p>
+          <div class="messages-toolbar">
+            <input type="search" id="messages-search" class="messages-search" placeholder="Search messages…" aria-label="Search project messages" />
+            <select id="messages-kind" class="messages-kind" aria-label="Filter by kind">
+              <option value="">All kinds</option>
+              <option value="note">Note</option>
+              <option value="decision">Decision</option>
+              <option value="observation">Observation</option>
+              <option value="link">Link</option>
+              <option value="lesson">Lesson</option>
+              <option value="question">Question</option>
+              <option value="answer">Answer</option>
+            </select>
+          </div>
+          <div id="messages-list" class="messages-list empty">Select a project to load its message board.</div>
+        </section>
       </div>
     </main>
   </div>

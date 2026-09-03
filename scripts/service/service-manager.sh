@@ -26,12 +26,21 @@ BIN="$STATE_ROOT/app/bin/timekeeper"
 CLI_BIN="$STATE_ROOT/app/bin/tk"
 GUARDIAN_BIN="$STATE_ROOT/app/bin/guardian"
 ADDR="${TIMEKEEPER_ADDR:-127.0.0.1:1618}"
+PROXY_ADDR="${TIMEKEEPER_PROXY_ADDR:-127.0.0.1:80}"
 DB_PATH="$STATE_ROOT/timekeeper.db"
 UI_PATH="$REPO/.timekeeper/web/index.html"
 GUARDIAN_ADDR="${TIMEKEEPER_GUARDIAN_RECEIVER_ADDR:-127.0.0.1:1619}"
 GUARDIAN_AGENT="${TIMEKEEPER_GUARDIAN_RECEIVER_AGENT:-xatia}"
 GUARDIAN_INTERVAL="${TIMEKEEPER_PULSE_GUARDIAN_INTERVAL:-5m}"
 SERVICE_NAME="TimeKeeper"
+
+# Source the port-check library so tk_resolve_proxy_addr / tk_probe_loopback_port
+# are available to win_install and linux_install. Safe to source multiple times.
+SCRIPT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-port-check.sh"
+if [[ -f "$SCRIPT_LIB" ]]; then
+  # shellcheck disable=SC1090
+  source "$SCRIPT_LIB"
+fi
 
 mkdir -p "$SERVICE_DIR" "$LOG_DIR"
 
@@ -95,6 +104,15 @@ win_install() {
 
   log "Using NSSM: $nssm"
 
+  # Resolve the proxy address: env override wins, then INSTALLATION.env,
+  # then probe the default port and prompt the user if it's in use.
+  PROXY_ADDR="$(tk_resolve_proxy_addr "$PROXY_ADDR_DEFAULT")"
+  if [[ -z "$PROXY_ADDR" ]]; then
+    log "Friendly-URL proxy is disabled (TIMEKEEPER_PROXY_DISABLED=1)."
+  else
+    log "Using proxy address: $PROXY_ADDR"
+  fi
+
   # If service already exists, remove it first
   if "$nssm" status "$SERVICE_NAME" >/dev/null 2>&1; then
     log "Existing service found — removing first"
@@ -106,7 +124,7 @@ win_install() {
   # Install the service
   "$nssm" install "$SERVICE_NAME" "$BIN"
   "$nssm" set "$SERVICE_NAME" AppDirectory "$REPO"
-  "$nssm" set "$SERVICE_NAME" AppParameters "-addr $ADDR -db .timekeeper/timekeeper.db -ui .timekeeper/web/index.html -pulse-guardian-interval $GUARDIAN_INTERVAL"
+  "$nssm" set "$SERVICE_NAME" AppParameters "-addr $ADDR -db .timekeeper/timekeeper.db -ui .timekeeper/web/index.html -pulse-guardian-interval $GUARDIAN_INTERVAL -proxy-addr $PROXY_ADDR"
   "$nssm" set "$SERVICE_NAME" DisplayName "TimeKeeper — Project Execution Memory"
   "$nssm" set "$SERVICE_NAME" Description "Local project execution memory for AI agents. Runs on loopback $ADDR."
   "$nssm" set "$SERVICE_NAME" Start SERVICE_DELAYED_AUTO_START
@@ -188,7 +206,7 @@ StartLimitBurst=5
 [Service]
 Type=simple
 WorkingDirectory=$REPO
-ExecStart=$BIN -addr $ADDR -db $DB_PATH -ui $UI_PATH -pulse-guardian-interval $GUARDIAN_INTERVAL
+ExecStart=$BIN -addr $ADDR -db $DB_PATH -ui $UI_PATH -pulse-guardian-interval $GUARDIAN_INTERVAL -proxy-addr $PROXY_ADDR
 ExecStop=/bin/kill -SIGTERM \$MAINPID
 Restart=on-failure
 RestartSec=5
@@ -204,6 +222,15 @@ EOF
 
 linux_install() {
   verify_installed || return 1
+
+  # Resolve the proxy address: env override wins, then INSTALLATION.env,
+  # then probe the default port and prompt the user if it's in use.
+  PROXY_ADDR="$(tk_resolve_proxy_addr "$PROXY_ADDR_DEFAULT")"
+  if [[ -z "$PROXY_ADDR" ]]; then
+    log "Friendly-URL proxy is disabled (TIMEKEEPER_PROXY_DISABLED=1)."
+  else
+    log "Using proxy address: $PROXY_ADDR"
+  fi
 
   local unit
   unit="$(linux_systemd_unit)"

@@ -1648,4 +1648,148 @@
     return section;
   }
 
+  // ─── Project message board (long-term memory) ─────────────────────────
+  // Reads: GET /api/v1/projects/{id}/messages
+  // Search: GET /api/v1/projects/{id}/messages/search?q=...
+  // The panel is read-only; the CLI (`tk msg <project> add|list|search|show`)
+  // is the authoritative write path so the message stream stays under
+  // agent and human control via the existing TimeKeeper record-keeping
+  // contracts.
+  const messagesList = document.querySelector('#messages-list');
+  const messagesProjectLabel = document.querySelector('#messages-project-label');
+  const messagesSearch = document.querySelector('#messages-search');
+  const messagesKind = document.querySelector('#messages-kind');
+  let messagesProjectID = null;
+  let messagesDebounce = 0;
+
+  function escapeHTML(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // FTS5 snippets arrive as JSON strings with <mark>...</mark> highlight
+  // markers already in place. The body, in contrast, is plain text and
+  // must be escaped before being injected. To keep the styling, we split
+  // on the markers, escape the text segments, and rebuild the string.
+  function renderSnippet(s) {
+    if (!s) return '';
+    const parts = s.split(/(<mark>|<\/mark>)/);
+    let open = false;
+    let out = '';
+    for (const p of parts) {
+      if (p === '<mark>') { open = true; out += '<mark>'; continue; }
+      if (p === '</mark>') { open = false; out += '</mark>'; continue; }
+      out += escapeHTML(p);
+    }
+    return out;
+  }
+
+  async function loadMessageProjects() {
+    if (!messagesList) return;
+    try {
+      const data = await request('/api/v1/projects');
+      const items = (data && data.items) || [];
+      if (!items.length) {
+        messagesProjectLabel.textContent = 'No projects yet';
+        messagesList.className = 'messages-list empty';
+        messagesList.textContent = 'Create a project to start a message board.';
+        return;
+      }
+      // Pick the most recent project (project_id) so the panel always
+      // shows something on load. Users can refine via a future picker.
+      const target = items[0];
+      messagesProjectID = target.project_id;
+      messagesProjectLabel.textContent = target.item_address + ' · ' + target.project_name;
+      await loadMessages();
+    } catch (err) {
+      messagesList.className = 'messages-list empty';
+      messagesList.textContent = 'Could not load projects: ' + err.message;
+    }
+  }
+
+  async function loadMessages() {
+    if (!messagesList || !messagesProjectID) return;
+    const q = (messagesSearch && messagesSearch.value || '').trim();
+    const kind = (messagesKind && messagesKind.value || '').trim();
+    messagesList.className = 'messages-list';
+    messagesList.textContent = 'Loading…';
+    try {
+      let items = [];
+      if (q) {
+        const params = new URLSearchParams({ q: q, limit: '50' });
+        const data = await request('/api/v1/projects/' + encodeURIComponent(messagesProjectID) + '/messages/search?' + params.toString());
+        items = (data && data.items) || [];
+      } else {
+        const params = new URLSearchParams({ limit: '50' });
+        if (kind) params.set('kind', kind);
+        const data = await request('/api/v1/projects/' + encodeURIComponent(messagesProjectID) + '/messages?' + params.toString());
+        items = (data && data.items) || [];
+      }
+      if (!items.length) {
+        messagesList.className = 'messages-list empty';
+        messagesList.textContent = q
+          ? 'No matches for "' + q + '".'
+          : (kind ? 'No ' + kind + ' messages yet.' : 'No messages yet — record one with `tk msg ' + messagesProjectID + ' add <body>`.');
+        return;
+      }
+      messagesList.className = 'messages-list';
+      messagesList.replaceChildren();
+      for (const m of items) {
+        const item = document.createElement('div');
+        item.className = 'message-item kind-' + escapeHTML(m.kind || 'note');
+        const meta = document.createElement('div');
+        meta.className = 'message-meta';
+        const kindTag = document.createElement('span');
+        kindTag.className = 'message-kind-tag';
+        kindTag.textContent = m.kind || 'note';
+        meta.appendChild(kindTag);
+        const author = document.createElement('span');
+        author.textContent = (m.author || 'anon') + ' · M-' + m.message_id;
+        meta.appendChild(author);
+        const ts = document.createElement('span');
+        ts.textContent = (m.created_at || '').replace('T', ' ').replace('Z', '');
+        meta.appendChild(ts);
+        item.appendChild(meta);
+        const body = document.createElement('div');
+        body.className = 'message-body';
+        body.innerHTML = m.snippet ? renderSnippet(m.snippet) : escapeHTML(m.body || '');
+        item.appendChild(body);
+        if (m.link) {
+          const link = document.createElement('a');
+          link.className = 'message-link';
+          link.href = m.link;
+          link.textContent = m.link;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          item.appendChild(link);
+        }
+        if (m.tags) {
+          const tags = document.createElement('div');
+          tags.className = 'message-tags';
+          tags.textContent = 'tags: ' + m.tags;
+          item.appendChild(tags);
+        }
+        messagesList.appendChild(item);
+      }
+    } catch (err) {
+      messagesList.className = 'messages-list empty';
+      messagesList.textContent = 'Could not load messages: ' + err.message;
+    }
+  }
+
+  if (messagesSearch) {
+    messagesSearch.addEventListener('input', () => {
+      clearTimeout(messagesDebounce);
+      messagesDebounce = window.setTimeout(loadMessages, 200);
+    });
+  }
+  if (messagesKind) {
+    messagesKind.addEventListener('change', loadMessages);
+  }
+  loadMessageProjects();
+
 })();
