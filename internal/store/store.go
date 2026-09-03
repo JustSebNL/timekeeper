@@ -1162,6 +1162,12 @@ func (s *Store) PulseAt(ctx context.Context, at time.Time) (model.Pulse, error) 
 
 // ListProjectEvents returns newest-first immutable execution history for one project.
 func (s *Store) ListProjectEvents(ctx context.Context, projectID string) ([]model.ProjectEvent, error) {
+	return s.ListProjectEventsLimit(ctx, projectID, 0)
+}
+
+// ListProjectEventsLimit is ListProjectEvents with a result cap. limit <= 0
+// returns every event, preserving the previous behaviour.
+func (s *Store) ListProjectEventsLimit(ctx context.Context, projectID string, limit int) ([]model.ProjectEvent, error) {
 	var exists int
 	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1169,8 +1175,14 @@ func (s *Store) ListProjectEvents(ctx context.Context, projectID string) ([]mode
 		}
 		return nil, fmt.Errorf("read event project: %w", err)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT event_id, project_id, entity_type, entity_id, event_type, message, created_at
-		FROM project_events WHERE project_id = ? ORDER BY created_at DESC, event_id DESC`, projectID)
+	query := `SELECT event_id, project_id, entity_type, entity_id, event_type, message, created_at
+		FROM project_events WHERE project_id = ? ORDER BY created_at DESC, event_id DESC`
+	args := []any{projectID}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list project events: %w", err)
 	}
