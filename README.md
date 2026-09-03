@@ -45,6 +45,45 @@ That means connecting the time and outcome of a piece of work with the model tha
 
 That insight is a direction, not a finished automatic integration. Time Keeper can now accept explicit cumulative agent usage snapshots and show token totals, but it does not scrape arbitrary agent transcripts or claim complete coverage automatically.
 
+## Friendly URLs
+
+TimeKeeper ships with two human-friendly URLs that resolve to the
+loopback address. The installer writes the entries to your hosts
+file as part of the normal install.
+
+- `http://timekeeper.local/` — the dashboard
+- `http://api.timekeeper.local/` — the API
+- `http://127.0.0.1:1618/` — the canonical loopback address, for
+  tools, agents, scripts, and diagnostics
+
+The friendly URLs work through a small reverse proxy that
+TimeKeeper starts on `127.0.0.1:80` (configurable via
+`TIMEKEEPER_PROXY_ADDR` or `-proxy-addr`). The proxy is always on;
+if it cannot bind, you get a clear warning at startup and the
+canonical 1618 listener keeps working. `tk doctor` reports which
+endpoints are reachable.
+
+Open the dashboard in your default browser:
+
+```text
+tk open
+```
+
+`tk open --api` opens the API in the browser; `tk open --ip` opens
+the canonical 1618 address.
+
+If port 80 is already in use on your host (Windows in particular
+reserves it for system services), the proxy logs a warning and the
+friendly URLs are not reachable until you either free port 80 or
+point TimeKeeper at a different port:
+
+```text
+TIMEKEEPER_PROXY_ADDR=127.0.0.1:8080 ./install.sh
+```
+
+The friendly URL then becomes `http://timekeeper.local:8080/`. The
+hostname stays friendly; the URL gains a port.
+
 ## Install and run
 
 From a clean Time Keeper clone, run:
