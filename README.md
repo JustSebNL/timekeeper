@@ -155,6 +155,72 @@ TimeKeeper can install itself as a system service so it starts automatically at 
 
 - **Windows**: uses [NSSM](https://nssm.cc) (auto-detected or set `TIMEKEEPER_NSSM`). Installs with `SERVICE_DELAYED_AUTO_START` so it starts shortly after boot.
 - **Linux**: uses systemd (user scope, linger-enabled) so it runs without an active login session.
+- **macOS**: launchd (manual, see below). v1 ships a documented manual flow rather than an installer; `tk service install` reports the platform on macOS and exits with an actionable message.
+
+### macOS (manual launchd setup)
+
+On macOS, `tk service install` does not (yet) ship a launchd plist generator. The manual flow is short and documented here so it stays under the user's control:
+
+1. Build and install TimeKeeper as usual: `./install.sh`. This produces `.timekeeper/app/bin/timekeeper` and `.timekeeper/app/bin/tk`.
+2. Create `~/Library/LaunchAgents/com.justsebnl.timekeeper.plist` with:
+
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+   <dict>
+     <key>Label</key>
+     <string>com.justsebnl.timekeeper</string>
+     <key>ProgramArguments</key>
+     <array>
+       <string>/absolute/path/to/.timekeeper/app/bin/timekeeper</string>
+       <string>-addr</string>
+       <string>127.0.0.1:1618</string>
+       <string>-db</string>
+       <string>/absolute/path/to/.timekeeper/timekeeper.db</string>
+       <string>-ui</string>
+       <string>/absolute/path/to/.timekeeper/web/index.html</string>
+       <string>-pulse-guardian-interval</string>
+       <string>5m</string>
+       <string>-proxy-addr</string>
+       <string>127.0.0.1:80</string>
+     </array>
+     <key>RunAtLoad</key>
+     <true/>
+     <key>KeepAlive</key>
+     <dict>
+       <key>SuccessfulExit</key>
+       <false/>
+       <key>Crashed</key>
+       <true/>
+     </dict>
+     <key>StandardOutPath</key>
+     <string>/absolute/path/to/.timekeeper/log/service.log</string>
+     <key>StandardErrorPath</key>
+     <string>/absolute/path/to/.timekeeper/log/service.error.log</string>
+   </dict>
+   </plist>
+   ```
+
+3. Load it:
+
+   ```text
+   launchctl load -w ~/Library/LaunchAgents/com.justsebnl.timekeeper.plist
+   launchctl start com.justsebnl.timekeeper
+   ```
+
+4. To stop / remove:
+
+   ```text
+   launchctl stop com.justsebnl.timekeeper
+   launchctl unload ~/Library/LaunchAgents/com.justsebnl.timekeeper.plist
+   rm ~/Library/LaunchAgents/com.justsebnl.timekeeper.plist
+   ```
+
+Notes:
+- Replace `/absolute/path/to` with the real path (e.g. `/Users/you/dev/codebase/dev/TimeKeeper`).
+- If port 80 is already taken (common on macOS due to Apple's services), change `-proxy-addr` to `127.0.0.1:8080` and use `http://timekeeper.local:8080/`.
+- The friendly-URL hosts entries still need to be set: `sudo ./.timekeeper/app/bin/tk hosts add` (one-time, with elevation).
 
 All service artifacts (unit files, logs, NSSM config) live under `.timekeeper/service/` and `.timekeeper/log/`.
 
