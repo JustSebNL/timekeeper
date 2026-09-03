@@ -1163,7 +1163,50 @@
     return minutes + 'm';
   }
 
-  function renderFocus(items, summaries) {
+  // formatRelative returns a short human-readable relative-time string
+  // for an ISO timestamp, e.g. "just now", "12m ago", "3h ago", "5d ago".
+  // Returns null on bad input so callers can render a graceful fallback.
+  function formatRelative(iso) {
+    if (!iso) return null;
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return null;
+    const deltaMs = Date.now() - t;
+    if (deltaMs < 0) return 'just now';
+    const sec = Math.floor(deltaMs / 1000);
+    if (sec < 60) return 'just now';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return min + 'm ago';
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return hr + 'h ago';
+    const day = Math.floor(hr / 24);
+    if (day < 30) return day + 'd ago';
+    const mo = Math.floor(day / 30);
+    if (mo < 12) return mo + 'mo ago';
+    return Math.floor(day / 365) + 'y ago';
+  }
+
+  // compactEventType maps a raw event_type ("sprint_completed") to a
+  // short label ("completed") suitable for the focus row timeline.
+  // Anything not in the known set falls back to the raw name.
+  function compactEventType(eventType) {
+    const map = {
+      sprint_started: 'started',
+      sprint_completed: 'completed',
+      sprint_held: 'on hold',
+      sprint_resumed: 'resumed',
+      sprint_cancelled: 'cancelled',
+      sprint_timed_out: 'timed out',
+      project_created: 'created',
+      project_metadata_updated: 'updated',
+      project_status_changed: 'status',
+      note_recorded: 'note',
+    };
+    const value = map[eventType];
+    if (value) return value;
+    return eventType ? eventType.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : 'event';
+  }
+
+  function renderFocus(items, summaries, lastEvents) {
     focusTarget.replaceChildren();
     if (!items.length) {
       focusTarget.className = 'focus-list empty';
@@ -1175,6 +1218,7 @@
       const project = items[index];
       const summary = summaries[index];
       if (!summary) continue;
+      const lastEvent = lastEvents && lastEvents[index] && lastEvents[index].items && lastEvents[index].items[0];
       const row = document.createElement('div');
       row.className = 'focus-row';
       const projectInfo = document.createElement('div');
@@ -1184,6 +1228,18 @@
       const status = document.createElement('small');
       status.textContent = project.status + ' · ' + summary.total_sprints + ' sprint(s)';
       projectInfo.append(name, status);
+      // Last-activity subline. Real data from /events, newest-first.
+      // Graceful fallback: no events => omit; bad event_type => show
+      // the compact label without a relative time.
+      if (lastEvent) {
+        const timeline = document.createElement('small');
+        timeline.className = 'focus-timeline';
+        const relative = formatRelative(lastEvent.created_at);
+        const label = compactEventType(lastEvent.event_type);
+        timeline.textContent = 'Last: ' + label + (relative ? ' · ' + relative : '');
+        timeline.title = lastEvent.event_type + ' on ' + (lastEvent.created_at || '');
+        projectInfo.append(timeline);
+      }
       const progress = document.createElement('div');
       progress.className = 'focus-progress';
       const track = document.createElement('div');
@@ -1373,13 +1429,19 @@
       const data = await request(api);
       const items = data.items || [];
       render(items);
-      const [summaries, usageSummaries] = await Promise.all([
+      const [summaries, usageSummaries, events] = await Promise.all([
         Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/operational-summary').catch(() => null))),
         Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/usage-summary').catch(() => null))),
+        // Pull the most recent event per project for the focus row
+        // timeline. The events endpoint returns newest-first; we only
+        // need the first item, so we keep the response shape small.
+        // A null item is tolerated (caught, returned as null) so a
+        // project with no events does not fail the whole fetch.
+        Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/events?limit=1').catch(() => null))),
         loadRecentActivity(items)
       ]);
       statActive.textContent = summaries.reduce((total, summary) => total + (summary?.active_sprints || 0), 0);
-      renderFocus(items, summaries);
+      renderFocus(items, summaries, events);
       renderUsage(usageSummaries.map((summary, index) => ({summary, projectName: items[index].project_name || items[index].project_id})));
       connection.textContent = 'Local API connected';
       sidebarAPIStatus.textContent = 'Online';

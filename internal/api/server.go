@@ -520,7 +520,22 @@ func projectAttention(database *store.Store) http.HandlerFunc {
 
 func listProjectEvents(database *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		events, err := database.ListProjectEvents(r.Context(), r.PathValue("projectID"))
+		limit := 0
+		if l := r.URL.Query().Get("limit"); l != "" {
+			n, err := strconv.Atoi(l)
+			if err != nil || n < 0 {
+				writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be a non-negative integer.")
+				return
+			}
+			limit = n
+		}
+		var events []model.ProjectEvent
+		var err error
+		if limit > 0 {
+			events, err = database.ListProjectEventsLimit(r.Context(), r.PathValue("projectID"), limit)
+		} else {
+			events, err = database.ListProjectEvents(r.Context(), r.PathValue("projectID"))
+		}
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "project_not_found", "Project was not found.")
