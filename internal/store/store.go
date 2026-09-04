@@ -1211,6 +1211,54 @@ func recordProjectEvent(ctx context.Context, tx *sql.Tx, projectID, entityType, 
 	return err
 }
 
+// ListUsageSnapshots returns all snapshots for a usage session, newest-first.
+// limit <= 0 returns all snapshots.
+func (s *Store) ListUsageSnapshots(ctx context.Context, projectID, sessionID string, limit int) ([]model.UsageSnapshot, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: project %s", ErrNotFound, projectID)
+		}
+		return nil, fmt.Errorf("read snapshot project: %w", err)
+	}
+	var usageID int64
+	err := s.db.QueryRowContext(ctx, `SELECT usage_id FROM agent_usage_sessions WHERE project_id = ? AND session_id = ?`, projectID, sessionID).Scan(&usageID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: usage session %s", ErrNotFound, sessionID)
+		}
+		return nil, fmt.Errorf("read usage session: %w", err)
+	}
+	query := `SELECT snapshot_id, usage_id, turn_seq, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, context_used, context_size, messages, captured_at
+		FROM agent_usage_snapshots WHERE usage_id = ? ORDER BY turn_seq DESC`
+	args := []any{usageID}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list usage snapshots: %w", err)
+	}
+	defer rows.Close()
+	snapshots := make([]model.UsageSnapshot, 0)
+	for rows.Next() {
+		var snap model.UsageSnapshot
+		var capturedAt string
+		if err := rows.Scan(&snap.SnapshotID, &snap.UsageID, &snap.TurnSeq, &snap.InputTokens, &snap.OutputTokens, &snap.CacheCreationTokens, &snap.CacheReadTokens, &snap.ContextUsed, &snap.ContextSize, &snap.Messages, &capturedAt); err != nil {
+			return nil, fmt.Errorf("scan usage snapshot: %w", err)
+		}
+		if snap.CreatedAt, err = time.Parse(time.RFC3339Nano, capturedAt); err != nil {
+			return nil, fmt.Errorf("parse usage snapshot created_at: %w", err)
+		}
+		snapshots = append(snapshots, snap)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usage snapshots: %w", err)
+	}
+	return snapshots, nil
+}
+
 // CreateProjectNote persists an attributed, immutable observation on one project.
 func (s *Store) CreateProjectNote(ctx context.Context, projectID string, input model.CreateProjectNoteInput, actorID string) (model.ProjectNote, error) {
 	input.Content = strings.TrimSpace(input.Content)
