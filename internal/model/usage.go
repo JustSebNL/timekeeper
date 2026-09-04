@@ -92,3 +92,18 @@ type ProjectUsageSummary struct {
 	Sessions  []UsageSession `json:"sessions"`
 	Days      []UsageDay     `json:"days"`
 }
+
+// UsageSnapshot represents a single cumulative usage reading for a session.
+type UsageSnapshot struct {
+	SnapshotID        int64  `json:"snapshot_id"`
+	UsageID           int64  `json:"usage_id"`
+	TurnSeq           int64  `json:"turn_seq"`
+	InputTokens       int64  `json:"input_tokens"`
+	OutputTokens      int64  `json:"output_tokens"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens"`
+	CacheReadTokens   int64  `json:"cache_read_tokens"`
+	ContextUsed       *int64   `json:"context_used,omitempty"`
+	ContextSize       *int64   `json:"context_size,omitempty"`
+	Messages          int64   `json:"messages"`
+	CreatedAt         time.Time `json:"created_at"`
+}
