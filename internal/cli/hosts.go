@@ -62,8 +62,8 @@ func resolveHostsFile() (string, error) {
 }
 
 const (
-	hostsBegin = "# >>> timekeeper begin"
-	hostsEnd   = "# <<< timekeeper end"
+	hostsBegin  = "# >>> timekeeper begin"
+	hostsEnd    = "# <<< timekeeper end"
 	hostsEntry1 = "127.0.0.1 timekeeper.local"
 	hostsEntry2 = "127.0.0.1 api.timekeeper.local"
 )
@@ -74,12 +74,13 @@ func hostsAdd(path string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "could not read %s: %v\n", path, err)
 		return 1
 	}
-	if hostsBlockExists(string(body)) {
+	if hostsBlockExists(string(body)) && hasHostMapping(string(body), "timekeeper.local") && hasHostMapping(string(body), "api.timekeeper.local") {
 		fmt.Fprintf(out, "Hosts entries already present in %s; nothing to do.\n", path)
 		return 0
 	}
 	block := strings.Join([]string{"", hostsBegin, hostsEntry1, hostsEntry2, hostsEnd, ""}, "\n")
-	newBody := string(body) + block
+	base, _ := stripHostsBlock(string(body))
+	newBody := base + block
 	if err := os.WriteFile(path, []byte(newBody), 0o644); err != nil {
 		fmt.Fprintf(errOut, "could not write %s: %v\n", path, err)
 		if isAccessDenied(err) {
@@ -125,30 +126,39 @@ func hostsRemove(path string, out, errOut io.Writer) int {
 }
 
 func hostsStatus(path string, out, errOut io.Writer) int {
-	f, err := os.Open(path)
+	body, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(errOut, "could not open %s: %v\n", path, err)
-		return 1
-	}
-	defer f.Close()
-	found := false
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == hostsEntry1 || line == hostsEntry2 {
-			found = true
-			fmt.Fprintf(out, "found: %s\n", line)
-		}
-	}
-	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(errOut, "could not read %s: %v\n", path, err)
 		return 1
 	}
-	if !found {
-		fmt.Fprintf(out, "no TimeKeeper hosts entries in %s\n", path)
+	complete := true
+	for _, name := range []string{"timekeeper.local", "api.timekeeper.local"} {
+		if hasHostMapping(string(body), name) {
+			fmt.Fprintf(out, "found: 127.0.0.1 %s\n", name)
+		} else {
+			complete = false
+			fmt.Fprintf(out, "missing: 127.0.0.1 %s\n", name)
+		}
+	}
+	if !complete {
 		return 1
 	}
 	return 0
+}
+func hasHostMapping(body, name string) bool {
+	scanner := bufio.NewScanner(strings.NewReader(body))
+	for scanner.Scan() {
+		fields := strings.Fields(strings.SplitN(scanner.Text(), "#", 2)[0])
+		if len(fields) < 2 || fields[0] != "127.0.0.1" {
+			continue
+		}
+		for _, host := range fields[1:] {
+			if strings.EqualFold(host, name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hostsBlockExists(body string) bool {

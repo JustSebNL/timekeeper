@@ -16,24 +16,45 @@ import (
 	"github.com/JustSebNL/timekeeper/internal/model"
 )
 
-// messages dispatches tk msg <project> <add|list|search|show>.
+// messages dispatches tk msg <project-id-or-alias> <add|list|search|show|edit|checkpoint|pin|unpin|thread|context|revisions|seed>.
 //
-//   tk msg <project> add   [--kind <k>] [--author <a>] [--link <u>] [--tags <t>] <body...>
-//   tk msg <project> list  [--kind <k>] [--limit <n>]
-//   tk msg <project> search <query...> [--limit <n>]
-//   tk msg <project> show  <message-id>
+//	tk msg <project> add   [--kind <k>] [--author <a>] [--link <u>] [--tags <t>] [--reply-to M-1] <body...>
+//	tk msg <project> edit  M-1 [--kind <k>] [--author <a>] [--link <u>] [--tags <t>] <body...>
+//	tk msg <project> thread M-1
+//	tk msg <project> revisions M-1
+//	tk msg <project> list  [--kind <k>] [--limit <n>]
+//	tk msg <project> search <query...> [--limit <n>]
+//	tk msg <project> show  M-1
 //
 // Output is JSON for `list` / `search` / `show` so it composes with the
 // rest of the CLI; `add` prints the created record as a one-liner.
 func messages(args []string, out, errOut io.Writer, baseURL string) int {
 	if len(args) < 2 {
-		fmt.Fprintln(errOut, "usage: tk msg <project-id> <add|list|search|show|seed> ...")
+		fmt.Fprintln(errOut, "usage: tk msg <project-id-or-alias> <add|list|search|show|edit|checkpoint|pin|unpin|thread|context|revisions|seed> ...")
 		return 2
 	}
-	projectID := args[0]
+	projectID, err := resolveProjectID(baseURL, args[0])
+	if err != nil {
+		fmt.Fprintln(errOut, err)
+		return 1
+	}
 	switch args[1] {
 	case "add":
 		return msgAdd(projectID, args[2:], out, errOut, baseURL)
+	case "edit":
+		return msgEdit(projectID, args[2:], out, errOut, baseURL)
+	case "thread":
+		return msgThread(projectID, args[2:], out, errOut, baseURL)
+	case "context":
+		return msgContext(projectID, args[2:], out, errOut, baseURL)
+	case "checkpoint":
+		return msgCheckpoint(projectID, args[2:], out, errOut, baseURL)
+	case "pin":
+		return msgPin(projectID, args[2:], true, out, errOut, baseURL)
+	case "unpin":
+		return msgPin(projectID, args[2:], false, out, errOut, baseURL)
+	case "revisions":
+		return msgRevisions(projectID, args[2:], out, errOut, baseURL)
 	case "list":
 		return msgList(projectID, args[2:], out, errOut, baseURL)
 	case "search":
@@ -43,7 +64,7 @@ func messages(args []string, out, errOut io.Writer, baseURL string) int {
 	case "seed":
 		return msgSeed(projectID, args[2:], out, errOut, baseURL)
 	default:
-		fmt.Fprintf(errOut, "unknown msg subcommand %q (use add|list|search|show|seed)\n", args[1])
+		fmt.Fprintf(errOut, "unknown msg subcommand %q (use add|list|search|show|edit|thread|context|revisions|seed)\n", args[1])
 		return 2
 	}
 }
@@ -51,6 +72,7 @@ func messages(args []string, out, errOut io.Writer, baseURL string) int {
 func msgAdd(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
 	var kind model.MessageKind = model.MessageKindNote
 	var author, link, tags string
+	var parentMessageID *int64
 	bodyParts := make([]string, 0, len(args))
 	i := 0
 	for i < len(args) {
@@ -88,8 +110,20 @@ func msgAdd(projectID string, args []string, out, errOut io.Writer, baseURL stri
 			}
 			i++
 			tags = args[i]
+		case "--reply-to":
+			if i+1 >= len(args) {
+				fmt.Fprintln(errOut, "--reply-to requires a message id")
+				return 2
+			}
+			i++
+			id, err := parseMessageID(args[i])
+			if err != nil {
+				fmt.Fprintln(errOut, err)
+				return 2
+			}
+			parentMessageID = &id
 		case "--help", "-h":
-			fmt.Fprintln(out, "usage: tk msg <project> add [--kind <k>] [--author <a>] [--link <u>] [--tags <t>] <body...>")
+			fmt.Fprintln(out, "usage: tk msg <project> add [--kind <k>] [--author <a>] [--link <u>] [--tags <t>] [--reply-to M-1] <body...>")
 			return 0
 		default:
 			bodyParts = append(bodyParts, a)
@@ -101,7 +135,7 @@ func msgAdd(projectID string, args []string, out, errOut io.Writer, baseURL stri
 		fmt.Fprintln(errOut, "message body is required (pass it as the final argument)")
 		return 2
 	}
-	input := model.CreateProjectMessageInput{Kind: kind, Author: author, Body: body, Link: link, Tags: tags}
+	input := model.CreateProjectMessageInput{Kind: kind, Author: author, Body: body, Link: link, Tags: tags, ParentMessageID: parentMessageID}
 	raw, _ := json.Marshal(input)
 	postURL := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/messages"
 	req, err := http.NewRequest(http.MethodPost, postURL, strings.NewReader(string(raw)))
@@ -293,24 +327,327 @@ func msgSeed(projectID string, args []string, out, errOut io.Writer, baseURL str
 	return 0
 }
 
-func msgShow(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
+func msgEdit(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errOut, "usage: tk msg <project> show <message-id>")
+		fmt.Fprintln(errOut, "usage: tk msg <project> edit M-1 [--kind <k>] [--author <a>] [--link <u>] [--tags <t>] <body...>")
 		return 2
 	}
-	id, err := strconv.ParseInt(args[0], 10, 64)
-	if err != nil || id < 1 {
-		fmt.Fprintln(errOut, "message id must be a positive integer")
-		return 2
-	}
-	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/messages/" + strconv.FormatInt(id, 10)
-	body, status, err := getJSON(endpoint)
+	id, err := parseMessageID(args[0])
 	if err != nil {
-		fmt.Fprintf(errOut, "show message: %v\n", err)
+		fmt.Fprintln(errOut, err)
+		return 2
+	}
+	bodyParts := make([]string, 0, len(args)-1)
+	var kind, author, link, tags string
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--kind", "--author", "--link", "--tags":
+			if i+1 >= len(args) {
+				fmt.Fprintf(errOut, "%s requires a value\n", args[i])
+				return 2
+			}
+			value := args[i+1]
+			i++
+			switch args[i-1] {
+			case "--kind":
+				kind = value
+			case "--author":
+				author = value
+			case "--link":
+				link = value
+			case "--tags":
+				tags = value
+			}
+		case "--help", "-h":
+			fmt.Fprintln(out, "usage: tk msg <project> edit M-1 [--kind <k>] [--author <a>] [--link <u>] [--tags <t>] <body...>")
+			return 0
+		default:
+			bodyParts = append(bodyParts, args[i])
+		}
+	}
+	currentBody, status, err := getJSON(messageEndpoint(baseURL, projectID, id))
+	if err != nil || !strings.HasPrefix(status, "200") {
+		fmt.Fprintf(errOut, "read message: %s\n", statusOrError(status, err))
 		return 1
 	}
-	if !strings.HasPrefix(status, "200") {
-		fmt.Fprintf(errOut, "show message: HTTP %s\n", status)
+	var current model.ProjectMessage
+	if err := json.Unmarshal([]byte(currentBody), &current); err != nil {
+		fmt.Fprintf(errOut, "decode message: %v\n", err)
+		return 1
+	}
+	if kind == "" {
+		kind = string(current.Kind)
+	}
+	if author == "" {
+		author = current.Author
+	}
+	if link == "" {
+		link = current.Link
+	}
+	if tags == "" {
+		tags = current.Tags
+	}
+	body := strings.TrimSpace(strings.Join(bodyParts, " "))
+	if body == "" {
+		body = current.Body
+	}
+	input := model.UpdateProjectMessageInput{Kind: model.MessageKind(kind), Author: author, Body: body, Link: link, Tags: tags}
+	raw, _ := json.Marshal(input)
+	req, err := http.NewRequest(http.MethodPatch, messageEndpoint(baseURL, projectID, id), strings.NewReader(string(raw)))
+	if err != nil {
+		fmt.Fprintf(errOut, "build request: %v\n", err)
+		return 1
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		fmt.Fprintf(errOut, "edit message: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(errOut, "edit message: %s\n", resp.Status)
+		return 1
+	}
+	var edited model.ProjectMessage
+	if err := json.NewDecoder(resp.Body).Decode(&edited); err != nil {
+		fmt.Fprintf(errOut, "decode response: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(out, "%s\t%s\t%s\n", edited.Ref, edited.Kind, truncate(edited.Body, 80))
+	return 0
+}
+
+func msgPin(projectID string, args []string, pinned bool, out, errOut io.Writer, baseURL string) int {
+	if len(args) != 1 {
+		verb := "pin"
+		if !pinned {
+			verb = "unpin"
+		}
+		fmt.Fprintf(errOut, "usage: tk msg <project> %s M-1\n", verb)
+		return 2
+	}
+	id, err := parseMessageID(args[0])
+	if err != nil {
+		fmt.Fprintln(errOut, err)
+		return 2
+	}
+	payload, _ := json.Marshal(map[string]bool{"pinned": pinned})
+	req, err := http.NewRequest(http.MethodPost, messageEndpoint(baseURL, projectID, id)+"/pin", strings.NewReader(string(payload)))
+	if err != nil {
+		fmt.Fprintf(errOut, "build pin request: %v\n", err)
+		return 1
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		fmt.Fprintf(errOut, "change message pin: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(errOut, "change message pin: %s\n", resp.Status)
+		return 1
+	}
+	var message model.ProjectMessage
+	if err := json.NewDecoder(resp.Body).Decode(&message); err != nil {
+		fmt.Fprintf(errOut, "decode pin response: %v\n", err)
+		return 1
+	}
+	state := "unpinned"
+	if message.Pinned {
+		state = "pinned"
+	}
+	fmt.Fprintf(out, "%s\t%s\t%s\n", message.Ref, state, truncate(message.Body, 80))
+	return 0
+}
+
+func msgCheckpoint(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
+	author := ""
+	entries := make([]model.CreateProjectMessageInput, 0)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--author":
+			if i+1 >= len(args) {
+				fmt.Fprintln(errOut, "--author requires a value")
+				return 2
+			}
+			i++
+			author = args[i]
+		case "--entry":
+			if i+1 >= len(args) {
+				fmt.Fprintln(errOut, "--entry requires kind|body|tags")
+				return 2
+			}
+			i++
+			parts := strings.SplitN(args[i], "|", 3)
+			if len(parts) < 2 || !model.IsValidMessageKind(model.MessageKind(parts[0])) || strings.TrimSpace(parts[1]) == "" {
+				fmt.Fprintln(errOut, "--entry must be kind|body|tags with a valid message kind and non-empty body")
+				return 2
+			}
+			tags := ""
+			if len(parts) == 3 {
+				tags = parts[2]
+			}
+			entries = append(entries, model.CreateProjectMessageInput{Kind: model.MessageKind(parts[0]), Body: parts[1], Tags: tags})
+		case "--help", "-h":
+			fmt.Fprintln(out, "usage: tk msg <project> checkpoint [--author <a>] --entry kind|body|tags [--entry kind|body|tags ...]")
+			return 0
+		default:
+			fmt.Fprintf(errOut, "unknown checkpoint flag %q\n", args[i])
+			return 2
+		}
+	}
+	if len(entries) == 0 {
+		fmt.Fprintln(errOut, "checkpoint requires at least one --entry")
+		return 2
+	}
+	payload, _ := json.Marshal(model.ProjectMessageCheckpointInput{Author: author, Entries: entries})
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/v1/projects/"+projectID+"/messages/checkpoint", strings.NewReader(string(payload)))
+	if err != nil {
+		fmt.Fprintf(errOut, "build checkpoint request: %v\n", err)
+		return 1
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if author != "" {
+		req.Header.Set("X-Agent-ID", author)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		fmt.Fprintf(errOut, "post checkpoint: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		fmt.Fprintf(errOut, "post checkpoint: %s\n", resp.Status)
+		return 1
+	}
+	var checkpoint model.ProjectMessageCheckpoint
+	if err := json.NewDecoder(resp.Body).Decode(&checkpoint); err != nil {
+		fmt.Fprintf(errOut, "decode checkpoint: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(out, "checkpoint\t%s\t%d entries\n", checkpoint.Root.Ref, len(checkpoint.Items))
+	for _, item := range checkpoint.Items {
+		fmt.Fprintf(out, "%s\t%s\t%s\n", item.Ref, item.Kind, truncate(item.Body, 80))
+	}
+	return 0
+}
+
+func msgContext(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(errOut, "usage: tk msg <project> context M-1 [--query <q>] [--thread-limit <n>] [--related-limit <n>] [--revision-limit <n>]")
+		return 2
+	}
+	id, err := parseMessageID(args[0])
+	if err != nil {
+		fmt.Fprintln(errOut, err)
+		return 2
+	}
+	q := url.Values{}
+	for i := 1; i < len(args); i++ {
+		flag := args[i]
+		if flag == "--help" || flag == "-h" {
+			fmt.Fprintln(out, "usage: tk msg <project> context M-1 [--query <q>] [--thread-limit <n>] [--related-limit <n>] [--revision-limit <n>]")
+			return 0
+		}
+		if flag != "--query" && flag != "--thread-limit" && flag != "--related-limit" && flag != "--revision-limit" {
+			fmt.Fprintf(errOut, "unknown context flag %q\n", flag)
+			return 2
+		}
+		if i+1 >= len(args) {
+			fmt.Fprintf(errOut, "%s requires a value\n", flag)
+			return 2
+		}
+		i++
+		value := args[i]
+		if flag != "--query" {
+			n, parseErr := strconv.Atoi(value)
+			if parseErr != nil || n < 0 {
+				fmt.Fprintf(errOut, "%s must be a non-negative integer\n", flag)
+				return 2
+			}
+		}
+		q.Set(strings.ReplaceAll(strings.TrimPrefix(flag, "--"), "-", "_"), value)
+	}
+	endpoint := messageEndpoint(baseURL, projectID, id) + "/context"
+	if encoded := q.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+	body, status, err := getJSON(endpoint)
+	if err != nil || !strings.HasPrefix(status, "200") {
+		fmt.Fprintf(errOut, "read message context: %s\n", statusOrError(status, err))
+		return 1
+	}
+	io.WriteString(out, body)
+	io.WriteString(out, "\n")
+	return 0
+}
+
+func msgThread(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
+	return msgReadCollection(projectID, args, out, errOut, baseURL, "thread")
+}
+
+func msgRevisions(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
+	return msgReadCollection(projectID, args, out, errOut, baseURL, "revisions")
+}
+
+func msgReadCollection(projectID string, args []string, out, errOut io.Writer, baseURL string, collection string) int {
+	if len(args) != 1 {
+		fmt.Fprintf(errOut, "usage: tk msg <project> %s M-1\n", collection)
+		return 2
+	}
+	id, err := parseMessageID(args[0])
+	if err != nil {
+		fmt.Fprintln(errOut, err)
+		return 2
+	}
+	body, status, err := getJSON(messageEndpoint(baseURL, projectID, id) + "/" + collection)
+	if err != nil || !strings.HasPrefix(status, "200") {
+		fmt.Fprintf(errOut, "read message %s: %s\n", collection, statusOrError(status, err))
+		return 1
+	}
+	io.WriteString(out, body)
+	io.WriteString(out, "\n")
+	return 0
+}
+
+func parseMessageID(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 && (value[0] == 'M' || value[0] == 'm') && value[1] == '-' {
+		value = value[2:]
+	}
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id < 1 {
+		return 0, fmt.Errorf("message id must be a positive integer or M-<id>")
+	}
+	return id, nil
+}
+
+func messageEndpoint(baseURL, projectID string, id int64) string {
+	return strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/messages/" + strconv.FormatInt(id, 10)
+}
+
+func statusOrError(status string, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return status
+}
+
+func msgShow(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(errOut, "usage: tk msg <project> show M-1")
+		return 2
+	}
+	id, err := parseMessageID(args[0])
+	if err != nil {
+		fmt.Fprintln(errOut, err)
+		return 2
+	}
+	body, status, err := getJSON(messageEndpoint(baseURL, projectID, id))
+	if err != nil || !strings.HasPrefix(status, "200") {
+		fmt.Fprintf(errOut, "show message: %s\n", statusOrError(status, err))
 		return 1
 	}
 	io.WriteString(out, body)

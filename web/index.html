@@ -134,10 +134,11 @@
         </section>
 
         <section class="panel panel-messages" id="messages-card" aria-live="polite">
-          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Project memory</p><h2>Message board</h2></div><span class="panel-link" id="messages-project-label">No project selected</span></div>
-          <p class="panel-description">Long-term, project-scoped memory. Search a project's decisions, observations, and lessons without re-pouring them into a context window.</p>
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Project memory</p><h2>Trail of Thought Board</h2></div><span class="panel-link" id="messages-project-label">No project selected</span></div>
+          <p class="panel-description">Short durable notes for reasoning, discoveries, decisions, and lessons. Keep the compact M-ID in agent context; fetch the thread when needed.</p>
           <div class="messages-toolbar">
-            <input type="search" id="messages-search" class="messages-search" placeholder="Search messages…" aria-label="Search project messages" />
+            <select id="messages-project" class="messages-project" aria-label="Message board project"></select>
+            <input type="search" id="messages-search" class="messages-search" placeholder="Search project memory…" aria-label="Search project messages" />
             <select id="messages-kind" class="messages-kind" aria-label="Filter by kind">
               <option value="">All kinds</option>
               <option value="note">Note</option>
@@ -149,6 +150,21 @@
               <option value="answer">Answer</option>
             </select>
           </div>
+          <form id="message-compose-form" class="message-compose">
+            <div class="message-compose-heading"><strong id="message-compose-title">Post to the board</strong><button type="button" id="message-compose-cancel" class="message-compose-cancel" hidden>Cancel</button></div>
+            <textarea id="message-compose-body" maxlength="1000" required placeholder="What should survive the next context compaction?" aria-label="Memory post"></textarea>
+            <div class="message-compose-fields">
+              <select id="message-compose-kind" aria-label="Memory kind">
+                <option value="note">Note</option><option value="decision">Decision</option><option value="observation">Observation</option><option value="link">Link</option><option value="lesson">Lesson</option><option value="question">Question</option><option value="answer">Answer</option>
+              </select>
+              <input id="message-compose-tags" maxlength="240" placeholder="tags: queue, discovery" aria-label="Memory tags" />
+              <input id="message-compose-link" type="url" placeholder="Optional source link" aria-label="Source link" />
+              <span id="message-compose-count" class="message-compose-count">0 / 1000</span>
+              <button type="submit" class="primary" id="message-compose-submit">Post memory</button>
+            </div>
+            <div id="message-compose-context" class="message-compose-context" hidden></div>
+            <div id="message-compose-feedback" class="inline-feedback" role="status"></div>
+          </form>
           <div id="messages-list" class="messages-list empty">Select a project to load its message board.</div>
         </section>
       </div>

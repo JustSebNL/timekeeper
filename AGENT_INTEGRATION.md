@@ -51,6 +51,34 @@ X-LLM-Model: supplied only when known
 12. Persist returned public IDs and Item Addresses in the framework's own task context.
 13. Treat every response as the source of truth; do not derive IDs or reconstruct history from chat.
 
+## Trail of Thought Board
+
+Use the Project Board for short-lived context that deserves long-term survival: reasoning checkpoints, discoveries, decisions, questions, answers, lessons, and source links. Bodies are capped at 1000 Unicode characters. Store only the compact `ref` (for example `M-42`) in the active context, then retrieve the post or complete thread when needed.
+
+```bash
+# Record a root thought; response includes M-<id>.
+tk msg P-10000 add --kind observation --tags queue,debug "The queue stalls after Sprint promotion."
+
+# Reply without copying the original thought into context.
+tk msg P-10000 add --kind answer --reply-to M-42 "The save boundary throws before processSprint."
+
+# Edit current content; history remains immutable.
+tk msg P-10000 edit M-42 --kind lesson "Persist state before promoting a Sprint."
+tk msg P-10000 checkpoint --author agent-7 --entry 'decision|Persist before dispatch.|queue' --entry 'lesson|Keep only the root M-ref in active context.|handoff'
+tk msg P-10000 pin M-42
+
+# Recover context by reference.
+tk msg P-10000 show M-42
+tk msg P-10000 thread M-42
+tk msg P-10000 context M-42 --related-limit 8
+tk msg P-10000 revisions M-42
+tk msg P-10000 search "processSprint save boundary"
+```
+
+The HTTP equivalents are under `/api/v1/projects/{projectID}/messages`. Replies must reference a message in the same Project. Edits use `PATCH` and append a revision; parentage is immutable. The board is not a transcript archive: keep entries atomic, searchable, and small enough to act as durable context anchors.
+
+The `context` command is the preferred recovery path when an agent only has an `M-…` pointer: it returns bounded anchor/thread/related/revision data and reports whether related retrieval used the disposable vector accelerator or FTS fallback.
+
 ## Agent usage snapshots
 
 When an adapter can report usage, send cumulative counters at each completed turn. Keep one stable session ID for the conversation and increase `turn_seq` monotonically:
@@ -98,3 +126,7 @@ The Guardian callback is a deliberately narrow local boundary: numeric loopback 
 - Treat a non-2xx response as structured JSON with `error.code` and `error.message`.
 - Do not claim direct process control, token accounting, remote delivery, or recovery actions beyond a registered local Pulse Guardian unless the adapter has actually implemented and tested them.
 - Keep framework adapters outside the Time Keeper core. An adapter may add ergonomic tool schemas, but it must not own a second database or duplicate lifecycle logic.
+
+## Execution safeguard update
+
+See [Execution safeguards](docs/execution-safeguards.md) for bounded extensions, sprint deadline nudges independent of progress leases, legacy nudge migration, immutable model attribution, and the distinction between callback receipt and actual agent recovery.

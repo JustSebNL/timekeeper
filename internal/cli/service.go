@@ -21,25 +21,37 @@ func serviceManager(args []string, out, errOut io.Writer, baseURL string) int {
 	}
 	exeDir := filepath.Dir(filepath.Clean(exe))
 
-	var script string
-	var shell string
-	if runtime.GOOS == "windows" {
-		shell = "cmd.exe"
-		script = filepath.Join(exeDir, "..", "scripts", "service", "service-install.bat")
-	} else {
-		shell = "bash"
-		script = filepath.Join(exeDir, "..", "scripts", "service", "service-install.sh")
+	action := "status"
+	if len(args) > 1 {
+		fmt.Fprintln(errOut, "usage: tk service <install|uninstall|start|stop|restart|status|logs>")
+		return 2
 	}
-	if _, err := os.Stat(script); err != nil {
-		_, _ = fmt.Fprintln(errOut, "service manager script not found — expected at .timekeeper/scripts/service/")
-		return 1
+	if len(args) == 1 {
+		action = args[0]
 	}
-
+	if action == "remove" {
+		action = "uninstall"
+	}
+	switch action {
+	case "install", "uninstall", "start", "stop", "restart", "status", "logs":
+	default:
+		fmt.Fprintln(errOut, "unknown service action")
+		return 2
+	}
+	var script, shell string
 	var cmdArgs []string
 	if runtime.GOOS == "windows" {
-		cmdArgs = append([]string{"/c", script}, args...)
+		script = findWindowsServiceScript(exeDir)
+		shell = "powershell.exe"
+		cmdArgs = []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", action, "-Elevate"}
 	} else {
-		cmdArgs = append([]string{script}, args...)
+		script = findServiceScript()
+		shell = "bash"
+		cmdArgs = []string{script, action}
+	}
+	if script == "" {
+		fmt.Fprintln(errOut, "service manager script missing; rerun the installer")
+		return 1
 	}
 	cmd := exec.Command(shell, cmdArgs...)
 	cmd.Stdout = out
@@ -91,6 +103,28 @@ func findServiceScript() string {
 		}
 		if _, err := os.Stat(abs); err == nil {
 			return abs
+		}
+	}
+	return ""
+}
+
+func findWindowsServiceScript(exeDir string) string {
+	candidates := []string{filepath.Join(exeDir, "..", "scripts", "service", "install-windows.ps1")}
+	for dir := exeDir; ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			candidates = append(candidates, filepath.Join(dir, "scripts", "service", "install-windows.ps1"))
+			break
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	for _, p := range candidates {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			abs, err := filepath.Abs(p)
+			if err == nil {
+				return abs
+			}
 		}
 	}
 	return ""

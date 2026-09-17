@@ -27,7 +27,12 @@ import (
 // modeFlag is a tiny adapter so we can use logging.Mode by value with flag.Var.
 type modeFlag struct{ v *logging.Mode }
 
-func (f modeFlag) String() string { return f.v.String() }
+func (f modeFlag) String() string {
+	if f.v == nil {
+		return ""
+	}
+	return f.v.String()
+}
 func (f modeFlag) Set(s string) error { return f.v.Set(s) }
 
 func recoveryPolicy() string {
@@ -151,6 +156,22 @@ Server (start the HTTP service)
   timekeeper -addr 127.0.0.1:1618 -db .timekeeper/timekeeper.db -ui web/index.html -keep-alive-interval 5m
 
 Run 'tk <command> --help' for details on a specific command.
+
+First use for agents
+  1. Check health: tk doctor
+  2. If unavailable, follow the failure-only procedure in harness/SKILL.md.
+  3. Discover work: tk list, then tk tree <project-id> and tk summary <project-id>
+  4. Work in the hierarchy Project -> Category -> Task -> optional Subtask -> Sprint.
+  5. Use bounded 15–45 minute Sprints; record decisions, blockers, and handoffs.
+  6. Verify with a test, build, reproduction, or other explicit evidence.
+  7. Complete only after reading the result back. Resume from tree, summary,
+     events, and Trail of Thought checkpoint M-<id> after interruption.
+
+Full agent guide: docs/HARNESS.md
+Usage harness contract: harness/SKILL.md
+The harness performs the failure-only health gate and points agents to the
+project-local Skills under harness/skills/. Never store credentials, private
+prompts, or unbounded logs in Time Keeper.
 `)
 }
 
@@ -166,11 +187,16 @@ func envOr(name, fallback string) string {
 // friendlyURLs returns the human-facing URLs the server should advertise
 // when the proxy listener is enabled. They are sugar for the loopback
 // address; the canonical port stays at *addr.
-func friendlyURLs() []string {
-	return []string{
-		"http://timekeeper.local/",
-		"http://api.timekeeper.local/",
+func friendlyURLs(addr string) []string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil
 	}
+	suffix := ""
+	if port != "80" {
+		suffix = ":" + port
+	}
+	return []string{"http://timekeeper.local" + suffix + "/", "http://api.timekeeper.local" + suffix + "/"}
 }
 
 func main() {
@@ -182,13 +208,16 @@ func main() {
 		_, _ = fmt.Println("TimeKeeper 1.0")
 		return
 	}
+	if handled, code := dispatchClient(os.Args[1:], os.Getenv("TIMEKEEPER_URL"), os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
 	addr := flag.String("addr", "127.0.0.1:1618", "HTTP listen address")
 	proxyAddr := flag.String("proxy-addr", envOr("TIMEKEEPER_PROXY_ADDR", "127.0.0.1:80"), "reverse-proxy listen address for the friendly URLs (http://timekeeper.local/ and http://api.timekeeper.local/); empty to disable")
 	dbPath := flag.String("db", "timekeeper.db", "SQLite database path")
 	uiPath := flag.String("ui", ".timekeeper/web/index.html", "dashboard HTML path")
 	keepAliveInterval := flag.Duration("keep-alive-interval", 5*time.Minute, "local dashboard keep-alive interval; 0 disables it")
 	backupTo := flag.String("backup-to", "", "create a SQLite backup at this new path, then exit")
-	pulseGuardianInterval := flag.Duration("pulse-guardian-interval", 0, "run the local Pulse Guardian at this interval; 0 disables it")
+	pulseGuardianInterval := flag.Duration("pulse-guardian-interval", 5*time.Minute, "run the local Pulse Guardian at this interval; 0 disables it")
 	logPath := flag.String("log", ".timekeeper/log/app.log", "structured JSON log path; empty disables file logging")
 	logMode := logging.ModeNormal
 	flag.Var(modeFlag{&logMode}, "log-mode", "log mode: normal|debug (debug logs every step, raw inputs, full errors)")
@@ -240,10 +269,27 @@ func main() {
 		go runKeepAlive(context.Background(), *addr, *keepAliveInterval)
 	}
 
+	// Bind before publishing runtime URLs, so clients see the actual reachable port.
+	var proxyListener net.Listener
+	friendlyAddr := *addr
+	if strings.TrimSpace(*proxyAddr) != "" {
+		if err := validateLoopbackAddr(*proxyAddr); err != nil {
+			log.Fatalf("proxy address: %v", err)
+		}
+		var err error
+		proxyListener, err = net.Listen("tcp", *proxyAddr)
+		if err != nil {
+			logger.Warn("friendly listener unavailable; use canonical-port hostnames", slog.Any("err", err))
+		} else {
+			friendlyAddr = proxyListener.Addr().String()
+			defer proxyListener.Close()
+		}
+	}
 	apiHandler := api.NewWithRuntime(database, api.RuntimeStatus{
 		PulseGuardianEnabled:         *pulseGuardianInterval > 0,
 		PulseGuardianIntervalSeconds: int64(pulseGuardianInterval.Seconds()),
 		RecoveryPolicy:               recoveryPolicy(),
+		FriendlyURLs:                 friendlyURLs(friendlyAddr),
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiHandler)
@@ -278,30 +324,21 @@ func main() {
 	logger.Info("timekeeper listening",
 		slog.String("url", "http://"+*addr+"/"),
 		slog.String("proxy_addr", *proxyAddr),
-		slog.Any("friendly_urls", friendlyURLs()),
+		slog.Any("friendly_urls", friendlyURLs(friendlyAddr)),
 	)
-	if proxyServer != nil {
+	if proxyServer != nil && proxyListener != nil {
 		go func() {
-			ln, err := net.Listen("tcp", proxyServer.Addr)
-			if err != nil {
-				logger.Error("proxy listener bind failed; canonical server continues",
-					slog.String("addr", proxyServer.Addr),
-					slog.Any("err", err),
-				)
-				log.Printf("[WARN] proxy listener could not bind %s: %v", proxyServer.Addr, err)
-				log.Printf("       TimeKeeper canonical address is still http://%s/", *addr)
-				log.Printf("       Set TIMEKEEPER_PROXY_ADDR to a free port, or free port %s, then restart.", proxyServer.Addr)
-				return
-			}
+
 			logger.Info("proxy listener bound", slog.String("addr", proxyServer.Addr))
-			if err := proxyServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+			if err := proxyServer.Serve(proxyListener); err != nil && err != http.ErrServerClosed {
 				logger.Error("proxy server exited", slog.Any("err", err))
 			}
 		}()
 	}
 	log.Println("TimeKeeper is at:")
-	log.Println("  - http://timekeeper.local/         (dashboard)")
-	log.Println("  - http://api.timekeeper.local/     (API)")
+	for _, u := range friendlyURLs(friendlyAddr) {
+		log.Printf("  - %s (requires local hosts entry)", u)
+	}
 	log.Printf("  - http://%s/  (loopback, tools, diagnostics)\n", *addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server exited", slog.Any("err", err))

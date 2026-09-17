@@ -9,7 +9,7 @@ description: Use when estimating or executing AI coding work through TimeKeeper 
 - Split work that cannot produce evidence inside one Sprint.
 - Start only the next concrete action.
 - Record actual work through the Sprint lifecycle.
-- Extend only with a written reason and revised evidence.
+- Extend only with a written reason and revised evidence; maximum three extensions with combined duration no greater than the original estimate. At exhaustion, hold and reassess; do not create equivalent replacement Sprints to reset the budget.
 - Use `On Hold` for blockers; do not burn active time while waiting.
 - Record failed retrieval attempts; four attempts become `TimedOut`.
 

@@ -1,258 +1,143 @@
-# Time Keeper
+# TimeKeeper
 
 Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved. This is proprietary software; see `LICENSE` and `NOTICE`.
 
-Time Keeper helps an agent plan work, keep time, and remember what needs attention.
+TimeKeeper is a local work-tracking and memory tool for people and AI agents. It keeps a project moving when work stretches across terminals, days, or conversation windows.
 
-It is a local workspace for the things that usually get lost between conversations: what the agent promised to do, how long it expected the work to take, what is happening now, and what already happened.
+It answers four simple questions:
 
-## What Time Keeper does
+- What are we trying to finish?
+- What is the next concrete piece of work?
+- How long should it take?
+- What happened, and how do we continue later?
 
-- Plans a Project as Categories, Tasks, Subtasks, and short work blocks called Sprints.
-- Gives each Sprint an expected duration and optional buffer, so the plan has a clock instead of a vague "later".
-- Tracks whether work is open, active, on hold, complete, or dormant `TimedOut` after four recorded failed retrieval attempts.
-- Uses `On Hold` broadly for any real blocker—you run out of road and other items must catch up first, a user decided otherwise, just waiting for input, or any other external dependency—and records the reason without charging active work time when a Sprint has not started.
-- Keeps a durable history of changes, notes, time spent, holds, and extensions.
-- Surfaces active Sprints that have exceeded their declared plan through a local Pulse.
-- Can run an independent local Pulse Guardian that detects an agent which stopped reporting material progress and sends a durable attention-recovery signal to an explicitly registered loopback Guardian.
-- Accepts explicit cumulative agent usage snapshots and exposes truthful Project token summaries, while leaving unknown pricing and uncovered sessions visible.
-- Lets an agent or a person inspect the same plan from the dashboard, the `tk` command, or the local API.
-- Keeps the plan and history on the local machine. It does not need a cloud account.
+TimeKeeper stores that record locally in SQLite. It does not require a cloud account and it is not a chat service.
 
-Think of it as a project planner, a time scheduler, and a work history for an agent that needs to stay accountable over more than one conversation.
+## What it is best for
 
-## When work is late
+Use TimeKeeper for work that benefits from continuity and accountability:
 
-Time Keeper keeps the original time budget, buffer, extensions, current status, and recorded work history together. That means an agent can see why a work block is late instead of guessing from a stale checklist.
+- software projects and long-running technical tasks;
+- work shared between people and coding agents;
+- tasks that need honest time estimates;
+- handoffs, interruptions, and recovery after a context window ends;
+- decisions and discoveries that should not disappear in chat history.
 
-## Pulse
-
-Pulse is a local attention check: it highlights Active Sprints only after they exceed their declared plan.
-
-Use the dashboard's Pulse card, `tk pulse`, or `GET /api/v1/pulse` to see the exact work needing attention. This Sprint-overrun view is read-only: it does not create a reminder record, start a background timer, send push notifications, send messages, or contact an external service. An agent can poll it or schedule its own follow-up when that is useful.
-
-## Pulse Guardian
-
-A response from a hung agent is not a nudge — it is just a postcard from a process that may never read it. For an out-of-band recovery path, Time Keeper can run an independent local Pulse Guardian. An agent renews a material-progress lease and explicitly registers a numeric-loopback Guardian callback. When that lease expires, Time Keeper creates a durable recovery nudge and calls the independent Guardian, which may notify, interrupt, restart, or replace its watched agent according to that local integration's own policy.
-
-The split is deliberate: Time Keeper tracks the evidence and delivers only to a registered local Guardian; it does not execute arbitrary commands or silently kill/restart processes. The recovered agent must acknowledge the nudge, so callback acceptance cannot be misrepresented as recovery. See `API.md` and `AGENT_INTEGRATION.md` for the callback contract.
-
-## Where it is going
-
-Over time, Time Keeper should help agents see which models spend tokens without producing useful progress.
-
-That means connecting the time and outcome of a piece of work with the model that handled it. An agent should be able to spot a model that burns a large budget, loops on a task, or creates work that later has to be redone. The point is not to crown a permanent winner. It is to choose the model that is earning its place for this job.
-
-That insight is a direction, not a finished automatic integration. Time Keeper can now accept explicit cumulative agent usage snapshots and show token totals, but it does not scrape arbitrary agent transcripts or claim complete coverage automatically.
-
-## Friendly URLs
-
-TimeKeeper ships with two human-friendly URLs that resolve to the
-loopback address. The installer writes the entries to your hosts
-file as part of the normal install.
-
-- `http://timekeeper.local/` — the dashboard
-- `http://api.timekeeper.local/` — the API
-- `http://127.0.0.1:1618/` — the canonical loopback address, for
-  tools, agents, scripts, and diagnostics
-
-The friendly URLs work through a small reverse proxy that
-TimeKeeper starts on `127.0.0.1:80` (configurable via
-`TIMEKEEPER_PROXY_ADDR` or `-proxy-addr`). The proxy is always on;
-if it cannot bind, you get a clear warning at startup and the
-canonical 1618 listener keeps working. `tk doctor` reports which
-endpoints are reachable.
-
-Open the dashboard in your default browser:
+A project is organised as:
 
 ```text
-tk open
+Project -> Category -> Task -> optional Subtask -> Sprint
 ```
 
-`tk open --api` opens the API in the browser; `tk open --ip` opens
-the canonical 1618 address.
+A Sprint is one bounded piece of work, usually 15–45 minutes. TimeKeeper records its status, time, notes, evidence, and handoff history.
 
-If port 80 is already in use on your host (Windows in particular
-reserves it for system services), the proxy logs a warning and the
-friendly URLs are not reachable until you either free port 80 or
-point TimeKeeper at a different port:
+## Install
+
+Use the one installer for your platform from inside the checkout:
 
 ```text
-TIMEKEEPER_PROXY_ADDR=127.0.0.1:8080 ./install.sh
+Linux / WSL:  install/install.sh
+Windows:     install\\install.bat
 ```
 
-The friendly URL then becomes `http://timekeeper.local:8080/`. The
-hostname stays friendly; the URL gains a port.
+The installer finds the repository from the installer's own location, builds the local binaries, prepares the dashboard, installs the background service, and verifies the result. It keeps application state inside this checkout's `.timekeeper/` directory.
 
-## Install and run
+The installer requires Git and Go to be available. It refuses an unverified checkout rather than building from an unexpected directory or revision. See [`docs/install.md`](docs/install.md) for prerequisites, options, service management, and troubleshooting.
 
-From a clean Time Keeper clone, run:
+After installation, verify the service:
 
 ```text
-./install.sh
+.timekeeper/app/bin/tk doctor
 ```
 
-The installer keeps everything it creates inside this clone:
+Open the dashboard at:
 
 ```text
-TimeKeeper/
-  .timekeeper/
-    app/        installed source, wrappers, and binaries
-    state/      SQLite runtime state
-    web/        served dashboard assets; index.html is the entrypoint
-    service/    optional local service definitions
-    log/        local service and launcher logs
+http://127.0.0.1:1618/
 ```
 
-It does not put files in your home folder, change your `PATH`, install a service, download code, or start a server without you asking.
+Friendly local URLs may also be available as `http://timekeeper.local/` and `http://api.timekeeper.local/` when the hosts-file and proxy setup succeeds.
 
-Start Time Keeper when you are ready:
+## Tell an agent to use it
+
+From the TimeKeeper repository, tell the agent exactly this:
 
 ```text
-./.timekeeper/app/timekeeper
-# Pulse Guardian is a required backbone service and runs by default every 5m.
-# Override the cadence with TIMEKEEPER_PULSE_GUARDIAN_INTERVAL, or disable it
-# explicitly with TIMEKEEPER_PULSE_GUARDIAN_INTERVAL="".
-# ./.timekeeper/app/timekeeper -pulse-guardian-interval 1s
-# Or when using scripts/run-local.sh, the Guardian is already on by default:
-# TIMEKEEPER_PULSE_GUARDIAN_INTERVAL=1s ./scripts/run-local.sh
+Use TimeKeeper in the terminal and start using the app.
 ```
 
-Then open `http://127.0.0.1:1618/` in a browser. In another terminal, these are useful first commands:
+The repository's [`AGENTS.md`](AGENTS.md) turns that instruction into the workflow automatically. The agent will:
+
+1. read the short harness guide and the relevant Skill;
+2. locate the local `tk` command;
+3. run `tk doctor`;
+4. inspect existing Projects, Tasks, and Sprints;
+5. resume suitable work or create a durable record for the next action;
+6. record decisions, blockers, evidence, and handoffs;
+7. verify work before calling it complete.
+
+The compact first-use guide is [`docs/HARNESS.md`](docs/HARNESS.md). The operational instructions are [`harness/SKILL.md`](harness/SKILL.md), and the project-specific Skills are in [`harness/skills/`](harness/skills/).
+
+An agent can also discover the workflow before it knows the project structure:
 
 ```text
-./.timekeeper/app/tk doctor
-./.timekeeper/app/tk pulse
-./.timekeeper/app/tk list
-./.timekeeper/app/tk tree <project-id>
+timekeeper --help
 ```
 
-The browser dashboard is served from the local loopback service's canonical `index.html` entrypoint. In the source checkout, it is `web/index.html`; after bootstrap, the served copy is `.timekeeper/web/index.html`. The dashboard loads the repository-contained Bootstrap `5.3.8` stylesheet from `.timekeeper/web/vendor/bootstrap-5.3.8.min.css` and then applies Time Keeper's custom dashboard theme. It includes live project metrics, Pulse/Guardian status, and a Recent Activity view backed by immutable Project events. It does not depend on a CDN or an external font service. `web/timekeeper.html` is retained only as a compatibility redirect to `index.html`.
-
-The server performs one lightweight loopback `GET /health` keep-alive every five minutes by default. It does not write to SQLite, prevent Windows or WSL sleep, or replace OS service recovery. Set `-keep-alive-interval 0` to disable it. `scripts/service/kick-server.sh` and `scripts/service/kick-server.bat` are failure-only recovery hooks: they stay silent when `/health` is healthy and restart the service or launcher only after a failed health check.
-
-The server listens only on your own machine. Stop it with `Ctrl+C` when you are done.
-
-## Run as a OS service
-
-TimeKeeper can install itself as a system service so it starts automatically at boot.
+## A human's first commands
 
 ```text
-# Install and start the service
-./.timekeeper/app/tk service install
-
-# Check status
-./.timekeeper/app/tk service status
-
-# View logs
-./.timekeeper/app/tk service logs
-
-# Stop / restart / remove
-./.timekeeper/app/tk service stop
-./.timekeeper/app/tk service restart
-./.timekeeper/app/tk service uninstall
+tk doctor
+tk list
+tk tree <project-id>
+tk summary <project-id>
+tk pulse
 ```
 
-- **Windows**: uses [NSSM](https://nssm.cc) (auto-detected or set `TIMEKEEPER_NSSM`). Installs with `SERVICE_DELAYED_AUTO_START` so it starts shortly after boot.
-- **Linux**: uses systemd (user scope, linger-enabled) so it runs without an active login session.
-- **macOS**: launchd (manual, see below). v1 ships a documented manual flow rather than an installer; `tk service install` reports the platform on macOS and exits with an actionable message.
+Use the dashboard when you want to browse the plan visually. Use `tk` when you want a fast terminal workflow. Both use the same local data.
 
-### macOS (manual launchd setup)
-
-On macOS, `tk service install` does not (yet) ship a launchd plist generator. The manual flow is short and documented here so it stays under the user's control:
-
-1. Build and install TimeKeeper as usual: `./install.sh`. This produces `.timekeeper/app/bin/timekeeper` and `.timekeeper/app/bin/tk`.
-2. Create `~/Library/LaunchAgents/com.justsebnl.timekeeper.plist` with:
-
-   ```xml
-   <?xml version="1.0" encoding="UTF-8"?>
-   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-   <plist version="1.0">
-   <dict>
-     <key>Label</key>
-     <string>com.justsebnl.timekeeper</string>
-     <key>ProgramArguments</key>
-     <array>
-       <string>/absolute/path/to/.timekeeper/app/bin/timekeeper</string>
-       <string>-addr</string>
-       <string>127.0.0.1:1618</string>
-       <string>-db</string>
-       <string>/absolute/path/to/.timekeeper/timekeeper.db</string>
-       <string>-ui</string>
-       <string>/absolute/path/to/.timekeeper/web/index.html</string>
-       <string>-pulse-guardian-interval</string>
-       <string>5m</string>
-       <string>-proxy-addr</string>
-       <string>127.0.0.1:80</string>
-     </array>
-     <key>RunAtLoad</key>
-     <true/>
-     <key>KeepAlive</key>
-     <dict>
-       <key>SuccessfulExit</key>
-       <false/>
-       <key>Crashed</key>
-       <true/>
-     </dict>
-     <key>StandardOutPath</key>
-     <string>/absolute/path/to/.timekeeper/log/service.log</string>
-     <key>StandardErrorPath</key>
-     <string>/absolute/path/to/.timekeeper/log/service.error.log</string>
-   </dict>
-   </plist>
-   ```
-
-3. Load it:
-
-   ```text
-   launchctl load -w ~/Library/LaunchAgents/com.justsebnl.timekeeper.plist
-   launchctl start com.justsebnl.timekeeper
-   ```
-
-4. To stop / remove:
-
-   ```text
-   launchctl stop com.justsebnl.timekeeper
-   launchctl unload ~/Library/LaunchAgents/com.justsebnl.timekeeper.plist
-   rm ~/Library/LaunchAgents/com.justsebnl.timekeeper.plist
-   ```
-
-Notes:
-- Replace `/absolute/path/to` with the real path (e.g. `/Users/you/dev/codebase/dev/TimeKeeper`).
-- If port 80 is already taken (common on macOS due to Apple's services), change `-proxy-addr` to `127.0.0.1:8080` and use `http://timekeeper.local:8080/`.
-- The friendly-URL hosts entries still need to be set: `sudo ./.timekeeper/app/bin/tk hosts add` (one-time, with elevation).
-
-All service artifacts (unit files, logs, NSSM config) live under `.timekeeper/service/` and `.timekeeper/log/`.
-
-## A simple way to use it
-
-1. Create a Project for the outcome you want.
-2. Break it into Categories, Tasks, and Subtasks.
-3. Give the next piece of work a Sprint with an honest time budget.
-4. Start, pause, wait, resume, extend, or finish that Sprint as the work changes. An Open Sprint may be placed on hold before it starts when it is waiting for a person or external dependency; it consumes no active-time budget.
-5. Keep retrieval loops bounded: record each failed retrieval attempt, and after the fourth Time Keeper marks the Sprint `TimedOut` while retaining all four reasons.
-6. Check Pulse when the agent needs a local list of active work that has run over plan.
-7. Check the Project history when the agent needs to recover context or explain what happened.
-
-The dashboard is the easiest place to browse a Project. The `tk` command is useful when an agent or terminal workflow needs the same information.
-
-## What stays local
-
-Time Keeper is for local, single-user work. Its SQLite database, backups, and exported Project history can contain your notes and plans, so keep the clone in a location you trust.
-
-It is not a public service, a team-hosting product, or a remote deployment system. Do not expose its loopback API to a network.
-
-## For developers
-
-Run the local checks with:
+For durable context, record a short note or Trail of Thought checkpoint rather than relying on chat history:
 
 ```text
-GOEXE='/path/to/go'
-"$GOEXE" test ./...
-"$GOEXE" vet ./...
-TIMEKEEPER_GO="$GOEXE" ./scripts/release-preflight.sh
+tk msg <project-id> add --kind decision "Use the local adapter first."
+tk msg <project-id> checkpoint --author <agent-id> --entry 'evidence|Tests passed.|verification'
 ```
 
-`scripts/run-local.sh` is a development shortcut. It builds from the checkout and keeps temporary runtime files in this clone's ignored `.timekeeper/` directory.
+## Staying on track
 
-The HTTP API is documented in `API.md`. Generic client guidance is in `AGENT_INTEGRATION.md`. The VS Code companion lives in `extensions/vscode/` and uses the same local API.
+TimeKeeper is deliberately honest about unfinished work:
+
+- active Sprints can be checked through `tk pulse`;
+- blocked work can be put on hold with a reason;
+- failed retrieval attempts remain visible;
+- completed work should include real verification evidence;
+- context can be recovered from the Project tree, summary, events, and Trail of Thought references.
+
+It does not decide whether an agent's code is good. It keeps the plan and claims visible so a person or another agent can check them.
+
+## Runs locally
+
+The service listens on loopback by default at `127.0.0.1:1618`. Keep it local; do not expose the API to a network without adding proper authentication and transport security.
+
+The local database, dashboard state, logs, and service configuration live under `.timekeeper/`. Do not put credentials, private prompts, or unbounded transcript content into TimeKeeper records.
+
+## More detail
+
+- [First-use harness guide](docs/HARNESS.md)
+- [Agent instructions](AGENTS.md)
+- [Harness Skill](harness/SKILL.md)
+- [Agent/API integration contract](AGENT_INTEGRATION.md)
+- [Installation and service management](docs/install.md)
+- [Execution safeguards](docs/execution-safeguards.md)
+- [API reference](API.md)
+
+## Development
+
+Run the tests from the repository root:
+
+```text
+go test ./...
+go vet ./...
+```
+
+TimeKeeper is a local-first project tool. Its job is simple: keep the work, the clock, and the memory in the same place.

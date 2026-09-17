@@ -121,7 +121,7 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 	ensureCLILogger(mode)
 
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		_, _ = fmt.Fprint(out, "Usage: tk [--url <api-base-url>] <command>\n\nCommands:\n  list                                        List projects\n  tree <project-id>                           Show an executable hierarchy\n  export <project-id>                         Print a portable Project snapshot as JSON\n  summary <project-id>                        Show a durable Sprint operational snapshot\n  usage <project-id>                          Show recorded agent token usage\n  usage record <project-id> <session-id> <agent-id> <model> <turn> <input> <output> [cache-write] [cache-read] [messages] [sprint-id]\n  pulse                                       Show local Sprint attention needing follow-up\n  agent progress <id> <lease> [sprint-id] [guardian-url]\n                                              Renew an agent material-progress lease and optionally register a numeric-loopback Guardian\n  agent nudges <id>                           List durable unacknowledged Guardian nudges\n  agent history <id>                          List durable Guardian delivery/recovery history\n  agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge and renew the lease\n  events <project-id>                         List immutable Project activity\n  note <project-id> <content>                 Record a Project note\n  notes <project-id>                          List Project notes\n  p new <name>                                Create a Project\n  p edit <project-id> <goal> <description>    Update Project context\n  p status <project-id> <status>              Set Project status\n  p alias <project-id> <alias>                Set Project alias\n  p unalias <project-id>                      Clear Project alias\n  aliases                                     List project aliases\n  c new <project-id> <name> [parent-category-id] Create a Category\n  c edit <category-id> <goal> <description>    Update Category context\n  c status <category-id> <status>              Set Category status\n  t edit <task-id> <goal> <description>        Update Task context\n  t new <project-id> <category-id> <name> <estimate>\n                                              Create a Task\n  t status <task-id> <status>                 Set Task status\n  st new <task-id> <name> <estimate>          Create a Subtask\n  st status <subtask-id> <status>              Set Subtask status\n  sp new <task|subtask> <owner-id> <name> <estimate> [buffer-percent]\n                                              Create a Sprint\n  sp <start|hold|resume|complete|cancel> <sprint-id> [reason] Transition a Sprint; hold/cancel require a reason\n  sp reason <sprint-id> <reason>                Update why an already-held Sprint is blocked\n  sp next <project-id>                         Atomically claim the oldest runnable Sprint\n  sp attempts <sprint-id>                      List immutable retrieval-attempt evidence\n  sp attempt <sprint-id> <reason>              Record a failed retrieval attempt (fourth makes TimedOut)\n  sp extend <sprint-id> <duration> <reason>   Record justified additional planned time\n  sp extensions <sprint-id>                   List immutable extension history\n  sp entries <sprint-id>                      List recorded work/hold intervals\n  llm new <name> <provider> <base-url> <model> [system-prompt]\n                                              Register a loopback LLM pipeline\n  plan <generate|apply> <project-id> <pipeline-id|draft-id>\n                                              Generate or apply a reviewed planning draft\n  plan list <project-id>                       List planning drafts\n  doctor                                      Check whether Time Keeper is reachable\n  api-help                                    List all available API routes\n  service                                     Manage TimeKeeper OS service (install/uninstall/start/stop/status/logs)\n")
+		_, _ = fmt.Fprint(out, "Usage: tk [--url <api-base-url>] <command>\n\nCommands:\n  list                                        List projects\n  tree <project-id>                           Show an executable hierarchy\n  export <project-id>                         Print a portable Project snapshot as JSON\n  summary <project-id>                        Show a durable Sprint operational snapshot\n  usage <project-id>                          Show recorded agent token usage\n  usage record <project-id> <session-id> <agent-id> <model> <turn> <input> <output> [cache-write] [cache-read] [messages] [sprint-id]\n  supervise --project P --sprint SP --agent ID --model MODEL --state-dir DIR -- PROMPT\n                                              Run a bounded Codex CLI worker (supervise --help)\n  outcomes <project-id>                        Compare reviewed coding runs\n  outcomes record <project-id> <review.json>    Record evidence-linked review\n  pulse                                       Show local Sprint attention needing follow-up\n  agent progress <id> <lease> [sprint-id] [guardian-url]\n                                              Renew an agent material-progress lease and optionally register a numeric-loopback Guardian\n  agent nudges <id>                           List durable unacknowledged Guardian nudges\n  agent history <id>                          List durable Guardian delivery/recovery history\n  agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge and renew the lease\n  events <project-id>                         List immutable Project activity\n  note <project-id> <content>                 Record a Project note\n  notes <project-id>                          List Project notes\n  msg <project-id> add <body>                 Post project memory (use --reply-to M-1 for a reply)\n  msg <project-id> edit M-1 <body>            Edit a message and append a revision\n  msg <project-id> thread M-1                 Read a complete message thread\n  msg <project-id> revisions M-1              Read immutable message revisions\n  msg <project-id> search <query>             Search project memory\n  p new <name>                                Create a Project\n  p edit <project-id> <goal> <description>    Update Project context\n  p status <project-id> <status>              Set Project status\n  p alias <project-id> <alias>                Set Project alias\n  p unalias <project-id>                      Clear Project alias\n  aliases                                     List project aliases\n  c new <project-id> <name> [parent-category-id] Create a Category\n  c edit <category-id> <goal> <description>    Update Category context\n  c status <category-id> <status>              Set Category status\n  t edit <task-id> <goal> <description>        Update Task context\n  t new <project-id> <category-id> <name> <estimate>\n                                              Create a Task\n  t status <task-id> <status>                 Set Task status\n  st new <task-id> <name> <estimate>          Create a Subtask\n  st status <subtask-id> <status>              Set Subtask status\n  sp new <task|subtask> <owner-id> <name> <estimate> [buffer-percent]\n                                              Create a Sprint\n  sp <start|hold|resume|complete|cancel> <sprint-id> [reason] Transition a Sprint; hold/cancel require a reason\n  sp reason <sprint-id> <reason>                Update why an already-held Sprint is blocked\n  sp next <project-id>                         Atomically claim the oldest runnable Sprint\n  sp attempts <sprint-id>                      List immutable retrieval-attempt evidence\n  sp attempt <sprint-id> <reason>              Record a failed retrieval attempt (fourth makes TimedOut)\n  sp extend <sprint-id> <duration> <reason>   Record justified additional planned time\n  sp extensions <sprint-id>                   List immutable extension history\n  sp entries <sprint-id>                      List recorded work/hold intervals\n  llm new <name> <provider> <base-url> <model> [system-prompt]\n                                              Register a loopback LLM pipeline\n  plan <generate|apply> <project-id> <pipeline-id|draft-id>\n                                              Generate or apply a reviewed planning draft\n  plan list <project-id>                       List planning drafts\n  doctor                                      Check whether Time Keeper is reachable\n  api-help                                    List all available API routes\n  service                                     Manage TimeKeeper OS service (install/uninstall/start/stop/status/logs)\n")
 		return 0
 	}
 	switch args[0] {
@@ -145,6 +145,10 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return exportProject(args[1:], out, errOut, baseURL)
 	case "summary":
 		return summary(args[1:], out, errOut, baseURL)
+	case "supervise":
+		return supervise(args[1:], out, errOut, baseURL)
+	case "outcomes":
+		return outcomes(args[1:], out, errOut, baseURL)
 	case "usage":
 		return usage(args[1:], out, errOut, baseURL)
 	case "pulse":
@@ -164,7 +168,7 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 	case "doctor":
 		return doctor(out, errOut, baseURL)
 	case "open":
-		return openBrowser(args[1:], out, errOut)
+		return openBrowser(args[1:], out, errOut, baseURL)
 	case "uninstall":
 		return uninstallTimeKeeper(out, errOut, baseURL)
 	case "hosts":
@@ -822,8 +826,23 @@ func sprintExtend(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	defer response.Body.Close()
+	responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if readErr != nil {
+		_, _ = fmt.Fprintf(errOut, "read Time Keeper API response: %v\n", readErr)
+		return 1
+	}
 	if response.StatusCode != http.StatusCreated {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		var apiError struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(responseBody, &apiError) == nil && (apiError.Error.Code != "" || apiError.Error.Message != "") {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s: %s: %s\n", response.Status, apiError.Error.Code, apiError.Error.Message)
+		} else {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		}
 		return 1
 	}
 	var extension struct {
@@ -832,7 +851,7 @@ func sprintExtend(args []string, out, errOut io.Writer, baseURL string) int {
 		DurationSeconds int64  `json:"duration_seconds"`
 		Reason          string `json:"reason"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&extension); err != nil {
+	if err := json.Unmarshal(responseBody, &extension); err != nil {
 		return 1
 	}
 	_, _ = fmt.Fprintf(out, "%d\t%s\t%d\t%s\n", extension.ExtensionID, extension.SprintID, extension.DurationSeconds, extension.Reason)
@@ -1587,8 +1606,11 @@ func listAliases(out, errOut io.Writer, baseURL string) int {
 func doctor(out, errOut io.Writer, baseURL string) int {
 	urls := []string{
 		strings.TrimRight(baseURL, "/") + "/health",
-		"http://timekeeper.local/health",
-		"http://api.timekeeper.local/health",
+	}
+	if strings.TrimRight(baseURL, "/") == defaultBaseURL {
+		for _, u := range connectionURLs(baseURL) {
+			urls = append(urls, strings.TrimRight(u, "/")+"/health")
+		}
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	allOK := true
@@ -1596,23 +1618,23 @@ func doctor(out, errOut io.Writer, baseURL string) int {
 	for _, u := range urls {
 		ok, status, err := probeHealth(client, u)
 		if err != nil {
-			// A connection error means the friendly URL is not
-			// resolvable, the proxy is not listening, or the host
-			// is unreachable. Treat as a failure: the user is
-			// asking "is TimeKeeper usable?" and the answer is
-			// "partially".
-			_, _ = fmt.Fprintf(out, "[failed] %s: %v\n", u, err)
+			// A connection error means the configured endpoint is not
+			// resolvable or the friendly proxy is not listening.
+			_, _ = fmt.Fprintf(errOut, "[failed] API unreachable: %s (%v)\n", u, err)
 			allOK = false
 			continue
 		}
 		if !ok {
-			_, _ = fmt.Fprintf(out, "[failed] %s: HTTP %s\n", u, status)
+			_, _ = fmt.Fprintf(errOut, "[failed] %s: HTTP %s\n", u, status)
 			allOK = false
 			continue
 		}
-		_, _ = fmt.Fprintf(out, "[ok] %s: %s\n", u, status)
 		if u == urls[0] {
+			_, _ = fmt.Fprintf(out, "[ok] API reachable: %s\n", strings.TrimRight(baseURL, "/"))
+			_, _ = fmt.Fprintf(out, "[ok] health status: %s\n", status)
 			canonicalOK = true
+		} else {
+			_, _ = fmt.Fprintf(out, "[ok] %s: %s\n", u, status)
 		}
 	}
 
@@ -1629,12 +1651,12 @@ func doctor(out, errOut io.Writer, baseURL string) int {
 		return 0
 	}
 	if canonicalOK {
-		_, _ = fmt.Fprintln(out, "\nTime Keeper is reachable on the canonical address, but the friendly URLs are not.")
-		_, _ = fmt.Fprintln(out, "Run the installer, or set TIMEKEEPER_PROXY_ADDR to a free port, then restart.")
+		_, _ = fmt.Fprintln(errOut, "\nTime Keeper is reachable on the canonical address, but the friendly URLs are not.")
+		_, _ = fmt.Fprintln(errOut, "Run `tk hosts status`; add missing entries with `tk hosts add` from an Administrator shell. Friendly URLs use the running server port when port 80 is unavailable.")
 		return 1
 	}
-	_, _ = fmt.Fprintln(out, "\nTime Keeper is not fully ready.")
-	_, _ = fmt.Fprintln(out, "Start the service, then run tk doctor again.")
+	_, _ = fmt.Fprintln(errOut, "\nTime Keeper is not fully ready.")
+	_, _ = fmt.Fprintln(errOut, "Start Time Keeper, then run tk doctor again.")
 	return 1
 }
 

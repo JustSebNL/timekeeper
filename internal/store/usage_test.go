@@ -38,6 +38,7 @@ func TestUsageSnapshotsAreIdempotentAndReturnCumulativeDelta(t *testing.T) {
 	second, err := database.RecordUsageSnapshot(ctx, project.ProjectID, model.UsageSnapshotInput{
 		SessionID: "session-1", AgentID: "codex", Model: "gpt-5", TurnSeq: 2,
 		InputTokens: 1600, OutputTokens: 350, CacheReadTokens: 100, Messages: 3,
+		CapturedAt: time.Date(2026, 9, 2, 10, 5, 0, 0, time.UTC),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -49,6 +50,7 @@ func TestUsageSnapshotsAreIdempotentAndReturnCumulativeDelta(t *testing.T) {
 	duplicate, err := database.RecordUsageSnapshot(ctx, project.ProjectID, model.UsageSnapshotInput{
 		SessionID: "session-1", AgentID: "codex", Model: "gpt-5", TurnSeq: 2,
 		InputTokens: 1600, OutputTokens: 350, CacheReadTokens: 100, Messages: 3,
+		CapturedAt: time.Date(2026, 9, 2, 10, 5, 0, 0, time.UTC),
 	})
 	if err != nil {
 		t.Fatal(err)

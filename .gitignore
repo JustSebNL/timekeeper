@@ -5,6 +5,7 @@
 *.test
 
 # Runtime state and local artifacts
+.timekeeper/
 *.db
 *.db-shm
 *.db-wal

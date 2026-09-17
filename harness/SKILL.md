@@ -5,14 +5,28 @@ description: Use when an AI coder must plan and execute long-horizon work throug
 
 # TimeKeeper agent harness
 
-TimeKeeper is the durable authority for this project's work. Chat context is temporary; Project, Task, Sprint, note, event, and usage records are the continuity layer.
+This file is the compact operational contract for agents using TimeKeeper.
+For the first-use walkthrough, read [`../docs/HARNESS.md`](../docs/HARNESS.md).
 
 ## Session start
 
 1. Run `.timekeeper/app/tk doctor` or `tk doctor`.
-2. If unavailable, run `bash scripts/timekeeper-harness.sh` (Windows: `scripts/timekeeper-harness.bat`).
+2. If the service is unavailable, follow the failure-only recovery procedure below.
 3. Inspect `tk list`, then `tk tree <project-id>` and `tk summary <project-id>`.
 4. Load the relevant local Skill under `harness/skills/`.
+
+## Failure-only health recovery
+
+The agent workflow does not need a separate harness executable. After `tk doctor`
+reports that TimeKeeper is unavailable, invoke the platform service kick once:
+
+- Linux/WSL: `bash scripts/service/kick-server.sh`
+- Windows: `scripts\\service\\kick-server.bat`
+
+Then run `tk doctor` again. The kick is a bounded recovery action, not a timer or
+continuous poller. If the second health check fails, inspect `.timekeeper/log/`
+and preserve the blocker in the current Task/Sprint record. Do not create a
+second server or silently continue without durable TimeKeeper state.
 
 ## Execution loop
 

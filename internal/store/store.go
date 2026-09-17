@@ -12,12 +12,16 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/JustSebNL/timekeeper/internal/lifecycle"
 	"github.com/JustSebNL/timekeeper/internal/model"
 	"github.com/JustSebNL/timekeeper/internal/planning"
+	"github.com/JustSebNL/timekeeper/internal/semantic"
 	_ "modernc.org/sqlite"
 )
 
@@ -240,6 +244,30 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at TEXT NOT NULL
 		)`,
 		"CREATE INDEX IF NOT EXISTS project_events_project_created_idx ON project_events(project_id, created_at DESC, event_id DESC)",
+		`CREATE TABLE IF NOT EXISTS bug_reports (
+			report_id TEXT PRIMARY KEY,
+			report_number INTEGER NOT NULL UNIQUE,
+			project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+			category_id TEXT NOT NULL DEFAULT '',
+			task_id TEXT NOT NULL DEFAULT '',
+			sprint_id TEXT NOT NULL DEFAULT '',
+			title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 240),
+			severity TEXT NOT NULL CHECK (severity IN ('P0','P1','P2','P3')),
+			expected TEXT NOT NULL,
+			actual TEXT NOT NULL,
+			reproduction_steps_json TEXT NOT NULL,
+			environment_json TEXT NOT NULL DEFAULT '{}',
+			source_json TEXT NOT NULL,
+			evidence_json TEXT NOT NULL DEFAULT '[]',
+			dedupe_key TEXT NOT NULL DEFAULT '',
+			idempotency_key TEXT NOT NULL UNIQUE,
+			redaction_status TEXT NOT NULL CHECK (redaction_status = 'verified'),
+			status TEXT NOT NULL CHECK (status IN ('New','Confirmed','In Progress','Fixed','Verified','Duplicate','Rejected')),
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		"CREATE INDEX IF NOT EXISTS bug_reports_project_created_idx ON bug_reports(project_id, created_at DESC, report_number DESC)",
+		"CREATE INDEX IF NOT EXISTS bug_reports_project_dedupe_idx ON bug_reports(project_id, dedupe_key)",
 		`CREATE TABLE IF NOT EXISTS project_notes (
 			note_id INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
@@ -251,15 +279,44 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS project_messages (
 			message_id INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+			parent_message_id INTEGER REFERENCES project_messages(message_id) ON DELETE RESTRICT,
 			kind TEXT NOT NULL DEFAULT 'note' CHECK (kind IN ('note','decision','observation','link','lesson','question','answer')),
 			author TEXT NOT NULL DEFAULT '',
 			body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 20000),
 			link TEXT NOT NULL DEFAULT '',
 			tags TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL
+			revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+			pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
 		)`,
 		"CREATE INDEX IF NOT EXISTS project_messages_project_created_idx ON project_messages(project_id, created_at DESC, message_id DESC)",
 		"CREATE INDEX IF NOT EXISTS project_messages_project_kind_idx ON project_messages(project_id, kind, created_at DESC)",
+		`CREATE TABLE IF NOT EXISTS project_message_revisions (
+			revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_id INTEGER NOT NULL REFERENCES project_messages(message_id) ON DELETE CASCADE,
+			project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+			revision INTEGER NOT NULL CHECK (revision >= 1),
+			kind TEXT NOT NULL CHECK (kind IN ('note','decision','observation','link','lesson','question','answer')),
+			author TEXT NOT NULL DEFAULT '',
+			body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 20000),
+			link TEXT NOT NULL DEFAULT '',
+			tags TEXT NOT NULL DEFAULT '',
+			edited_by TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			UNIQUE(message_id, revision)
+		)`,
+		"CREATE INDEX IF NOT EXISTS project_message_revisions_message_created_idx ON project_message_revisions(message_id, revision DESC)",
+		"CREATE INDEX IF NOT EXISTS project_message_revisions_project_created_idx ON project_message_revisions(project_id, created_at DESC, revision_id DESC)",
+		`CREATE TABLE IF NOT EXISTS project_message_vectors (
+			message_id INTEGER PRIMARY KEY REFERENCES project_messages(message_id) ON DELETE CASCADE,
+			project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+			revision INTEGER NOT NULL CHECK (revision >= 1),
+			dimension INTEGER NOT NULL CHECK (dimension > 0),
+			vector BLOB NOT NULL,
+			indexed_at TEXT NOT NULL
+		)`,
+		"CREATE INDEX IF NOT EXISTS project_message_vectors_project_idx ON project_message_vectors(project_id, message_id)",
 		`CREATE VIRTUAL TABLE IF NOT EXISTS project_messages_fts USING fts5(
 			body,
 			author,
@@ -316,7 +373,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			nudge_id INTEGER PRIMARY KEY AUTOINCREMENT,
 			agent_id TEXT NOT NULL REFERENCES agent_pulse_progress(agent_id) ON DELETE RESTRICT,
 			active_sprint_id TEXT NOT NULL DEFAULT '' CHECK (length(active_sprint_id) <= 100),
-			kind TEXT NOT NULL CHECK (kind IN ('agent_unresponsive')),
+			kind TEXT NOT NULL CHECK (kind IN ('agent_unresponsive', 'sprint_overdue')),
 			status TEXT NOT NULL CHECK (status IN ('Pending', 'Acknowledged')),
 			detected_after_seconds INTEGER NOT NULL CHECK (detected_after_seconds > 0),
 			delivery_attempts INTEGER NOT NULL DEFAULT 0 CHECK (delivery_attempts >= 0),
@@ -371,6 +428,39 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate database: %w", err)
 		}
 	}
+	if err := s.migrateSupervisedLaunches(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateCodingOutcomes(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "project_messages", "parent_message_id", "INTEGER REFERENCES project_messages(message_id) ON DELETE RESTRICT"); err != nil {
+		return fmt.Errorf("migrate project message parent: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "project_messages", "revision", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return fmt.Errorf("migrate project message revision: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "project_messages", "pinned", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("migrate project message pinned: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "project_messages", "updated_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("migrate project message updated_at: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE project_messages SET updated_at = created_at WHERE updated_at = ''"); err != nil {
+		return fmt.Errorf("backfill project message updated_at: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS project_messages_parent_created_idx ON project_messages(parent_message_id, created_at ASC, message_id ASC)"); err != nil {
+		return fmt.Errorf("migrate project message parent index: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS project_message_revisions_message_created_idx ON project_message_revisions(message_id, revision DESC)"); err != nil {
+		return fmt.Errorf("migrate project message revision index: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS project_message_revisions_project_created_idx ON project_message_revisions(project_id, created_at DESC, revision_id DESC)"); err != nil {
+		return fmt.Errorf("migrate project message project revision index: %w", err)
+	}
+	if err := s.backfillProjectMessageRevisions(ctx); err != nil {
+		return fmt.Errorf("backfill project message revisions: %w", err)
+	}
 	if err := s.ensureColumn(ctx, "categories", "parent_category_id", "TEXT REFERENCES categories(category_id) ON DELETE RESTRICT"); err != nil {
 		return fmt.Errorf("migrate category parent ownership: %w", err)
 	}
@@ -394,6 +484,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	if err := s.ensureColumn(ctx, "pulse_nudges", "delivered_at", "TEXT"); err != nil {
 		return fmt.Errorf("migrate Pulse nudge delivered timestamp: %w", err)
+	}
+	if err := s.migratePulseDeadlineKind(ctx); err != nil {
+		return err
 	}
 	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS sprints_subtask_updated_idx ON sprints(subtask_id, updated_at DESC)"); err != nil {
 		return fmt.Errorf("migrate sprints subtask index: %w", err)
@@ -428,6 +521,15 @@ func (s *Store) ensureColumn(ctx context.Context, table, column, definition stri
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+column+" "+definition)
+	return err
+}
+
+func (s *Store) backfillProjectMessageRevisions(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO project_message_revisions (
+		message_id, project_id, revision, kind, author, body, link, tags, edited_by, created_at
+	)
+	SELECT message_id, project_id, COALESCE(revision, 1), kind, author, body, link, tags, '', created_at
+	FROM project_messages`)
 	return err
 }
 
@@ -1337,43 +1439,63 @@ func scanProjectNote(scanner interface{ Scan(...any) error }) (model.ProjectNote
 }
 
 // CreateProjectMessage persists one message-board entry on a project.
-// The kind is validated against the closed set in model.ValidMessageKinds;
-// unknown kinds are rejected so the dashboard never has to guess about
-// styling. Body length is bounded (matches the table CHECK constraint).
-// The matching FTS5 row is kept in sync by the AFTER INSERT trigger.
+// Replies are linked to a parent in the same project and the initial content
+// is recorded as immutable revision 1.
 func (s *Store) CreateProjectMessage(ctx context.Context, projectID string, input model.CreateProjectMessageInput) (model.ProjectMessage, error) {
-	input.Body = strings.TrimSpace(input.Body)
-	if input.Body == "" {
-		return model.ProjectMessage{}, errors.New("message body is required")
-	}
-	if len(input.Body) > 20000 {
-		return model.ProjectMessage{}, errors.New("message body must be at most 20000 characters")
-	}
 	if input.Kind == "" {
 		input.Kind = model.MessageKindNote
 	}
-	if !model.IsValidMessageKind(input.Kind) {
-		return model.ProjectMessage{}, fmt.Errorf("invalid message kind %q", input.Kind)
+	if err := validateProjectMessage(input.Kind, input.Author, input.Body, input.Link, input.Tags); err != nil {
+		return model.ProjectMessage{}, err
 	}
+	if strings.TrimSpace(projectID) == "" {
+		return model.ProjectMessage{}, fmt.Errorf("%w: empty project id", ErrNotFound)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("begin project message: %w", err)
+	}
+	defer tx.Rollback()
 	var exists int
-	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ProjectMessage{}, fmt.Errorf("%w: project %s", ErrNotFound, projectID)
 		}
 		return model.ProjectMessage{}, fmt.Errorf("read message project: %w", err)
 	}
-	msg := model.ProjectMessage{
-		ProjectID: projectID,
-		Kind:      input.Kind,
-		Author:    strings.TrimSpace(input.Author),
-		Body:      input.Body,
-		Link:      strings.TrimSpace(input.Link),
-		Tags:      strings.TrimSpace(input.Tags),
-		CreatedAt: time.Now().UTC().Round(0),
+	if input.ParentMessageID != nil {
+		if *input.ParentMessageID < 1 {
+			return model.ProjectMessage{}, errors.New("parent_message_id must be positive")
+		}
+		var parentProjectID string
+		if err := tx.QueryRowContext(ctx, "SELECT project_id FROM project_messages WHERE message_id = ?", *input.ParentMessageID).Scan(&parentProjectID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return model.ProjectMessage{}, fmt.Errorf("%w: parent message %d", ErrNotFound, *input.ParentMessageID)
+			}
+			return model.ProjectMessage{}, fmt.Errorf("read parent message: %w", err)
+		}
+		if parentProjectID != projectID {
+			return model.ProjectMessage{}, errors.New("parent message must belong to the same project")
+		}
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO project_messages (project_id, kind, author, body, link, tags, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		msg.ProjectID, string(msg.Kind), msg.Author, msg.Body, msg.Link, msg.Tags, msg.CreatedAt.Format(time.RFC3339Nano))
+
+	now := time.Now().UTC().Round(0)
+	msg := model.ProjectMessage{
+		ProjectID: projectID, ParentMessageID: input.ParentMessageID, Kind: input.Kind,
+		Author: strings.TrimSpace(input.Author), Body: strings.TrimSpace(input.Body),
+		Link: strings.TrimSpace(input.Link), Tags: strings.TrimSpace(input.Tags),
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	var parent any
+	if msg.ParentMessageID != nil {
+		parent = *msg.ParentMessageID
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO project_messages
+		(project_id, parent_message_id, kind, author, body, link, tags, revision, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ProjectID, parent, string(msg.Kind), msg.Author, msg.Body, msg.Link, msg.Tags,
+		msg.Revision, msg.CreatedAt.Format(time.RFC3339Nano), msg.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return model.ProjectMessage{}, fmt.Errorf("insert project message: %w", err)
 	}
@@ -1381,30 +1503,415 @@ func (s *Store) CreateProjectMessage(ctx context.Context, projectID string, inpu
 	if err != nil {
 		return model.ProjectMessage{}, fmt.Errorf("read project message id: %w", err)
 	}
+	if err := insertProjectMessageRevision(ctx, tx, msg, msg.Author); err != nil {
+		return model.ProjectMessage{}, err
+	}
+	if err := upsertProjectMessageVectorTx(ctx, tx, msg); err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("index project message: %w", err)
+	}
+	msg.Ref = fmt.Sprintf("M-%d", msg.MessageID)
+	eventType := "message_created"
+	if msg.ParentMessageID != nil {
+		eventType = "message_replied"
+	}
+	if err := recordProjectEvent(ctx, tx, projectID, "message", msg.Ref, eventType, msg.Ref+" recorded", now); err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("record project message event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("commit project message: %w", err)
+	}
 	return msg, nil
+}
+
+func (s *Store) createProjectMessageTx(ctx context.Context, tx *sql.Tx, projectID string, input model.CreateProjectMessageInput) (model.ProjectMessage, error) {
+	if input.Kind == "" {
+		input.Kind = model.MessageKindNote
+	}
+	if err := validateProjectMessage(input.Kind, input.Author, input.Body, input.Link, input.Tags); err != nil {
+		return model.ProjectMessage{}, err
+	}
+	var exists int
+	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ProjectMessage{}, fmt.Errorf("%w: project %s", ErrNotFound, projectID)
+		}
+		return model.ProjectMessage{}, fmt.Errorf("read checkpoint project: %w", err)
+	}
+	if input.ParentMessageID != nil {
+		if *input.ParentMessageID < 1 {
+			return model.ProjectMessage{}, errors.New("parent_message_id must be positive")
+		}
+		var parentProjectID string
+		if err := tx.QueryRowContext(ctx, "SELECT project_id FROM project_messages WHERE message_id = ?", *input.ParentMessageID).Scan(&parentProjectID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return model.ProjectMessage{}, fmt.Errorf("%w: parent message %d", ErrNotFound, *input.ParentMessageID)
+			}
+			return model.ProjectMessage{}, fmt.Errorf("read checkpoint parent: %w", err)
+		}
+		if parentProjectID != projectID {
+			return model.ProjectMessage{}, errors.New("parent message must belong to the same project")
+		}
+	}
+	now := time.Now().UTC().Round(0)
+	msg := model.ProjectMessage{ProjectID: projectID, ParentMessageID: input.ParentMessageID, Kind: input.Kind, Author: strings.TrimSpace(input.Author), Body: strings.TrimSpace(input.Body), Link: strings.TrimSpace(input.Link), Tags: strings.TrimSpace(input.Tags), Revision: 1, CreatedAt: now, UpdatedAt: now}
+	var parent any
+	if msg.ParentMessageID != nil {
+		parent = *msg.ParentMessageID
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO project_messages (project_id, parent_message_id, kind, author, body, link, tags, revision, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, msg.ProjectID, parent, string(msg.Kind), msg.Author, msg.Body, msg.Link, msg.Tags, msg.Revision, msg.CreatedAt.Format(time.RFC3339Nano), msg.UpdatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("insert checkpoint message: %w", err)
+	}
+	msg.MessageID, err = result.LastInsertId()
+	if err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("read checkpoint message id: %w", err)
+	}
+	if err := insertProjectMessageRevision(ctx, tx, msg, msg.Author); err != nil {
+		return model.ProjectMessage{}, err
+	}
+	if err := upsertProjectMessageVectorTx(ctx, tx, msg); err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("index checkpoint message: %w", err)
+	}
+	msg.Ref = fmt.Sprintf("M-%d", msg.MessageID)
+	eventType := "message_created"
+	if msg.ParentMessageID != nil {
+		eventType = "message_replied"
+	}
+	if err := recordProjectEvent(ctx, tx, projectID, "message", msg.Ref, eventType, msg.Ref+" recorded", now); err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("record checkpoint message event: %w", err)
+	}
+	return msg, nil
+}
+
+// CreateProjectMessageCheckpoint atomically stores a root message plus reply
+// children, making a compact grouped handoff safe across context compaction.
+func (s *Store) CreateProjectMessageCheckpoint(ctx context.Context, projectID string, input model.ProjectMessageCheckpointInput) (model.ProjectMessageCheckpoint, error) {
+	if len(input.Entries) == 0 {
+		return model.ProjectMessageCheckpoint{}, errors.New("checkpoint requires at least one entry")
+	}
+	if len(input.Entries) > model.MaxProjectMessageCheckpointEntries {
+		return model.ProjectMessageCheckpoint{}, fmt.Errorf("checkpoint supports at most %d entries", model.MaxProjectMessageCheckpointEntries)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.ProjectMessageCheckpoint{}, fmt.Errorf("begin message checkpoint: %w", err)
+	}
+	defer tx.Rollback()
+	items := make([]model.ProjectMessage, 0, len(input.Entries))
+	for index, entry := range input.Entries {
+		if strings.TrimSpace(entry.Author) == "" {
+			entry.Author = input.Author
+		}
+		if index > 0 {
+			rootID := items[0].MessageID
+			entry.ParentMessageID = &rootID
+		}
+		message, err := s.createProjectMessageTx(ctx, tx, projectID, entry)
+		if err != nil {
+			return model.ProjectMessageCheckpoint{}, err
+		}
+		items = append(items, message)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.ProjectMessageCheckpoint{}, fmt.Errorf("commit message checkpoint: %w", err)
+	}
+	return model.ProjectMessageCheckpoint{Root: items[0], Items: items}, nil
+}
+
+func validateProjectMessage(kind model.MessageKind, author, body, link, tags string) error {
+	if kind == "" {
+		kind = model.MessageKindNote
+	}
+	if !model.IsValidMessageKind(kind) {
+		return fmt.Errorf("invalid message kind %q", kind)
+	}
+	if strings.TrimSpace(body) == "" {
+		return errors.New("message body is required")
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(body)) > model.MaxProjectMessageBodyLength {
+		return fmt.Errorf("message body must be at most %d characters", model.MaxProjectMessageBodyLength)
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(author)) > model.MaxProjectMessageAuthorLength {
+		return fmt.Errorf("message author must be at most %d characters", model.MaxProjectMessageAuthorLength)
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(tags)) > model.MaxProjectMessageTagsLength {
+		return fmt.Errorf("message tags must be at most %d characters", model.MaxProjectMessageTagsLength)
+	}
+	if strings.TrimSpace(link) != "" {
+		value := strings.TrimSpace(link)
+		if strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") {
+			return nil
+		}
+		u, err := url.Parse(value)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return errors.New("message link must be an absolute http(s) URL or a root-relative path")
+		}
+	}
+	return nil
+}
+
+// SetProjectMessagePinned changes only recall priority metadata. It does not
+// create a content revision; a state transition is recorded as a Project event.
+func (s *Store) SetProjectMessagePinned(ctx context.Context, projectID string, messageID int64, pinned bool) (model.ProjectMessage, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("begin project message pin: %w", err)
+	}
+	defer tx.Rollback()
+	var current int
+	if err := tx.QueryRowContext(ctx, "SELECT pinned FROM project_messages WHERE project_id = ? AND message_id = ?", projectID, messageID).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ProjectMessage{}, fmt.Errorf("%w: message %d", ErrNotFound, messageID)
+		}
+		return model.ProjectMessage{}, fmt.Errorf("read project message pin: %w", err)
+	}
+	if (current != 0) == pinned {
+		if err := tx.Commit(); err != nil {
+			return model.ProjectMessage{}, fmt.Errorf("commit unchanged message pin: %w", err)
+		}
+		return s.GetProjectMessage(ctx, projectID, messageID)
+	}
+	now := time.Now().UTC().Round(0)
+	value := 0
+	eventType := "message_unpinned"
+	if pinned {
+		value = 1
+		eventType = "message_pinned"
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE project_messages SET pinned = ? WHERE project_id = ? AND message_id = ?", value, projectID, messageID); err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("update project message pin: %w", err)
+	}
+	ref := fmt.Sprintf("M-%d", messageID)
+	if err := recordProjectEvent(ctx, tx, projectID, "message", ref, eventType, ref+" pin state changed", now); err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("record project message pin event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("commit project message pin: %w", err)
+	}
+	return s.GetProjectMessage(ctx, projectID, messageID)
+}
+
+func insertProjectMessageRevision(ctx context.Context, tx *sql.Tx, msg model.ProjectMessage, editedBy string) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO project_message_revisions
+		(message_id, project_id, revision, kind, author, body, link, tags, edited_by, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, msg.MessageID, msg.ProjectID, msg.Revision,
+		string(msg.Kind), msg.Author, msg.Body, msg.Link, msg.Tags, strings.TrimSpace(editedBy),
+		msg.UpdatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("insert project message revision: %w", err)
+	}
+	return nil
 }
 
 // GetProjectMessage returns a single message by id, scoped to the project.
 func (s *Store) GetProjectMessage(ctx context.Context, projectID string, messageID int64) (model.ProjectMessage, error) {
 	var msg model.ProjectMessage
-	var createdAt string
-	err := s.db.QueryRowContext(ctx, `SELECT message_id, project_id, kind, author, body, link, tags, created_at
+	var parentID sql.NullInt64
+	var pinned int
+	var createdAt, updatedAt string
+	err := s.db.QueryRowContext(ctx, `SELECT message_id, project_id, parent_message_id, kind, author, body, link, tags, revision, pinned, created_at, updated_at
 		FROM project_messages WHERE project_id = ? AND message_id = ?`, projectID, messageID).
-		Scan(&msg.MessageID, &msg.ProjectID, &msg.Kind, &msg.Author, &msg.Body, &msg.Link, &msg.Tags, &createdAt)
+		Scan(&msg.MessageID, &msg.ProjectID, &parentID, &msg.Kind, &msg.Author, &msg.Body, &msg.Link, &msg.Tags, &msg.Revision, &pinned, &createdAt, &updatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.ProjectMessage{}, fmt.Errorf("%w: message %d", ErrNotFound, messageID)
 		}
 		return model.ProjectMessage{}, fmt.Errorf("get project message: %w", err)
 	}
+	msg.Pinned = pinned != 0
 	msg.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {
 		return model.ProjectMessage{}, fmt.Errorf("parse project message created_at: %w", err)
 	}
+	if parentID.Valid {
+		value := parentID.Int64
+		msg.ParentMessageID = &value
+	}
+	if updatedAt == "" {
+		updatedAt = createdAt
+	}
+	msg.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("parse project message updated_at: %w", err)
+	}
+	msg.Ref = fmt.Sprintf("M-%d", msg.MessageID)
 	return msg, nil
 }
 
-// ListProjectMessages returns newest-first messages on a project. kindFilter
+// UpdateProjectMessage edits current message content and appends an immutable revision.
+// Parentage is deliberately not editable: reply grouping is durable lineage.
+func (s *Store) UpdateProjectMessage(ctx context.Context, projectID string, messageID int64, input model.UpdateProjectMessageInput) (model.ProjectMessage, error) {
+	if input.Kind == "" {
+		input.Kind = model.MessageKindNote
+	}
+	if err := validateProjectMessage(input.Kind, input.Author, input.Body, input.Link, input.Tags); err != nil {
+		return model.ProjectMessage{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("begin project message update: %w", err)
+	}
+	defer tx.Rollback()
+	var current model.ProjectMessage
+	var parentID sql.NullInt64
+	var pinned int
+	var createdAt, updatedAt string
+	err = tx.QueryRowContext(ctx, `SELECT message_id, project_id, parent_message_id, kind, author, body, link, tags, revision, pinned, created_at, updated_at
+		FROM project_messages WHERE project_id = ? AND message_id = ?`, projectID, messageID).
+		Scan(&current.MessageID, &current.ProjectID, &parentID, &current.Kind, &current.Author, &current.Body, &current.Link, &current.Tags, &current.Revision, &pinned, &createdAt, &updatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.ProjectMessage{}, fmt.Errorf("%w: message %d", ErrNotFound, messageID)
+		}
+		return model.ProjectMessage{}, fmt.Errorf("read message for update: %w", err)
+	}
+	current.Pinned = pinned != 0
+	current.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("parse message created_at: %w", err)
+	}
+	if updatedAt == "" {
+		updatedAt = createdAt
+	}
+	current.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("parse message updated_at: %w", err)
+	}
+	if parentID.Valid {
+		value := parentID.Int64
+		current.ParentMessageID = &value
+	}
+	current.Ref = fmt.Sprintf("M-%d", current.MessageID)
+
+	body := strings.TrimSpace(input.Body)
+	author := strings.TrimSpace(input.Author)
+	link := strings.TrimSpace(input.Link)
+	tags := strings.TrimSpace(input.Tags)
+	if current.Kind == input.Kind && current.Author == author && current.Body == body && current.Link == link && current.Tags == tags {
+		return current, nil
+	}
+	current.Kind, current.Author, current.Body, current.Link, current.Tags = input.Kind, author, body, link, tags
+	current.Revision++
+	current.UpdatedAt = time.Now().UTC().Round(0)
+	if _, err := tx.ExecContext(ctx, `UPDATE project_messages SET kind = ?, author = ?, body = ?, link = ?, tags = ?, revision = ?, updated_at = ?
+		WHERE project_id = ? AND message_id = ?`, string(current.Kind), current.Author, current.Body, current.Link, current.Tags, current.Revision,
+		current.UpdatedAt.Format(time.RFC3339Nano), projectID, messageID); err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("update project message: %w", err)
+	}
+	if err := insertProjectMessageRevision(ctx, tx, current, author); err != nil {
+		return model.ProjectMessage{}, err
+	}
+	if err := upsertProjectMessageVectorTx(ctx, tx, current); err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("index edited project message: %w", err)
+	}
+	if err := recordProjectEvent(ctx, tx, projectID, "message", current.Ref, "message_edited", current.Ref+" edited to revision "+strconv.Itoa(current.Revision), current.UpdatedAt); err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("record project message edit event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return model.ProjectMessage{}, fmt.Errorf("commit project message update: %w", err)
+	}
+	return current, nil
+}
+
+// ListProjectMessageRevisions returns newest-first immutable versions for one
+// project-scoped message.
+func (s *Store) ListProjectMessageRevisions(ctx context.Context, projectID string, messageID int64) ([]model.ProjectMessageRevision, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM project_messages WHERE project_id = ? AND message_id = ?", projectID, messageID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: message %d", ErrNotFound, messageID)
+		}
+		return nil, fmt.Errorf("read message for revisions: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT revision_id, message_id, project_id, revision, kind, author, body, link, tags, edited_by, created_at
+		FROM project_message_revisions WHERE project_id = ? AND message_id = ? ORDER BY revision DESC`, projectID, messageID)
+	if err != nil {
+		return nil, fmt.Errorf("list project message revisions: %w", err)
+	}
+	defer rows.Close()
+	revisions := make([]model.ProjectMessageRevision, 0)
+	for rows.Next() {
+		var revision model.ProjectMessageRevision
+		var createdAt string
+		if err := rows.Scan(&revision.RevisionID, &revision.MessageID, &revision.ProjectID, &revision.Revision, &revision.Kind, &revision.Author, &revision.Body, &revision.Link, &revision.Tags, &revision.EditedBy, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan project message revision: %w", err)
+		}
+		revision.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse project message revision created_at: %w", err)
+		}
+		revisions = append(revisions, revision)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate project message revisions: %w", err)
+	}
+	return revisions, nil
+}
+
+// GetProjectMessageThread returns a root message and all descendants in
+// deterministic parent-before-child order. The lookup accepts any message in
+// the thread and walks upward first, so agent references remain convenient.
+func (s *Store) GetProjectMessageThread(ctx context.Context, projectID string, messageID int64) ([]model.ProjectMessage, error) {
+	rows, err := s.db.QueryContext(ctx, `WITH RECURSIVE ancestors(message_id, parent_message_id) AS (
+		SELECT message_id, parent_message_id FROM project_messages WHERE project_id = ? AND message_id = ?
+		UNION ALL
+		SELECT m.message_id, m.parent_message_id FROM project_messages m
+		JOIN ancestors a ON m.message_id = a.parent_message_id
+		WHERE m.project_id = ?
+	), root(message_id) AS (
+		SELECT message_id FROM ancestors WHERE parent_message_id IS NULL LIMIT 1
+	), thread(message_id, depth, path) AS (
+		SELECT message_id, 0, printf('%020d', message_id) FROM root
+		UNION ALL
+		SELECT m.message_id, t.depth + 1, t.path || '.' || printf('%020d', m.message_id)
+		FROM project_messages m JOIN thread t ON m.parent_message_id = t.message_id
+		WHERE m.project_id = ?
+	)
+	SELECT m.message_id, m.project_id, m.parent_message_id, m.kind, m.author, m.body, m.link, m.tags, m.revision, m.pinned, m.created_at, m.updated_at
+	FROM project_messages m JOIN thread t ON t.message_id = m.message_id
+	ORDER BY t.path`, projectID, messageID, projectID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("get project message thread: %w", err)
+	}
+	defer rows.Close()
+	messages := make([]model.ProjectMessage, 0)
+	for rows.Next() {
+		var msg model.ProjectMessage
+		var parentID sql.NullInt64
+		var pinned int
+		var createdAt, updatedAt string
+		if err := rows.Scan(&msg.MessageID, &msg.ProjectID, &parentID, &msg.Kind, &msg.Author, &msg.Body, &msg.Link, &msg.Tags, &msg.Revision, &pinned, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan project message thread: %w", err)
+		}
+		msg.Pinned = pinned != 0
+		msg.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse thread created_at: %w", err)
+		}
+		if updatedAt == "" {
+			updatedAt = createdAt
+		}
+		msg.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse thread updated_at: %w", err)
+		}
+		if parentID.Valid {
+			value := parentID.Int64
+			msg.ParentMessageID = &value
+		}
+		msg.Ref = fmt.Sprintf("M-%d", msg.MessageID)
+		messages = append(messages, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate project message thread: %w", err)
+	}
+	if len(messages) == 0 {
+		return nil, fmt.Errorf("%w: message %d", ErrNotFound, messageID)
+	}
+	return messages, nil
+}
+
 // may be empty to include all kinds. limit caps the result; 0 means no cap.
 func (s *Store) ListProjectMessages(ctx context.Context, projectID string, kindFilter model.MessageKind, limit int) ([]model.ProjectMessage, error) {
 	var exists int
@@ -1414,14 +1921,14 @@ func (s *Store) ListProjectMessages(ctx context.Context, projectID string, kindF
 		}
 		return nil, fmt.Errorf("read list messages project: %w", err)
 	}
-	query := `SELECT message_id, project_id, kind, author, body, link, tags, created_at
+	query := `SELECT message_id, project_id, parent_message_id, kind, author, body, link, tags, revision, pinned, created_at, updated_at
 		FROM project_messages WHERE project_id = ?`
 	args := []any{projectID}
 	if kindFilter != "" {
 		query += ` AND kind = ?`
 		args = append(args, string(kindFilter))
 	}
-	query += ` ORDER BY created_at DESC, message_id DESC`
+	query += ` ORDER BY pinned DESC, created_at DESC, message_id DESC`
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)
@@ -1434,14 +1941,29 @@ func (s *Store) ListProjectMessages(ctx context.Context, projectID string, kindF
 	messages := make([]model.ProjectMessage, 0)
 	for rows.Next() {
 		var msg model.ProjectMessage
-		var createdAt string
-		if err := rows.Scan(&msg.MessageID, &msg.ProjectID, &msg.Kind, &msg.Author, &msg.Body, &msg.Link, &msg.Tags, &createdAt); err != nil {
+		var parentID sql.NullInt64
+		var pinned int
+		var createdAt, updatedAt string
+		if err := rows.Scan(&msg.MessageID, &msg.ProjectID, &parentID, &msg.Kind, &msg.Author, &msg.Body, &msg.Link, &msg.Tags, &msg.Revision, &pinned, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan project message: %w", err)
 		}
+		msg.Pinned = pinned != 0
 		msg.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse project message created_at: %w", err)
 		}
+		if parentID.Valid {
+			value := parentID.Int64
+			msg.ParentMessageID = &value
+		}
+		if updatedAt == "" {
+			updatedAt = createdAt
+		}
+		msg.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse project message updated_at: %w", err)
+		}
+		msg.Ref = fmt.Sprintf("M-%d", msg.MessageID)
 		messages = append(messages, msg)
 	}
 	if err := rows.Err(); err != nil {
@@ -1474,7 +1996,7 @@ func (s *Store) SearchProjectMessages(ctx context.Context, projectID string, que
 	if tokens == "" {
 		return []model.ProjectMessageSearchHit{}, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT m.message_id, m.project_id, m.kind, m.author, m.body, m.link, m.tags, m.created_at,
+	rows, err := s.db.QueryContext(ctx, `SELECT m.message_id, m.project_id, m.parent_message_id, m.kind, m.author, m.body, m.link, m.tags, m.revision, m.pinned, m.created_at, m.updated_at,
 			snippet(project_messages_fts, 0, '<mark>', '</mark>', '…', 12) AS snip
 		FROM project_messages_fts f
 		JOIN project_messages m ON m.message_id = f.rowid
@@ -1488,14 +2010,29 @@ func (s *Store) SearchProjectMessages(ctx context.Context, projectID string, que
 	hits := make([]model.ProjectMessageSearchHit, 0)
 	for rows.Next() {
 		var hit model.ProjectMessageSearchHit
-		var createdAt string
-		if err := rows.Scan(&hit.MessageID, &hit.ProjectID, &hit.Kind, &hit.Author, &hit.Body, &hit.Link, &hit.Tags, &createdAt, &hit.Snippet); err != nil {
+		var parentID sql.NullInt64
+		var pinned int
+		var createdAt, updatedAt string
+		if err := rows.Scan(&hit.MessageID, &hit.ProjectID, &parentID, &hit.Kind, &hit.Author, &hit.Body, &hit.Link, &hit.Tags, &hit.Revision, &pinned, &createdAt, &updatedAt, &hit.Snippet); err != nil {
 			return nil, fmt.Errorf("scan message search hit: %w", err)
 		}
+		hit.Pinned = pinned != 0
 		hit.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse message search hit created_at: %w", err)
 		}
+		if parentID.Valid {
+			value := parentID.Int64
+			hit.ParentMessageID = &value
+		}
+		if updatedAt == "" {
+			updatedAt = createdAt
+		}
+		hit.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse message search hit updated_at: %w", err)
+		}
+		hit.Ref = fmt.Sprintf("M-%d", hit.MessageID)
 		hits = append(hits, hit)
 	}
 	if err := rows.Err(); err != nil {
@@ -1504,7 +2041,287 @@ func (s *Store) SearchProjectMessages(ctx context.Context, projectID string, que
 	return hits, nil
 }
 
-// sanitizeFtsQuery turns a free-form user query into a safe FTS5 MATCH
+type projectMessageVectorSource struct {
+	messageID int64
+	projectID string
+	kind      model.MessageKind
+	author    string
+	body      string
+	link      string
+	tags      string
+	revision  int
+}
+
+func messageVectorText(kind model.MessageKind, author, body, link, tags string) string {
+	return strings.Join([]string{string(kind), author, body, link, tags}, " ")
+}
+
+func upsertProjectMessageVectorTx(ctx context.Context, tx *sql.Tx, message model.ProjectMessage) error {
+	vector := semantic.Embed(messageVectorText(message.Kind, message.Author, message.Body, message.Link, message.Tags))
+	_, err := tx.ExecContext(ctx, `INSERT INTO project_message_vectors (message_id, project_id, revision, dimension, vector, indexed_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(message_id) DO UPDATE SET project_id=excluded.project_id, revision=excluded.revision, dimension=excluded.dimension, vector=excluded.vector, indexed_at=excluded.indexed_at`,
+		message.MessageID, message.ProjectID, message.Revision, semantic.Dimension, semantic.Encode(vector), time.Now().UTC().Round(0).Format(time.RFC3339Nano))
+	return err
+}
+
+// RebuildProjectMessageVectorIndex deletes and recreates one project's
+// disposable vector accelerator from authoritative project_messages rows.
+func (s *Store) RebuildProjectMessageVectorIndex(ctx context.Context, projectID string) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin message vector rebuild: %w", err)
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("%w: project %s", ErrNotFound, projectID)
+		}
+		return 0, fmt.Errorf("read vector rebuild project: %w", err)
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT message_id, project_id, kind, author, body, link, tags, revision
+		FROM project_messages WHERE project_id = ? ORDER BY message_id`, projectID)
+	if err != nil {
+		return 0, fmt.Errorf("read messages for vector rebuild: %w", err)
+	}
+	sources := make([]projectMessageVectorSource, 0)
+	for rows.Next() {
+		var source projectMessageVectorSource
+		if err := rows.Scan(&source.messageID, &source.projectID, &source.kind, &source.author, &source.body, &source.link, &source.tags, &source.revision); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan message for vector rebuild: %w", err)
+		}
+		sources = append(sources, source)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate messages for vector rebuild: %w", err)
+	}
+	rows.Close()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM project_message_vectors WHERE project_id = ?", projectID); err != nil {
+		return 0, fmt.Errorf("clear message vector index: %w", err)
+	}
+	for _, source := range sources {
+		message := model.ProjectMessage{MessageID: source.messageID, ProjectID: source.projectID, Kind: source.kind, Author: source.author, Body: source.body, Link: source.link, Tags: source.tags, Revision: source.revision}
+		if err := upsertProjectMessageVectorTx(ctx, tx, message); err != nil {
+			return 0, fmt.Errorf("write message vector: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit message vector rebuild: %w", err)
+	}
+	return len(sources), nil
+}
+
+func (s *Store) ensureProjectMessageVectorIndex(ctx context.Context, projectID string) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: project %s", ErrNotFound, projectID)
+		}
+		return fmt.Errorf("read project for vector index: %w", err)
+	}
+	var messageCount, vectorCount, staleCount int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM project_messages WHERE project_id = ?", projectID).Scan(&messageCount); err != nil {
+		return fmt.Errorf("count project messages for vector index: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM project_message_vectors WHERE project_id = ?", projectID).Scan(&vectorCount); err != nil {
+		return fmt.Errorf("count project message vectors: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_messages m
+		LEFT JOIN project_message_vectors v ON v.message_id = m.message_id
+		WHERE m.project_id = ? AND (v.message_id IS NULL OR v.revision <> m.revision)`, projectID).Scan(&staleCount); err != nil {
+		return fmt.Errorf("check stale project message vectors: %w", err)
+	}
+	if messageCount != vectorCount || staleCount > 0 {
+		_, err := s.RebuildProjectMessageVectorIndex(ctx, projectID)
+		return err
+	}
+	return nil
+}
+
+// SearchProjectMessageSemantic returns deterministic cosine-ranked related
+// messages. It is intentionally separate from FTS so callers can combine the
+// two signals without confusing lexical matches for semantic evidence.
+func (s *Store) SearchProjectMessageSemantic(ctx context.Context, projectID string, excludeMessageID int64, query string, limit int) ([]model.ProjectMessageSearchHit, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []model.ProjectMessageSearchHit{}, nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if err := s.ensureProjectMessageVectorIndex(ctx, projectID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: project %s", ErrNotFound, projectID)
+		}
+		return nil, err
+	}
+	queryVector := semantic.Embed(query)
+	rows, err := s.db.QueryContext(ctx, `SELECT v.message_id, m.pinned, v.dimension, v.vector
+		FROM project_message_vectors v JOIN project_messages m ON m.message_id = v.message_id
+		WHERE v.project_id = ? AND v.message_id <> ?`, projectID, excludeMessageID)
+	if err != nil {
+		return nil, fmt.Errorf("read project message vectors: %w", err)
+	}
+	defer rows.Close()
+	type candidate struct {
+		messageID int64
+		pinned    bool
+		score     float64
+	}
+	candidates := make([]candidate, 0)
+	for rows.Next() {
+		var messageID int64
+		var pinned int
+		var dimension int
+		var encoded []byte
+		if err := rows.Scan(&messageID, &pinned, &dimension, &encoded); err != nil {
+			return nil, fmt.Errorf("scan project message vector: %w", err)
+		}
+		vector, err := semantic.Decode(encoded, dimension)
+		if err != nil {
+			return nil, fmt.Errorf("decode project message vector: %w", err)
+		}
+		score := semantic.Cosine(queryVector, vector)
+		if score > 0 {
+			candidates = append(candidates, candidate{messageID: messageID, pinned: pinned != 0, score: score})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate project message vectors: %w", err)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].pinned != candidates[j].pinned {
+			return candidates[i].pinned
+		}
+		if candidates[i].score == candidates[j].score {
+			return candidates[i].messageID < candidates[j].messageID
+		}
+		return candidates[i].score > candidates[j].score
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	hits := make([]model.ProjectMessageSearchHit, 0, len(candidates))
+	for _, candidate := range candidates {
+		message, err := s.GetProjectMessage(ctx, projectID, candidate.messageID)
+		if err != nil {
+			return nil, err
+		}
+		hits = append(hits, model.ProjectMessageSearchHit{ProjectMessage: message, SemanticScore: candidate.score})
+	}
+	return hits, nil
+}
+
+// M-<id> pointer. SQLite remains authoritative; related results are only an
+// FTS accelerator over the same durable message rows.
+func (s *Store) GetProjectMessageContext(ctx context.Context, projectID string, messageID int64, options model.ProjectMessageContextOptions) (model.ProjectMessageContext, error) {
+	anchor, err := s.GetProjectMessage(ctx, projectID, messageID)
+	if err != nil {
+		return model.ProjectMessageContext{}, err
+	}
+	threadLimit := projectMessageContextLimit(options.ThreadLimit, model.DefaultProjectMessageContextThreadLimit, model.MaxProjectMessageContextThreadLimit)
+	relatedLimit := projectMessageContextLimit(options.RelatedLimit, model.DefaultProjectMessageContextRelatedLimit, model.MaxProjectMessageContextRelatedLimit)
+	revisionLimit := projectMessageContextLimit(options.RevisionLimit, model.DefaultProjectMessageContextRevisionLimit, model.MaxProjectMessageContextRevisionLimit)
+
+	thread, err := s.GetProjectMessageThread(ctx, projectID, messageID)
+	if err != nil {
+		return model.ProjectMessageContext{}, err
+	}
+	bundle := model.ProjectMessageContext{
+		Anchor:    anchor,
+		Thread:    make([]model.ProjectMessage, 0, minInt(len(thread), threadLimit)),
+		Related:   make([]model.ProjectMessageSearchHit, 0, relatedLimit),
+		Revisions: make([]model.ProjectMessageRevision, 0, revisionLimit),
+	}
+	bundle.ThreadTruncated = len(thread) > threadLimit
+	if bundle.ThreadTruncated {
+		thread = thread[:threadLimit]
+	}
+	bundle.Thread = append(bundle.Thread, thread...)
+
+	revisions, err := s.ListProjectMessageRevisions(ctx, projectID, messageID)
+	if err != nil {
+		return model.ProjectMessageContext{}, err
+	}
+	bundle.RevisionsTruncated = len(revisions) > revisionLimit
+	if bundle.RevisionsTruncated {
+		revisions = revisions[:revisionLimit]
+	}
+	bundle.Revisions = append(bundle.Revisions, revisions...)
+
+	bundle.RelatedQuery = strings.TrimSpace(options.Query)
+	if bundle.RelatedQuery == "" {
+		bundle.RelatedQuery = projectMessageRelatedQuery(anchor)
+	}
+	if bundle.RelatedQuery == "" {
+		return bundle, nil
+	}
+	hits, err := s.SearchProjectMessageSemantic(ctx, projectID, messageID, bundle.RelatedQuery, relatedLimit+2)
+	if err != nil {
+		return model.ProjectMessageContext{}, err
+	}
+	bundle.RelatedMode = "vector"
+	if len(hits) == 0 {
+		hits, err = s.SearchProjectMessages(ctx, projectID, bundle.RelatedQuery, relatedLimit+2)
+		if err != nil {
+			return model.ProjectMessageContext{}, err
+		}
+		bundle.RelatedMode = "fts"
+	}
+	for _, hit := range hits {
+		if hit.MessageID == messageID {
+			continue
+		}
+		if len(bundle.Related) >= relatedLimit {
+			bundle.RelatedTruncated = true
+			break
+		}
+		bundle.Related = append(bundle.Related, hit)
+	}
+	if !bundle.RelatedTruncated {
+		for _, hit := range hits {
+			if hit.MessageID != messageID && len(bundle.Related) == relatedLimit {
+				bundle.RelatedTruncated = true
+				break
+			}
+		}
+	}
+	return bundle, nil
+}
+
+func projectMessageContextLimit(value, fallback, maximum int) int {
+	if value <= 0 {
+		return fallback
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
+
+func projectMessageRelatedQuery(anchor model.ProjectMessage) string {
+	for _, tag := range strings.FieldsFunc(anchor.Tags, func(r rune) bool { return r == ',' || r == ';' || r == ' ' }) {
+		if tag != "" {
+			return tag
+		}
+	}
+	words := strings.Fields(anchor.Body)
+	if len(words) > 6 {
+		words = words[:6]
+	}
+	return strings.Join(words, " ")
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // expression. Each whitespace-delimited token is wrapped in double
 // quotes (with embedded quotes stripped) and joined with spaces. The
 // resulting string is a phrase-prefix-OR query over the user tokens
@@ -1528,6 +2345,11 @@ func sanitizeFtsQuery(q string) string {
 
 // ErrNotFound identifies a requested tracked entity that does not exist.
 var ErrNotFound = errors.New("tracked item not found")
+
+// ErrValidation identifies client-supplied data that cannot be accepted.
+// API handlers use this sentinel to return a truthful 4xx response instead of
+// misclassifying a domain validation failure as an internal storage failure.
+var ErrValidation = errors.New("validation failed")
 
 // CreateCategory persists a project-owned category with a global ID and scoped address.
 func (s *Store) CreateCategory(ctx context.Context, projectID string, input model.CreateCategoryInput) (model.Category, error) {
@@ -2454,19 +3276,33 @@ func sprintTransitionEvent(action string) (string, string) {
 func (s *Store) AddSprintTimeExtension(ctx context.Context, sprintID string, input model.CreateSprintTimeExtensionInput) (model.SprintTimeExtension, error) {
 	reason := strings.TrimSpace(input.Reason)
 	if input.DurationSeconds <= 0 || input.DurationSeconds > int64(10*365*24*time.Hour/time.Second) || reason == "" || len(reason) > 10000 {
-		return model.SprintTimeExtension{}, errors.New("extension requires a positive bounded duration and a reason of at most 10000 characters")
+		return model.SprintTimeExtension{}, fmt.Errorf("%w: extension requires a positive bounded duration and a reason of at most 10000 characters", ErrValidation)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.SprintTimeExtension{}, err
 	}
 	defer tx.Rollback()
-	var projectID string
-	if err := tx.QueryRowContext(ctx, "SELECT project_id FROM sprints WHERE sprint_id = ?", sprintID).Scan(&projectID); err != nil {
+	var projectID, status string
+	var estimated int64
+	if err := tx.QueryRowContext(ctx, "SELECT project_id, status, estimated_duration_seconds FROM sprints WHERE sprint_id = ?", sprintID).Scan(&projectID, &status, &estimated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.SprintTimeExtension{}, fmt.Errorf("%w: sprint %s", ErrNotFound, sprintID)
 		}
 		return model.SprintTimeExtension{}, err
+	}
+	if status == "Completed" || status == "Cancelled" || status == "TimedOut" {
+		return model.SprintTimeExtension{}, fmt.Errorf("%w: terminal sprints cannot be extended", ErrValidation)
+	}
+	var count, total int64
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*), COALESCE(SUM(duration_seconds), 0) FROM sprint_time_extensions WHERE sprint_id = ?", sprintID).Scan(&count, &total); err != nil {
+		return model.SprintTimeExtension{}, err
+	}
+	if count >= 3 {
+		return model.SprintTimeExtension{}, fmt.Errorf("%w: sprint extension limit reached (maximum 3); hold and reassess the remaining scope", ErrValidation)
+	}
+	if estimated <= 0 || total >= estimated || input.DurationSeconds > estimated-total {
+		return model.SprintTimeExtension{}, fmt.Errorf("%w: total extensions cannot exceed the original sprint estimate; hold and reassess the remaining scope", ErrValidation)
 	}
 	now := time.Now().UTC().Round(0)
 	result, err := tx.ExecContext(ctx, "INSERT INTO sprint_time_extensions (sprint_id, duration_seconds, reason, created_at) VALUES (?, ?, ?, ?)", sprintID, input.DurationSeconds, reason, now.Format(time.RFC3339Nano))

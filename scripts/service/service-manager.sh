@@ -26,7 +26,8 @@ BIN="$STATE_ROOT/app/bin/timekeeper"
 CLI_BIN="$STATE_ROOT/app/bin/tk"
 GUARDIAN_BIN="$STATE_ROOT/app/bin/guardian"
 ADDR="${TIMEKEEPER_ADDR:-127.0.0.1:1618}"
-PROXY_ADDR="${TIMEKEEPER_PROXY_ADDR:-127.0.0.1:80}"
+PROXY_ADDR_DEFAULT="127.0.0.1:80"
+PROXY_ADDR="${TIMEKEEPER_PROXY_ADDR:-$PROXY_ADDR_DEFAULT}"
 DB_PATH="$STATE_ROOT/timekeeper.db"
 UI_PATH="$REPO/.timekeeper/web/index.html"
 GUARDIAN_ADDR="${TIMEKEEPER_GUARDIAN_RECEIVER_ADDR:-127.0.0.1:1619}"
@@ -78,14 +79,14 @@ find_nssm() {
   if [[ -n "${TIMEKEEPER_NSSM:-}" && -x "$TIMEKEEPER_NSSM" ]]; then
     nssm="$TIMEKEEPER_NSSM"
   fi
+  if [[ -z "$nssm" ]] && [[ -x "$SCRIPT_DIR/nssm/win64/nssm.exe" ]]; then
+    nssm="$SCRIPT_DIR/nssm/win64/nssm.exe"
+  fi
+  searched+=("$SCRIPT_DIR/nssm/win64/nssm.exe")
   if [[ -z "$nssm" ]] && [[ -x "$SERVICE_DIR/nssm/nssm.exe" ]]; then
     nssm="$SERVICE_DIR/nssm/nssm.exe"
   fi
   searched+=("$SERVICE_DIR/nssm/nssm.exe")
-  if [[ -z "$nssm" ]] && [[ -x "/mnt/d/var/nssm/win64/nssm.exe" ]]; then
-    nssm="/mnt/d/var/nssm/win64/nssm.exe"
-  fi
-  searched+=("/mnt/d/var/nssm/win64/nssm.exe")
   if [[ -z "$nssm" ]] && command -v nssm >/dev/null 2>&1; then
     nssm="$(command -v nssm)"
   fi
@@ -141,7 +142,7 @@ win_install() {
   # Compose the desired service parameters. Keeping this in one
   # variable is what makes the idempotent check below possible:
   # compare it byte-for-byte against the live NSSM value.
-  local desired_app_parameters="-addr $ADDR -db .timekeeper/timekeeper.db -ui .timekeeper/web/index.html -pulse-guardian-interval $GUARDIAN_INTERVAL -proxy-addr $PROXY_ADDR"
+  local desired_app_parameters="-addr $ADDR -db .timekeeper/timekeeper.db -ui .timekeeper/web/index.html -pulse-guardian-interval $GUARDIAN_INTERVAL -proxy-addr=$PROXY_ADDR"
   local desired_app_directory="$REPO"
   local desired_display_name="TimeKeeper — Project Execution Memory"
   local desired_description="Local project execution memory for AI agents. Runs on loopback $ADDR."
@@ -259,7 +260,7 @@ StartLimitBurst=5
 [Service]
 Type=simple
 WorkingDirectory=$REPO
-ExecStart=$BIN -addr $ADDR -db $DB_PATH -ui $UI_PATH -pulse-guardian-interval $GUARDIAN_INTERVAL -proxy-addr $PROXY_ADDR
+ExecStart=$BIN -addr $ADDR -db $DB_PATH -ui $UI_PATH -pulse-guardian-interval $GUARDIAN_INTERVAL -proxy-addr=$PROXY_ADDR
 ExecStop=/bin/kill -SIGTERM \$MAINPID
 Restart=on-failure
 RestartSec=5
@@ -350,22 +351,28 @@ case "${os:-}" in
   *)       err "unsupported OS: $os"; exit 64 ;;
 esac
 
+if [[ -f "$STATE_ROOT/app/bin/timekeeper.exe" ]]; then
+  native="$SCRIPT_DIR/install-windows.ps1"
+  if command -v wslpath >/dev/null 2>&1; then native="$(wslpath -w "$native")"; elif command -v cygpath >/dev/null 2>&1; then native="$(cygpath -w "$native")"; fi
+  exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$native" -Action "${1:-status}" -Elevate
+fi
+
 cmd="${1:-}"
 shift || true
 
 case "$cmd" in
   install)
-    [[ "$platform" == "windows" ]] && win_install || linux_install ;;
+    if [[ "$platform" == "windows" ]]; then win_install; else linux_install; fi ;;
   uninstall|remove)
-    [[ "$platform" == "windows" ]] && win_uninstall || linux_uninstall ;;
+    if [[ "$platform" == "windows" ]]; then win_uninstall; else linux_uninstall; fi ;;
   start)
-    [[ "$platform" == "windows" ]] && win_start || linux_start ;;
+    if [[ "$platform" == "windows" ]]; then win_start; else linux_start; fi ;;
   stop)
-    [[ "$platform" == "windows" ]] && win_stop || linux_stop ;;
+    if [[ "$platform" == "windows" ]]; then win_stop; else linux_stop; fi ;;
   restart)
-    [[ "$platform" == "windows" ]] && win_restart || linux_restart ;;
+    if [[ "$platform" == "windows" ]]; then win_restart; else linux_restart; fi ;;
   status)
-    [[ "$platform" == "windows" ]] && win_status || linux_status ;;
+    if [[ "$platform" == "windows" ]]; then win_status; else linux_status; fi ;;
   logs)
     show_logs ;;
   *)

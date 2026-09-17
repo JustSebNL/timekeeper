@@ -83,6 +83,9 @@ func (s *Store) RecordUsageSnapshot(ctx context.Context, projectID string, input
 	if err != nil {
 		return model.UsageSnapshotResult{}, fmt.Errorf("read usage session: %w", err)
 	}
+	if input.Model != "" && row.model != "" && input.Model != row.model {
+		return model.UsageSnapshotResult{}, errors.New("model cannot change within a usage session; start a new session for another model")
+	}
 	if input.SprintID != "" && row.sprintID.Valid && row.sprintID.String != input.SprintID {
 		return model.UsageSnapshotResult{}, errors.New("sprint_id cannot change within a usage session")
 	}

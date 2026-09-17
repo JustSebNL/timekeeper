@@ -12,8 +12,7 @@ powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "$ErrorAc
 if not errorlevel 1 exit /b 0
 
 set "NSSM=%TIMEKEEPER_NSSM%"
-if not defined NSSM if exist "%~dp0..\..\.timekeeper\service\nssm\nssm.exe" set "NSSM=%~dp0..\..\.timekeeper\service\nssm\nssm.exe"
-if not defined NSSM if exist "D:\var\nssm\win64\nssm.exe" set "NSSM=D:\var\nssm\win64\nssm.exe"
+if not defined NSSM if exist "%~dp0nssm\win64\nssm.exe" set "NSSM=%~dp0nssm\win64\nssm.exe"
 if not defined NSSM for /f "delims=" %%I in ('where nssm.exe 2^>nul') do if not defined NSSM set "NSSM=%%I"
 
 if defined NSSM (
@@ -22,5 +21,5 @@ if defined NSSM (
 )
 
 rem Fallback for a WSL-launched binary when NSSM is unavailable.
-wsl.exe --exec bash -lc "cd /mnt/d/dev/codebase/dev/TimeKeeper && ./scripts/service/kick-server.sh" >nul 2>&1
+wsl.exe --cd "%~dp0..\.." --exec bash -lc "./scripts/service/kick-server.sh" >nul 2>&1
 exit /b %ERRORLEVEL%

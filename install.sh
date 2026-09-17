@@ -17,9 +17,10 @@ Usage: ./install.sh [--with-port=<addr>] [--without-proxy]
 Build Time Keeper from this verified checkout into .timekeeper/app.
 The installed app, its launchers, and its local SQLite state stay with this clone.
 
-The installer does not download code, change PATH, request privileges, create a
-service, or start a server. Stop a running Time Keeper process before refreshing
-an existing installation.
+The installer builds locally, then installs and verifies the OS service by default.
+Windows service setup requests Administrator approval and retires the old
+TimeKeeper-Launcher task only after service health and ownership are verified.
+Use --no-service for a package-only install. Stop the service before refreshing binaries.
 
 Options:
   --with-port=<host:port>   Set TIMEKEEPER_PROXY_ADDR explicitly. The friendly
@@ -29,6 +30,7 @@ Options:
   --without-proxy           Disable the friendly-URL proxy listener entirely.
                             Only the canonical 127.0.0.1:1618 address will work.
                             Persisted to INSTALLATION.env.
+  --no-service             Build only; do not install or start a service.
   -h, --help                Show this help.
 USAGE
 }
@@ -42,6 +44,7 @@ fail() {
 # typos like "--without-prox" are caught instead of silently ignored.
 PROXY_ADDR_FOR_INSTALL=""
 PROXY_DISABLED_FOR_INSTALL=0
+INSTALL_SERVICE=1
 while (($#)); do
   case "$1" in
     --with-port=*)
@@ -59,6 +62,9 @@ while (($#)); do
       if [[ ! "$PROXY_ADDR_FOR_INSTALL" =~ ^[^:]+:[0-9]+$ ]]; then
         fail "--with-port expects host:port, got '$PROXY_ADDR_FOR_INSTALL'"
       fi
+      ;;
+    --no-service)
+      INSTALL_SERVICE=0
       ;;
     --without-proxy)
       PROXY_DISABLED_FOR_INSTALL=1
@@ -102,6 +108,7 @@ fi
 
 if [[ -n "$INSTALLED_COMMIT" && "$INSTALLED_COMMIT" == "$COMMIT" && "$COMMIT" == "$ORIGIN_MAIN" ]]; then
   printf 'Time Keeper is already installed and up to date at commit %s.\n' "$COMMIT"
+  if [[ "$INSTALL_SERVICE" == 1 ]]; then bash "$SOURCE/install/add-service.sh"; fi
   exit 0
 fi
 
@@ -160,6 +167,8 @@ fi
 )
 [[ -s "$server_binary" && -s "$cli_binary" && -s "$guardian_binary" ]] || fail 'local Go build did not produce all Time Keeper binaries.'
 chmod 700 "$server_binary" "$cli_binary" "$guardian_binary"
+mkdir -p "$INSTALL_ROOT/scripts/service"
+cp -R "$INSTALL_ROOT/app/scripts/service/." "$INSTALL_ROOT/scripts/service/"
 
 cat > "$INSTALL_ROOT/timekeeper" <<LAUNCHER
 #!/usr/bin/env bash
@@ -167,7 +176,7 @@ cat > "$INSTALL_ROOT/timekeeper" <<LAUNCHER
 set -Eeuo pipefail
 ROOT="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd -P)"
 ADDR="\${TIMEKEEPER_ADDR:-127.0.0.1:1618}"
-DB_PATH="\${TIMEKEEPER_DB:-\$ROOT/state/timekeeper.db}"
+DB_PATH="\${TIMEKEEPER_DB:-\$ROOT/../timekeeper.db}"
 UI_PATH="\${TIMEKEEPER_UI:-\$ROOT/../web/index.html}"
 PULSE_GUARDIAN_INTERVAL="\${TIMEKEEPER_PULSE_GUARDIAN_INTERVAL:-5m}"
 GUARDIAN_RECEIVER_ADDR="\${TIMEKEEPER_GUARDIAN_RECEIVER_ADDR:-127.0.0.1:1619}"
@@ -278,3 +287,7 @@ fi
 # The user can re-run the installer from an elevated context, or edit
 # the hosts file manually (the README documents the manual step).
 "$DESTINATION/bin/$(basename "$cli_binary")" hosts add || printf 'Time Keeper install: could not write friendly-URL hosts entries (run as Administrator / with sudo, or edit %s manually)\n' "/etc/hosts"
+
+if [[ "$INSTALL_SERVICE" == 1 ]]; then
+  bash "$SOURCE/install/add-service.sh"
+fi

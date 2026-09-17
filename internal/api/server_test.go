@@ -164,6 +164,29 @@ func TestSprintTimeExtensionAPIRecordsJustifiedAdditionalTime(t *testing.T) {
 	}
 }
 
+func TestSprintTimeExtensionAPIRejectsOverBudgetExtensionWithValidation(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	project, _ := database.CreateProject(ctx, model.CreateProjectInput{Name: "Extension Validation API"})
+	category, _ := database.CreateCategory(ctx, project.ProjectID, model.CreateCategoryInput{Name: "Delivery"})
+	task, _ := database.CreateTask(ctx, project.ProjectID, model.CreateTaskInput{CategoryID: category.CategoryID, Name: "Work"})
+	sprint, _ := database.CreateSprint(ctx, task.TaskID, model.CreateSprintInput{Name: "Sprint", EstimatedDurationSeconds: 600})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/sprints/"+sprint.SprintID+"/extensions", bytes.NewBufferString(`{"duration_seconds":601,"reason":"Over original estimate."}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	api.New(database).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("over-budget status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"code":"validation_error"`) || !strings.Contains(response.Body.String(), "original sprint estimate") {
+		t.Fatalf("over-budget body=%s", response.Body.String())
+	}
+}
+
 func TestSprintTimeExtensionAPIRejectsTrailingJSON(t *testing.T) {
 	ctx := context.Background()
 	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))

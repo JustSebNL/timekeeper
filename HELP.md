@@ -22,6 +22,15 @@ tk agent ack <agent-id> <nudge-id>
 tk events <project-id>
 tk note <project-id> <content>
 tk notes <project-id>
+tk msg <project-id> add [--kind <k>] [--reply-to M-1] <body>
+tk msg <project-id> edit M-1 <body>
+tk msg <project-id> checkpoint --entry kind|body|tags [--entry kind|body|tags]
+tk msg <project-id> pin M-1
+tk msg <project-id> unpin M-1
+tk msg <project-id> thread M-1
+tk msg <project-id> context M-1 [--related-limit <n>]
+tk msg <project-id> revisions M-1
+tk msg <project-id> search <query>
 
 tk p  new <project-name>
 tk p  edit <project-id> <goal> <description>

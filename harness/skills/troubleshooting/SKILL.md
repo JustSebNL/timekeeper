@@ -6,7 +6,7 @@ description: Use when TimeKeeper or the current project workflow stops functioni
 # Troubleshooting and recovery
 
 1. Run `tk doctor`.
-2. If the service is unavailable, run `scripts/timekeeper-harness.sh` or the Windows `.bat` equivalent.
+2. If unavailable, follow the failure-only recovery procedure in `harness/SKILL.md`, then run `tk doctor` again.
 3. Re-check health and inspect `.timekeeper/log/` or service logs.
 4. Record the incident and observed evidence in a TimeKeeper note.
 5. Form one root-cause hypothesis.

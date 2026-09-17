@@ -5,7 +5,7 @@
 //
 //   - normal  (info): command names, status, durations, top-level outcomes
 //   - debug   (debug): every step, every byte of request body, raw inputs,
-//                      and full stack traces on every error
+//     and full stack traces on every error
 //
 // Crashes and request errors are written to both stderr and
 // .timekeeper/log/app.log so we can bugfix them later.
@@ -36,7 +36,7 @@ var (
 // Mode controls how much detail the logger emits.
 //   - ModeNormal: command names, status codes, durations, top-level outcomes
 //   - ModeDebug:  every step, every byte of request body, raw inputs,
-//                 and full stack traces on every error
+//     and full stack traces on every error
 type Mode int
 
 const (
@@ -128,9 +128,10 @@ func Init(cfg Config) *slog.Logger {
 // L returns the process-wide logger, initialising a sane default if needed.
 func L() *slog.Logger {
 	mu.RLock()
-	defer mu.RUnlock()
-	if active != nil {
-		return active
+	logger := active
+	mu.RUnlock()
+	if logger != nil {
+		return logger
 	}
 	return Init(Config{Path: ""})
 }
@@ -242,7 +243,8 @@ func NewRequestLogger() *RequestLogger {
 }
 
 // Wrap returns an http.Handler-style wrapper. Use as:
-//   h := logging.NewRequestLogger().Wrap(actualHandler)
+//
+//	h := logging.NewRequestLogger().Wrap(actualHandler)
 func (r *RequestLogger) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()

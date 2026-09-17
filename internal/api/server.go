@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/JustSebNL/timekeeper/internal/lifecycle"
@@ -22,8 +23,9 @@ import (
 // RuntimeStatus reports opt-in local runtime capabilities. It is informational:
 // the Store remains authoritative for durable work and recovery evidence.
 type RuntimeStatus struct {
-	PulseGuardianEnabled         bool  `json:"pulse_guardian_enabled"`
-	PulseGuardianIntervalSeconds int64 `json:"pulse_guardian_interval_seconds"`
+	FriendlyURLs                 []string `json:"friendly_urls,omitempty"`
+	PulseGuardianEnabled         bool     `json:"pulse_guardian_enabled"`
+	PulseGuardianIntervalSeconds int64    `json:"pulse_guardian_interval_seconds"`
 	// RecoveryPolicy is the fixed, allowlist-described recovery behaviour the
 	// local receiver performs. It is evidence, not an executable capability.
 	RecoveryPolicy string `json:"recovery_policy,omitempty"`
@@ -39,6 +41,9 @@ func New(database *store.Store) http.Handler {
 func NewWithRuntime(database *store.Store, runtime RuntimeStatus) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health)
+	mux.HandleFunc("GET /api/v1/connection-info", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"friendly_urls": runtime.FriendlyURLs})
+	})
 	mux.HandleFunc("GET /api/help", apiHelp)
 	mux.HandleFunc("GET /api/v1/llm-pipelines", listLLMPipelines(database))
 	mux.HandleFunc("POST /api/v1/llm-pipelines", createLLMPipeline(database))
@@ -50,16 +55,21 @@ func NewWithRuntime(database *store.Store, runtime RuntimeStatus) http.Handler {
 	mux.HandleFunc("POST /api/v1/agents/{agentID}/nudges/{nudgeID}/ack", acknowledgePulseNudge(database))
 	mux.HandleFunc("GET /api/v1/projects", listProjects(database))
 	mux.HandleFunc("POST /api/v1/projects", createProject(database))
+	mux.HandleFunc("POST /api/v1/bug-reports", createBugReport(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/bug-reports", listBugReports(database))
+	mux.HandleFunc("POST /api/v1/bug-reports/{reportID}/status", updateBugReportStatus(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/metadata", updateProjectMetadata(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/status", updateProjectStatus(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/alias", updateProjectAlias(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/export", projectExport(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/execution-tree", projectExecutionTree(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/operational-summary", projectOperationalSummary(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/coding-outcomes", resolveMessageProject(database, codingOutcomes(database)))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/coding-outcomes", resolveMessageProject(database, codingOutcomes(database)))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/usage-summary", projectUsageSummary(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/attention", projectAttention(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots", usageSnapshotsHandler(database))
-mux.HandleFunc("GET /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots", usageSnapshotsHandler(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots", usageSnapshotsHandler(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/sprints/claim-next", claimNextSprint(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/events", listProjectEvents(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/planning-drafts/{draftID}/apply", applyPlanningDraft(database))
@@ -68,10 +78,16 @@ mux.HandleFunc("GET /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snap
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/planning-drafts", createPlanningDraft(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/notes", listProjectNotes(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/notes", createProjectNote(database))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages", listProjectMessages(database))
-	mux.HandleFunc("POST /api/v1/projects/{projectID}/messages", createProjectMessage(database))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages/search", searchProjectMessages(database))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages/{messageID}", getProjectMessage(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages", resolveMessageProject(database, listProjectMessages(database)))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/messages", resolveMessageProject(database, createProjectMessage(database)))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/messages/checkpoint", resolveMessageProject(database, createProjectMessageCheckpoint(database)))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages/search", resolveMessageProject(database, searchProjectMessages(database)))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages/{messageID}", resolveMessageProject(database, getProjectMessage(database)))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages/{messageID}/thread", resolveMessageProject(database, getProjectMessageThread(database)))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages/{messageID}/context", resolveMessageProject(database, getProjectMessageContext(database)))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages/{messageID}/revisions", resolveMessageProject(database, listProjectMessageRevisions(database)))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/messages/{messageID}/pin", resolveMessageProject(database, setProjectMessagePinned(database)))
+	mux.HandleFunc("PATCH /api/v1/projects/{projectID}/messages/{messageID}", resolveMessageProject(database, updateProjectMessage(database)))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/categories", listCategories(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/categories", createCategory(database))
 	mux.HandleFunc("POST /api/v1/categories/{categoryID}/metadata", updateCategoryMetadata(database))
@@ -88,6 +104,7 @@ mux.HandleFunc("GET /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snap
 	mux.HandleFunc("GET /api/v1/subtasks/{subtaskID}/sprints", listSubtaskSprints(database))
 	mux.HandleFunc("POST /api/v1/subtasks/{subtaskID}/sprints", createSubtaskSprint(database))
 	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/start", transitionSprint(database, "start"))
+	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/supervised-launches", reserveSupervisedLaunch(database))
 	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/hold", transitionSprint(database, "hold"))
 	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/resume", transitionSprint(database, "resume"))
 	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/complete", transitionSprint(database, "complete"))
@@ -112,10 +129,21 @@ func withReqCtx(next http.Handler) http.Handler {
 
 func requireJSONForMutations(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
 			mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 			if err != nil || mediaType != "application/json" {
-				writeError(w, http.StatusUnsupportedMediaType, "json_content_type_required", "Mutating API requests must use application/json.")
+				if !(r.Method == http.MethodPost && r.URL.Path == "/api/v1/bug-reports" && mediaType == "text/markdown") {
+					writeError(w, http.StatusUnsupportedMediaType, "json_content_type_required", "Mutating API requests must use application/json.")
+					return
+				}
+				body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+				if readErr != nil {
+					writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "Markdown bug reports must be at most 1 MiB.")
+					return
+				}
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				r.ContentLength = int64(len(body))
+				next.ServeHTTP(w, r)
 				return
 			}
 			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
@@ -154,13 +182,20 @@ func apiHelp(w http.ResponseWriter, _ *http.Request) {
 		{"method": "GET", "path": "/api/v1/llm-pipelines", "desc": "List LLM pipelines"},
 		{"method": "POST", "path": "/api/v1/llm-pipelines", "desc": "Create an LLM pipeline"},
 		{"method": "GET", "path": "/api/v1/pulse", "desc": "Local attention items needing follow-up"},
+		{"method": "GET", "path": "/api/v1/connection-info", "desc": "Discover friendly URLs using the running listener port"},
 		{"method": "GET", "path": "/api/v1/guardian/status", "desc": "Guardian runtime status + registered callbacks"},
+		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/supervised-launches", "desc": "Atomically claim a bounded supervised run"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/coding-outcomes", "desc": "Record an immutable evidence-linked coding review"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/coding-outcomes", "desc": "Compare reported outcomes in matching cohorts"},
 		{"method": "POST", "path": "/api/v1/agents/{agentID}/progress", "desc": "Renew agent progress lease"},
 		{"method": "GET", "path": "/api/v1/agents/{agentID}/nudges", "desc": "List pending Guardian nudges"},
 		{"method": "GET", "path": "/api/v1/agents/{agentID}/nudges/history", "desc": "Guardian nudge delivery/recovery history"},
 		{"method": "POST", "path": "/api/v1/agents/{agentID}/nudges/{nudgeID}/ack", "desc": "Acknowledge a Guardian nudge"},
 		{"method": "GET", "path": "/api/v1/projects", "desc": "List projects"},
 		{"method": "POST", "path": "/api/v1/projects", "desc": "Create a project"},
+		{"method": "POST", "path": "/api/v1/bug-reports", "desc": "Report a bounded TimeKeeper alpha defect as JSON or Markdown"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/bug-reports", "desc": "List project bug reports"},
+		{"method": "POST", "path": "/api/v1/bug-reports/{reportID}/status", "desc": "Transition a bug report status"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/metadata", "desc": "Update project context"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/status", "desc": "Set project status"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/alias", "desc": "Set project alias"},
@@ -1150,6 +1185,10 @@ func recoverJSON(next http.Handler) http.Handler {
 func writeStoreError(w http.ResponseWriter, err error) {
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "project_not_found", "Project was not found.")
+		return
+	}
+	if errors.Is(err, store.ErrValidation) {
+		writeError(w, http.StatusBadRequest, "validation_error", strings.TrimSpace(strings.TrimPrefix(err.Error(), store.ErrValidation.Error()+": ")))
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "project_export_failed", "Could not build the portable Project export.")

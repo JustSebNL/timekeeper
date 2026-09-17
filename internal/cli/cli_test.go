@@ -496,6 +496,25 @@ func TestRunSprintExtendRecordsJustifiedAdditionalTime(t *testing.T) {
 	}
 }
 
+func TestRunSprintExtendSurfacesValidationBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/sprints/SP-10004/extensions" {
+			t.Fatalf("request=%s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"validation_error","message":"total extensions cannot exceed the original sprint estimate"}}`))
+	}))
+	t.Cleanup(server.Close)
+	var out, errOut bytes.Buffer
+	if code := cli.Run([]string{"sp", "extend", "SP-10004", "10m", "Over budget"}, &out, &errOut, server.URL); code != 1 {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "validation_error") || !strings.Contains(errOut.String(), "original sprint estimate") {
+		t.Fatalf("err=%q", errOut.String())
+	}
+}
+
 func TestRunSprintNewCreatesBelowExplicitSubtask(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/subtasks/ST-10003/sprints" {

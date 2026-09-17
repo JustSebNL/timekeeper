@@ -4,7 +4,7 @@ Base URL: `http://127.0.0.1:1618/api/v1`
 
 Time Keeper is a local, SQLite-authoritative HTTP/JSON API. It accepts only explicit numeric loopback listeners (`127.0.0.1` or `::1`). It has no authentication and must not be exposed beyond the local user boundary.
 
-Every `POST` mutation requires `Content-Type: application/json`. Unknown request fields and non-JSON media types are rejected. Health remains exactly:
+Every `POST`, `PUT`, `PATCH`, or `DELETE` mutation requires `Content-Type: application/json`. Unknown request fields and non-JSON media types are rejected. Health remains exactly:
 
 ```json
 {"status":"ok"}
@@ -28,6 +28,13 @@ GET  /api/v1/projects/{projectID}/attention
 GET  /api/v1/projects/{projectID}/events
 GET  /api/v1/projects/{projectID}/notes
 POST /api/v1/projects/{projectID}/notes
+GET  /api/v1/projects/{projectID}/messages
+POST /api/v1/projects/{projectID}/messages
+GET  /api/v1/projects/{projectID}/messages/search
+GET  /api/v1/projects/{projectID}/messages/{messageID}
+PATCH /api/v1/projects/{projectID}/messages/{messageID}
+GET  /api/v1/projects/{projectID}/messages/{messageID}/thread
+GET  /api/v1/projects/{projectID}/messages/{messageID}/revisions
 GET  /api/v1/projects/{projectID}/export
 GET  /api/v1/projects/{projectID}/categories
 POST /api/v1/projects/{projectID}/categories
@@ -63,6 +70,59 @@ GET  /api/v1/projects/{projectID}/planning-drafts
 POST /api/v1/projects/{projectID}/planning-drafts
 POST /api/v1/projects/{projectID}/planning-drafts/generate
 POST /api/v1/projects/{projectID}/planning-drafts/{draftID}/apply
+```
+
+All message routes accept either the canonical `P-{number}` Project ID or that Project's exact alias. The server resolves aliases before applying project scoping, so `/api/v1/projects/hsam/messages` and `/api/v1/projects/P-10000/messages` address the same board. The CLI applies the same resolution before issuing the request.
+
+## Trail of Thought Board
+
+The message board is the durable project-scoped memory surface for short reasoning, discoveries, decisions, questions, answers, links, and lessons. A post body is limited to 1000 Unicode characters so it remains compact enough to reference from an agent context window without turning into a second transcript store.
+
+Each created post returns a numeric `message_id` and compact `ref` such as `M-42`. The `M-42` reference is stable and can be stored in an agent's context instead of the full body. Replies use `parent_message_id`; thread reads walk from any post or reply to the root and return deterministic parent-before-child order.
+
+```text
+POST /api/v1/projects/{projectID}/messages
+{"kind":"observation","author":"agent-7","body":"The queue stalls after Sprint promotion.","tags":"queue,debug"}
+
+POST /api/v1/projects/{projectID}/messages
+{"kind":"answer","body":"The save boundary throws before processSprint.","parent_message_id":42}
+
+PATCH /api/v1/projects/{projectID}/messages/42
+{"kind":"lesson","author":"agent-7","body":"Persist state before promoting a Sprint.","tags":"queue,lesson"}
+
+POST /api/v1/projects/{projectID}/messages/checkpoint
+{"author":"agent-7","entries":[{"kind":"decision","body":"Persist before dispatch.","tags":"queue"},{"kind":"lesson","body":"Keep only the root M-ref in active context.","tags":"handoff"}]}
+
+POST /api/v1/projects/{projectID}/messages/42/pin
+{"pinned":true}
+
+GET /api/v1/projects/{projectID}/messages/42/thread
+GET /api/v1/projects/{projectID}/messages/42/context?thread_limit=12&related_limit=8&revision_limit=4
+GET /api/v1/projects/{projectID}/messages/42/revisions
+GET /api/v1/projects/{projectID}/messages/search?q=queue%20Sprint
+```
+
+`GET .../messages/{messageID}/context` is the pointer-first hydration endpoint. It returns `{anchor, thread, related, revisions}` in one bounded response. Defaults are 12 thread items, 8 related hits, and 4 revisions; hard maxima are 50, 25, and 12. The response includes `*_truncated` flags and `related_mode` (`vector` or `fts`), so an agent can decide whether to request more deliberately rather than silently assuming the bundle is complete. If `q` is omitted, the store derives a small related query from the first tag or a short body prefix and excludes the anchor itself from `related`.
+
+The current `vector` mode is a deterministic feature-hashed cosine index stored as a disposable SQLite accelerator. It is not treated as semantic truth and does not require a model download. The index is rebuilt from `project_messages` when missing or stale; a future LanceDB/neural embedding backend can replace it without changing the durable post/revision contract.
+
+Edits update the current post and append an immutable revision. Thread parentage cannot be edited, and replies must belong to the same Project as their parent. Message creates, replies, and edits also append immutable Project events in the same SQLite transaction.
+
+Pinning is recall metadata, not a content edit: it does not increment `revision`, but `message_pinned` / `message_unpinned` transitions are immutable Project events. Pinned messages sort first in project lists and receive priority in vector-related retrieval.
+
+Agent CLI equivalents:
+
+```text
+tk msg P-10000 add --kind observation --tags queue "The queue stalls after Sprint promotion."
+tk msg P-10000 add --kind answer --reply-to M-42 "The save boundary throws before processSprint."
+tk msg P-10000 edit M-42 --kind lesson "Persist state before promoting a Sprint."
+tk msg P-10000 checkpoint --author agent-7 --entry 'decision|Persist before dispatch.|queue' --entry 'lesson|Keep only the root M-ref in active context.|handoff'
+tk msg P-10000 pin M-42
+tk msg P-10000 unpin M-42
+tk msg P-10000 thread M-42
+tk msg P-10000 revisions M-42
+tk msg P-10000 context M-42 --related-limit 8
+tk msg P-10000 search queue Sprint
 ```
 
 ## Runnable Sprint queue

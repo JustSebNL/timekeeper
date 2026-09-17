@@ -15,6 +15,7 @@ required_workflow:
 recovery:
   linux_wsl: scripts/service/kick-server.sh
   windows: scripts/service/kick-server.bat
+  policy: failure_only_after_health_check
   healthy_path: no-op
 skills:
   - harness/skills/project-landscape/SKILL.md

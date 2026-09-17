@@ -106,8 +106,17 @@ func (s *Store) EvaluatePulseGuardianAt(ctx context.Context, at time.Time) ([]mo
 		return nil, errors.New("guardian evaluation time is required")
 	}
 	at = at.UTC().Round(0)
-	rows, err := s.db.QueryContext(ctx, `SELECT agent_id, active_sprint_id, lease_duration_seconds, last_progress_at
-		FROM agent_pulse_progress ORDER BY agent_id`)
+	pulse, err := s.PulseAt(ctx, at)
+	if err != nil {
+		return nil, err
+	}
+	overdue := make(map[string]model.PulseAttention)
+	for _, item := range pulse.Attention {
+		overdue[item.SprintID] = item
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT p.agent_id, p.active_sprint_id, p.lease_duration_seconds, p.last_progress_at, s.status
+		FROM agent_pulse_progress p LEFT JOIN sprints s ON s.sprint_id = p.active_sprint_id
+ WHERE NOT (p.guardian_url = '' AND EXISTS (SELECT 1 FROM supervised_launches l WHERE l.agent_id=p.agent_id)) ORDER BY p.agent_id`)
 	if err != nil {
 		return nil, fmt.Errorf("read agent progress leases: %w", err)
 	}
@@ -117,21 +126,31 @@ func (s *Store) EvaluatePulseGuardianAt(ctx context.Context, at time.Time) ([]mo
 	for rows.Next() {
 		var agentID, activeSprintID, lastProgress string
 		var leaseSeconds int64
-		if err := rows.Scan(&agentID, &activeSprintID, &leaseSeconds, &lastProgress); err != nil {
+		var sprintStatus sql.NullString
+		if err := rows.Scan(&agentID, &activeSprintID, &leaseSeconds, &lastProgress, &sprintStatus); err != nil {
 			return nil, fmt.Errorf("scan agent progress lease: %w", err)
 		}
 		progressAt, err := time.Parse(time.RFC3339Nano, lastProgress)
 		if err != nil {
 			return nil, fmt.Errorf("parse agent progress lease: %w", err)
 		}
+		// A held or terminal Sprint is not active work. Unknown legacy IDs
+		// retain lease-based detection for compatibility with existing callers.
+		if sprintStatus.Valid && sprintStatus.String != "Active" {
+			continue
+		}
 		detectedAfter := elapsedSeconds(progressAt, at)
-		if detectedAfter <= leaseSeconds {
+		kind := "agent_unresponsive"
+		if item, ok := overdue[activeSprintID]; ok {
+			kind = "sprint_overdue"
+			detectedAfter = item.OverdueDurationSeconds
+		} else if detectedAfter <= leaseSeconds {
 			continue
 		}
 
 		result, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO pulse_nudges (
 			agent_id, active_sprint_id, kind, status, detected_after_seconds, created_at
-		) VALUES (?, ?, 'agent_unresponsive', 'Pending', ?, ?)`, agentID, activeSprintID, detectedAfter, stamp(at))
+		) VALUES (?, ?, ?, 'Pending', ?, ?)`, agentID, activeSprintID, kind, detectedAfter, stamp(at))
 		if err != nil {
 			return nil, fmt.Errorf("create pulse nudge: %w", err)
 		}
@@ -150,7 +169,7 @@ func (s *Store) EvaluatePulseGuardianAt(ctx context.Context, at time.Time) ([]mo
 			NudgeID:              nudgeID,
 			AgentID:              agentID,
 			ActiveSprintID:       activeSprintID,
-			Kind:                 "agent_unresponsive",
+			Kind:                 kind,
 			Status:               "Pending",
 			DetectedAfterSeconds: detectedAfter,
 			CreatedAt:            at,

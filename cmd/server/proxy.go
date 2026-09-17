@@ -6,30 +6,18 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"strings"
 	"time"
 )
 
 // newProxyServer returns a *http.Server that listens on proxyAddr and
-// reverse-proxies every request to primaryHandler. The proxy preserves
+// serves every request with primaryHandler. The listener preserves
 // the original Host header so the upstream handler can branch on it
 // (it currently does not, but the architecture leaves the door open).
 func newProxyServer(proxyAddr string, primaryHandler http.Handler, logger *slog.Logger) *http.Server {
-	target := &url.URL{Scheme: "http", Host: strings.TrimSpace(proxyAddr)}
-	rp := httputil.NewSingleHostReverseProxy(target)
-	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		logger.Error("proxy error",
-			slog.String("host", r.Host),
-			slog.String("path", r.URL.Path),
-			slog.Any("err", err),
-		)
-		http.Error(w, "bad gateway", http.StatusBadGateway)
-	}
 	return &http.Server{
 		Addr:              proxyAddr,
-		Handler:           rp,
+		Handler:           primaryHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

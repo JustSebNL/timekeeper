@@ -24,14 +24,15 @@ import (
 // The command never auto-starts the service. If the server is not
 // reachable, it returns a non-zero exit and tells the user to run
 // `tk doctor`.
-func openBrowser(args []string, out, errOut io.Writer) int {
-	url := "http://timekeeper.local/"
+func openBrowser(args []string, out, errOut io.Writer, baseURL string) int {
+	urls := connectionURLs(baseURL)
+	url := urls[0]
 	for _, a := range args {
 		switch a {
 		case "--api":
-			url = "http://api.timekeeper.local/"
+			url = urls[1]
 		case "--ip":
-			url = "http://127.0.0.1:1618/"
+			url = strings.TrimRight(baseURL, "/") + "/"
 		case "--help", "-h":
 			fmt.Fprintln(out, "usage: tk open [--api|--ip]")
 			fmt.Fprintln(out, "  default:  http://timekeeper.local/")
@@ -51,7 +52,7 @@ func openBrowser(args []string, out, errOut io.Writer) int {
 	resp, err := client.Get(healthURL)
 	if err != nil {
 		fmt.Fprintf(errOut, "TimeKeeper is not reachable at %s (%v).\n", url, err)
-		fmt.Fprintln(errOut, "Start the service, then run `tk doctor` to diagnose.")
+		fmt.Fprintln(errOut, "Run `tk doctor` and `tk hosts status`; use `tk open --ip` for the configured canonical address.")
 		return 1
 	}
 	resp.Body.Close()

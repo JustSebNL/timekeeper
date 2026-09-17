@@ -51,6 +51,15 @@
     return data;
   }
 
+  async function requestOptional(url, label) {
+    try {
+      return await request(url);
+    } catch (error) {
+      console.error(label, error);
+      return null;
+    }
+  }
+
   function label(item) {
     const progress = Number.isFinite(item.calculated_completion_pct) ? item.calculated_completion_pct : item.progress_pct;
     const suffix = Number.isFinite(progress) ? ' · ' + progress + '% complete' : '';
@@ -122,6 +131,7 @@
         await request(options.endpoint, { method: 'POST', body: JSON.stringify(options.payload(itemName, seconds, bufferPct)) });
         await options.refresh();
       } catch (error) {
+        console.error('Dashboard inline action failed', error);
         feedback.className = 'inline-feedback error';
         feedback.textContent = error.message;
       } finally {
@@ -171,6 +181,7 @@
         await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/' + action, { method: 'POST', body: JSON.stringify({reason}) });
         await refresh();
       } catch (error) {
+        console.error('Sprint action failed', error);
         message.className = 'error';
         message.textContent = error.message;
       } finally {
@@ -195,6 +206,7 @@
         await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/hold-reason', { method: 'POST', body: JSON.stringify({reason}) });
         await refresh();
       } catch (error) {
+        console.error('Sprint hold-reason update failed', error);
         message.className = 'error';
         message.textContent = error.message;
       } finally {
@@ -236,13 +248,18 @@
     const history = document.createElement('ul');
     history.className = 'notes-list';
     async function loadHistory() {
-      const response = await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/extensions');
-      history.replaceChildren();
-      for (const extension of response.items || []) {
-        const item = document.createElement('li');
-        item.className = 'note-item';
-        item.textContent = '+' + extension.duration_seconds + 's · ' + extension.reason;
-        history.append(item);
+      try {
+        const response = await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/extensions');
+        history.replaceChildren();
+        for (const extension of response.items || []) {
+          const item = document.createElement('li');
+          item.className = 'note-item';
+          item.textContent = '+' + extension.duration_seconds + 's · ' + extension.reason;
+          history.append(item);
+        }
+      } catch (error) {
+        console.error('Sprint extension history request failed', error);
+        throw error;
       }
     }
     const form = document.createElement('form');
@@ -255,6 +272,7 @@
         await loadHistory();
         await refresh();
       } catch (error) {
+        console.error('Dashboard inline action failed', error);
         feedback.className = 'inline-feedback error';
         feedback.textContent = error.message;
       } finally {
@@ -267,6 +285,7 @@
     header.addEventListener('click', () => {
       if (!body.classList.contains('collapsed')) {
         loadHistory().catch(error => {
+          console.error('Sprint history loading failed', error);
           feedback.className = 'inline-feedback error';
           feedback.textContent = error.message;
         });
@@ -300,13 +319,18 @@
     const history = document.createElement('ul');
     history.className = 'notes-list';
     async function loadHistory() {
-      const response = await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/retrieval-attempts');
-      history.replaceChildren();
-      for (const attempt of response.items || []) {
-        const item = document.createElement('li');
-        item.className = 'note-item';
-        item.textContent = 'Attempt ' + attempt.attempt_number + '/4 · ' + attempt.reason + (attempt.timed_out ? ' · TimedOut' : '');
-        history.append(item);
+      try {
+        const response = await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/retrieval-attempts');
+        history.replaceChildren();
+        for (const attempt of response.items || []) {
+          const item = document.createElement('li');
+          item.className = 'note-item';
+          item.textContent = 'Attempt ' + attempt.attempt_number + '/4 · ' + attempt.reason + (attempt.timed_out ? ' · TimedOut' : '');
+          history.append(item);
+        }
+      } catch (error) {
+        console.error('Sprint retrieval history request failed', error);
+        throw error;
       }
     }
     const form = document.createElement('form');
@@ -321,6 +345,7 @@
         if (result.timed_out) feedback.textContent = 'Fourth attempt recorded. This Sprint is now TimedOut.';
         await refresh();
       } catch (error) {
+        console.error('Dashboard inline action failed', error);
         feedback.className = 'inline-feedback error';
         feedback.textContent = error.message;
       } finally {
@@ -333,6 +358,7 @@
     header.addEventListener('click', () => {
       if (!body.classList.contains('collapsed')) {
         loadHistory().catch(error => {
+          console.error('Sprint history loading failed', error);
           feedback.className = 'inline-feedback error';
           feedback.textContent = error.message;
         });
@@ -358,13 +384,18 @@
     const history = document.createElement('ul');
     history.className = 'notes-list';
     async function loadHistory() {
-      const response = await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/time-entries');
-      history.replaceChildren();
-      for (const entry of response.items || []) {
-        const item = document.createElement('li');
-        item.className = 'note-item';
-        item.textContent = entry.entry_type + ' · ' + entry.duration_seconds + 's' + (entry.reason ? ' · ' + entry.reason : '');
-        history.append(item);
+      try {
+        const response = await request('/api/v1/sprints/' + encodeURIComponent(sprint.sprint_id) + '/time-entries');
+        history.replaceChildren();
+        for (const entry of response.items || []) {
+          const item = document.createElement('li');
+          item.className = 'note-item';
+          item.textContent = entry.entry_type + ' · ' + entry.duration_seconds + 's' + (entry.reason ? ' · ' + entry.reason : '');
+          history.append(item);
+        }
+      } catch (error) {
+        console.error('Sprint time-entry history request failed', error);
+        throw error;
       }
     }
     body.append(feedback, history);
@@ -373,6 +404,7 @@
     header.addEventListener('click', () => {
       if (!body.classList.contains('collapsed')) {
         loadHistory().catch(error => {
+          console.error('Sprint extension history loading failed', error);
           feedback.className = 'inline-feedback error';
           feedback.textContent = error.message;
         });
@@ -449,6 +481,7 @@
         await request(api + '/' + encodeURIComponent(projectID) + '/notes', { method: 'POST', body: JSON.stringify({ content: value }) });
         await refresh();
       } catch (error) {
+        console.error('Project note creation failed', error);
         feedback.className = 'inline-feedback error';
         feedback.textContent = error.message;
       } finally {
@@ -508,6 +541,7 @@
         await request(api + '/' + encodeURIComponent(project.project_id) + '/metadata', { method: 'POST', body: JSON.stringify({ goal: goal.value, description: description.value }) });
         await refresh();
       } catch (error) {
+        console.error('Project metadata update failed', error);
         feedback.className = 'inline-feedback error';
         feedback.textContent = error.message;
       } finally {
@@ -546,6 +580,7 @@
         await request(api + '/' + encodeURIComponent(project.project_id) + '/status', { method: 'POST', body: JSON.stringify({ status: select.value }) });
         await refresh();
       } catch (error) {
+        console.error('Project status update failed', error);
         feedback.className = 'inline-feedback error';
         feedback.textContent = error.message;
       } finally {
@@ -591,6 +626,7 @@
         await request('/api/v1/tasks/' + encodeURIComponent(task.task_id) + '/metadata', { method: 'POST', body: JSON.stringify({ goal: goal.value, description: description.value }) });
         await refresh();
       } catch (error) {
+        console.error('Task metadata update failed', error);
         feedback.className = 'inline-feedback error';
         feedback.textContent = error.message;
       } finally {
@@ -639,6 +675,7 @@
         await request('/api/v1/categories/' + encodeURIComponent(category.category_id) + '/metadata', { method: 'POST', body: JSON.stringify({ goal: goal.value, description: description.value }) });
         await refresh();
       } catch (error) {
+        console.error('Category metadata update failed', error);
         feedback.className = 'inline-feedback error';
         feedback.textContent = error.message;
       } finally {
@@ -677,6 +714,7 @@
         await request('/api/v1/tasks/' + encodeURIComponent(task.task_id) + '/status', { method: 'POST', body: JSON.stringify({ status: select.value }) });
         await refresh();
       } catch (error) {
+        console.error('Task status update failed', error);
         feedback.className = 'inline-feedback error';
         feedback.textContent = error.message;
       } finally {
@@ -712,6 +750,7 @@
         await request('/api/v1/subtasks/' + encodeURIComponent(subtask.subtask_id) + '/status', { method: 'POST', body: JSON.stringify({ status: select.value }) });
         await refresh();
       } catch (error) {
+        console.error('Subtask status update failed', error);
         feedback.className = 'inline-feedback error';
         feedback.textContent = error.message;
       } finally {
@@ -747,6 +786,7 @@
         await request('/api/v1/categories/' + encodeURIComponent(category.category_id) + '/status', { method: 'POST', body: JSON.stringify({ status: select.value }) });
         await refresh();
       } catch (error) {
+        console.error('Category status update failed', error);
         feedback.className = 'inline-feedback error';
         feedback.textContent = error.message;
       } finally {
@@ -935,11 +975,22 @@
         request('/api/v1/llm-pipelines'),
         request(api + '/' + encodeURIComponent(projectID) + '/planning-drafts')
       ]);
-      target.replaceChildren(renderExecutionTree(tree, summary, attention.items || [], noteResponse.items || [], eventResponse.items || [], pipelineResponse.items || [], draftResponse.items || [], async () => { await loadExecutionTree(projectID, target, button); await loadPulse(); }));
+      target.replaceChildren(renderExecutionTree(tree, summary, attention.items || [], noteResponse.items || [], eventResponse.items || [], pipelineResponse.items || [], draftResponse.items || [], () => refreshExecutionTreeAndPulse(projectID, target, button)));
     } catch (error) {
+      console.error('Execution tree loading failed', error);
       target.textContent = error.message;
     } finally {
       button.disabled = false;
+    }
+  }
+
+  async function refreshExecutionTreeAndPulse(projectID, target, button) {
+    try {
+      await loadExecutionTree(projectID, target, button);
+      await loadPulse();
+    } catch (error) {
+      console.error('Execution tree refresh failed', error);
+      target.textContent = error.message;
     }
   }
 
@@ -1097,6 +1148,7 @@
     try {
       renderPulse(await request('/api/v1/pulse'));
     } catch (error) {
+      console.error('Pulse loading failed', error);
       pulseTarget.className = 'empty error';
       pulseTarget.textContent = error.message;
     }
@@ -1144,15 +1196,20 @@
   }
 
   async function loadRecentActivity(items) {
-    const responses = await Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/events').catch(() => ({items: []}))));
-    const activity = [];
-    for (let index = 0; index < responses.length; index += 1) {
-      for (const event of responses[index].items || []) {
-        activity.push({event, projectName: items[index].project_name || items[index].project_id});
+    try {
+      const responses = await Promise.all(items.map(item => requestOptional(api + '/' + encodeURIComponent(item.project_id) + '/events', 'Project activity history unavailable')));
+      const activity = [];
+      for (let index = 0; index < responses.length; index += 1) {
+        for (const event of responses[index]?.items || []) {
+          activity.push({event, projectName: items[index].project_name || items[index].project_id});
+        }
       }
+      activity.sort((left, right) => new Date(right.event.created_at).getTime() - new Date(left.event.created_at).getTime());
+      renderRecentActivity(activity);
+    } catch (error) {
+      console.error('Recent activity loading failed', error);
+      renderRecentActivity([]);
     }
-    activity.sort((left, right) => new Date(right.event.created_at).getTime() - new Date(left.event.created_at).getTime());
-    renderRecentActivity(activity);
   }
 
   function formatSeconds(value) {
@@ -1430,14 +1487,14 @@
       const items = data.items || [];
       render(items);
       const [summaries, usageSummaries, events] = await Promise.all([
-        Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/operational-summary').catch(() => null))),
-        Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/usage-summary').catch(() => null))),
+        Promise.all(items.map(item => requestOptional(api + '/' + encodeURIComponent(item.project_id) + '/operational-summary', 'Project operational summary unavailable'))),
+        Promise.all(items.map(item => requestOptional(api + '/' + encodeURIComponent(item.project_id) + '/usage-summary', 'Project usage summary unavailable'))),
         // Pull the most recent event per project for the focus row
         // timeline. The events endpoint returns newest-first; we only
         // need the first item, so we keep the response shape small.
         // A null item is tolerated (caught, returned as null) so a
         // project with no events does not fail the whole fetch.
-        Promise.all(items.map(item => request(api + '/' + encodeURIComponent(item.project_id) + '/events?limit=1').catch(() => null))),
+        Promise.all(items.map(item => requestOptional(api + '/' + encodeURIComponent(item.project_id) + '/events?limit=1', 'Project activity unavailable'))),
         loadRecentActivity(items)
       ]);
       statActive.textContent = summaries.reduce((total, summary) => total + (summary?.active_sprints || 0), 0);
@@ -1447,6 +1504,7 @@
       sidebarAPIStatus.textContent = 'Online';
       sidebarAPIStatus.style.color = 'var(--green)';
     } catch (error) {
+      console.error('Dashboard load failed', error);
       projects.textContent = error.message;
       projects.className = 'empty';
       activityTarget.className = 'activity-list empty error';
@@ -1474,6 +1532,7 @@
       message.textContent = 'Project created.';
       await load();
     } catch (error) {
+      console.error('Project creation failed', error);
       message.className = 'error';
       message.textContent = error.message;
     } finally {
@@ -1623,6 +1682,7 @@
         await request('/api/v1/llm-pipelines', { method: 'POST', body: JSON.stringify({name: name.value.trim(), provider: provider.value, base_url: baseURL.value.trim(), model: model.value.trim(), system_prompt: systemPrompt.value.trim()}) });
         await refresh();
       } catch (error) {
+        console.error('LLM pipeline creation failed', error);
         feedback.className = 'inline-feedback error';
         feedback.textContent = error.message;
       } finally {
@@ -1668,6 +1728,10 @@
         try {
           await request(api + '/' + encodeURIComponent(projectID) + '/planning-drafts/generate', { method: 'POST', body: JSON.stringify({pipeline_id: Number(select.value)}) });
           await refresh();
+        } catch (error) {
+          console.error('Planning draft generation failed', error);
+          message.className = 'error';
+          message.textContent = 'Could not generate planning draft: ' + error.message;
         } finally {
           generate.disabled = false;
         }
@@ -1695,9 +1759,15 @@
           apply.textContent = 'Apply approved draft';
           apply.addEventListener('click', async () => {
             if (!window.confirm('Apply this reviewed planning draft?')) return;
+          try {
             await request(api + '/' + encodeURIComponent(projectID) + '/planning-drafts/' + encodeURIComponent(draft.draft_id) + '/apply', { method: 'POST', body: '{}' });
             await refresh();
-          });
+          } catch (error) {
+            console.error('Planning draft application failed', error);
+            message.className = 'error';
+            message.textContent = 'Could not apply planning draft: ' + error.message;
+          }
+        });
           itemBody.append(apply);
         }
         item.append(itemHeader, itemBody);
@@ -1710,71 +1780,333 @@
     return section;
   }
 
-  // ─── Project message board (long-term memory) ─────────────────────────
-  // Reads: GET /api/v1/projects/{id}/messages
-  // Search: GET /api/v1/projects/{id}/messages/search?q=...
-  // The panel is read-only; the CLI (`tk msg <project> add|list|search|show`)
-  // is the authoritative write path so the message stream stays under
-  // agent and human control via the existing TimeKeeper record-keeping
-  // contracts.
+  // ─── Trail of Thought Board ─────────────────────────────────────────────
+  const MESSAGE_MAX = 1000;
   const messagesList = document.querySelector('#messages-list');
   const messagesProjectLabel = document.querySelector('#messages-project-label');
+  const messagesProjectSelect = document.querySelector('#messages-project');
   const messagesSearch = document.querySelector('#messages-search');
   const messagesKind = document.querySelector('#messages-kind');
+  const messageForm = document.querySelector('#message-compose-form');
+  const messageTitle = document.querySelector('#message-compose-title');
+  const messageCancel = document.querySelector('#message-compose-cancel');
+  const messageBody = document.querySelector('#message-compose-body');
+  const messageComposeKind = document.querySelector('#message-compose-kind');
+  const messageTags = document.querySelector('#message-compose-tags');
+  const messageLink = document.querySelector('#message-compose-link');
+  const messageCount = document.querySelector('#message-compose-count');
+  const messageSubmit = document.querySelector('#message-compose-submit');
+  const messageContext = document.querySelector('#message-compose-context');
+  const messageFeedback = document.querySelector('#message-compose-feedback');
   let messagesProjectID = null;
+  let messageItems = [];
   let messagesDebounce = 0;
+  let messagesLoadToken = 0;
+  let editingMessageID = null;
+  let replyParentID = null;
 
-  function escapeHTML(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+  function messagePath(projectID, messageID, suffix) {
+    return api + '/' + encodeURIComponent(projectID) + '/messages/' + encodeURIComponent(messageID) + (suffix ? '/' + suffix : '');
   }
 
-  // FTS5 snippets arrive as JSON strings with <mark>...</mark> highlight
-  // markers already in place. The body, in contrast, is plain text and
-  // must be escaped before being injected. To keep the styling, we split
-  // on the markers, escape the text segments, and rebuild the string.
-  function renderSnippet(s) {
-    if (!s) return '';
-    const parts = s.split(/(<mark>|<\/mark>)/);
-    let open = false;
-    let out = '';
-    for (const p of parts) {
-      if (p === '<mark>') { open = true; out += '<mark>'; continue; }
-      if (p === '</mark>') { open = false; out += '</mark>'; continue; }
-      out += escapeHTML(p);
+  function messageIDValue(message) {
+    return Number(message && message.message_id) || 0;
+  }
+
+  function resetMessageComposer() {
+    editingMessageID = null;
+    replyParentID = null;
+    if (messageTitle) messageTitle.textContent = 'Post to the board';
+    if (messageSubmit) messageSubmit.textContent = 'Post memory';
+    if (messageCancel) messageCancel.hidden = true;
+    if (messageContext) { messageContext.hidden = true; messageContext.textContent = ''; }
+    if (messageForm) messageForm.reset();
+    if (messageComposeKind) messageComposeKind.value = 'note';
+    if (messageFeedback) { messageFeedback.textContent = ''; messageFeedback.className = 'inline-feedback'; }
+    updateMessageCount();
+  }
+
+  function beginReply(message) {
+    const id = messageIDValue(message);
+    if (!id || !messageForm) return;
+    editingMessageID = null;
+    replyParentID = id;
+    messageTitle.textContent = 'Reply to ' + (message.ref || 'M-' + id);
+    messageSubmit.textContent = 'Post reply';
+    messageCancel.hidden = false;
+    messageContext.hidden = false;
+    messageContext.textContent = 'Thread context: ' + (message.body || '').slice(0, 180);
+    messageBody.value = '';
+    messageComposeKind.value = 'answer';
+    messageBody.focus();
+  }
+
+  function beginEdit(message) {
+    const id = messageIDValue(message);
+    if (!id || !messageForm) return;
+    editingMessageID = id;
+    replyParentID = null;
+    messageTitle.textContent = 'Edit ' + (message.ref || 'M-' + id);
+    messageSubmit.textContent = 'Save revision';
+    messageCancel.hidden = false;
+    messageContext.hidden = false;
+    messageContext.textContent = 'Editing creates an immutable revision; the original remains in history.';
+    messageBody.value = message.body || '';
+    messageComposeKind.value = message.kind || 'note';
+    messageTags.value = message.tags || '';
+    messageLink.value = message.link || '';
+    messageBody.focus();
+    updateMessageCount();
+  }
+
+  function updateMessageCount() {
+    if (!messageCount || !messageBody) return;
+    const length = Array.from(messageBody.value || '').length;
+    messageCount.textContent = length + ' / ' + MESSAGE_MAX;
+    messageCount.classList.toggle('over', length > MESSAGE_MAX);
+  }
+
+  function renderMessageBody(parent, message) {
+    const body = document.createElement('div');
+    body.className = 'message-body';
+    if (!message.snippet) {
+      body.textContent = message.body || '';
+      parent.appendChild(body);
+      return;
     }
-    return out;
+    const snippet = String(message.snippet);
+    const marker = /<mark>([\s\S]*?)<\/mark>/g;
+    let cursor = 0;
+    let match;
+    while ((match = marker.exec(snippet)) !== null) {
+      if (match.index > cursor) body.appendChild(document.createTextNode(snippet.slice(cursor, match.index)));
+      const highlight = document.createElement('mark');
+      highlight.textContent = match[1];
+      body.appendChild(highlight);
+      cursor = marker.lastIndex;
+    }
+    if (cursor < snippet.length) body.appendChild(document.createTextNode(snippet.slice(cursor)));
+    parent.appendChild(body);
+  }
+
+  function renderMessageCard(message, depth, children, parent) {
+    const id = messageIDValue(message);
+    const item = document.createElement('article');
+    const safeKind = /^[a-z]+$/.test(String(message.kind || 'note')) ? message.kind : 'note';
+    item.className = 'message-item kind-' + safeKind;
+    item.style.marginLeft = Math.min(depth, 8) * 14 + 'px';
+    item.dataset.messageId = id;
+
+    const meta = document.createElement('div');
+    meta.className = 'message-meta';
+    const kindTag = document.createElement('span');
+    kindTag.className = 'message-kind-tag';
+    kindTag.textContent = message.kind || 'note';
+    const author = document.createElement('span');
+    author.textContent = (message.author || 'anon') + ' · ' + (message.ref || 'M-' + id);
+    const revision = document.createElement('span');
+    revision.textContent = 'r' + (message.revision || 1);
+    const timestamp = document.createElement('time');
+    timestamp.dateTime = message.updated_at || message.created_at || '';
+    timestamp.textContent = (message.updated_at || message.created_at || '').replace('T', ' ').replace('Z', '');
+    meta.append(kindTag, author, revision, timestamp);
+    item.appendChild(meta);
+    renderMessageBody(item, message);
+
+    if (message.link) {
+      const link = document.createElement('a');
+      link.className = 'message-link';
+      link.href = message.link;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = message.link;
+      item.appendChild(link);
+    }
+    if (message.tags) {
+      const tags = document.createElement('div');
+      tags.className = 'message-tags';
+      tags.textContent = 'tags: ' + message.tags;
+      item.appendChild(tags);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'message-actions';
+    const reply = document.createElement('button');
+    reply.type = 'button';
+    reply.textContent = 'Reply';
+    reply.addEventListener('click', () => beginReply(message));
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.textContent = 'Edit';
+    edit.addEventListener('click', () => beginEdit(message));
+    const historyButton = document.createElement('button');
+    historyButton.type = 'button';
+    historyButton.textContent = 'Revisions';
+    const history = document.createElement('div');
+    history.className = 'message-revisions';
+    history.hidden = true;
+    historyButton.addEventListener('click', async () => {
+      history.hidden = !history.hidden;
+      if (history.hidden || history.dataset.loaded === 'true') return;
+      history.textContent = 'Loading revisions…';
+      try {
+        const data = await request(messagePath(messagesProjectID, id, 'revisions'));
+        history.replaceChildren();
+        for (const revisionItem of data.items || []) {
+          const row = document.createElement('div');
+          row.className = 'message-revision';
+          const label = document.createElement('strong');
+          label.textContent = 'r' + revisionItem.revision + ' · ' + (revisionItem.edited_by || 'created');
+          const text = document.createElement('div');
+          text.className = 'message-revision-body';
+          text.textContent = revisionItem.body || '';
+          row.append(label, text);
+          history.appendChild(row);
+        }
+        if (!history.children.length) history.textContent = 'No revision history.';
+        history.dataset.loaded = 'true';
+      } catch (error) {
+        console.error('Trail of Thought revision loading failed', error);
+        history.textContent = 'Could not load revisions: ' + error.message;
+      }
+    });
+    const pinButton = document.createElement('button');
+    pinButton.type = 'button';
+    pinButton.className = 'message-pin';
+    const updatePinLabel = () => { pinButton.textContent = message.pinned ? 'Unpin' : 'Pin'; };
+    updatePinLabel();
+    pinButton.addEventListener('click', async () => {
+      pinButton.disabled = true;
+      try {
+        const updated = await request(messagePath(messagesProjectID, id, 'pin'), { method: 'POST', body: JSON.stringify({ pinned: !message.pinned }) });
+        message.pinned = Boolean(updated.pinned);
+        updatePinLabel();
+        await loadMessages();
+      } catch (error) {
+        console.error('Trail of Thought pin mutation failed', error);
+        pinButton.textContent = 'Pin failed';
+      } finally {
+        pinButton.disabled = false;
+      }
+    });
+    const contextButton = document.createElement('button');
+    contextButton.type = 'button';
+    contextButton.textContent = 'Context';
+    const context = document.createElement('div');
+    context.className = 'message-context';
+    context.hidden = true;
+    contextButton.addEventListener('click', async () => {
+      context.hidden = !context.hidden;
+      if (context.hidden || context.dataset.loaded === 'true') return;
+      context.textContent = 'Hydrating related context…';
+      try {
+        const data = await request(messagePath(messagesProjectID, id, 'context') + '?thread_limit=12&related_limit=8&revision_limit=4');
+        context.replaceChildren();
+        const heading = document.createElement('strong');
+        heading.textContent = 'Context · ' + (data.related_mode || 'fts') + ' · ' + (data.related_query || 'no related query');
+        context.appendChild(heading);
+        const stats = document.createElement('div');
+        stats.className = 'message-context-stats';
+        stats.textContent = 'thread ' + (data.thread || []).length + (data.thread_truncated ? '+' : '') + ' · related ' + (data.related || []).length + (data.related_truncated ? '+' : '') + ' · revisions ' + (data.revisions || []).length + (data.revisions_truncated ? '+' : '');
+        context.appendChild(stats);
+        const related = data.related || [];
+        if (related.length) {
+          const relatedHeading = document.createElement('div');
+          relatedHeading.className = 'message-context-label';
+          relatedHeading.textContent = 'Related memory';
+          context.appendChild(relatedHeading);
+          for (const hit of related) {
+            const row = document.createElement('div');
+            row.className = 'message-context-row';
+            const ref = document.createElement('strong');
+            ref.textContent = hit.ref || 'M-' + messageIDValue(hit);
+            const score = document.createElement('span');
+            score.textContent = Number.isFinite(hit.semantic_score) && hit.semantic_score > 0 ? ' · ' + hit.semantic_score.toFixed(3) : '';
+            const text = document.createElement('span');
+            text.textContent = ' · ' + (hit.body || '');
+            row.append(ref, score, text);
+            context.appendChild(row);
+          }
+        } else {
+          const empty = document.createElement('div');
+          empty.className = 'message-context-empty';
+          empty.textContent = 'No related memory found.';
+          context.appendChild(empty);
+        }
+        if (data.thread_truncated || data.related_truncated || data.revisions_truncated) {
+          const truncated = document.createElement('div');
+          truncated.className = 'message-context-truncated';
+          truncated.textContent = 'Bundle bounded; use the CLI/API with deliberate limits for more.';
+          context.appendChild(truncated);
+        }
+        context.dataset.loaded = 'true';
+      } catch (error) {
+        console.error('Trail of Thought context hydration failed', error);
+        context.textContent = 'Could not hydrate context: ' + error.message;
+      }
+    });
+    actions.append(reply, edit, historyButton, contextButton, pinButton);
+    item.append(actions, history, context);
+    parent.appendChild(item);
+    for (const child of children.get(id) || []) renderMessageCard(child, depth + 1, children, parent);
+  }
+
+  function renderMessages(items) {
+    messagesList.replaceChildren();
+    const children = new Map();
+    const roots = [];
+    const known = new Set(items.map(messageIDValue));
+    for (const messageItem of items) {
+      const parentID = Number(messageItem.parent_message_id) || 0;
+      if (parentID && known.has(parentID)) {
+        if (!children.has(parentID)) children.set(parentID, []);
+        children.get(parentID).push(messageItem);
+      } else {
+        roots.push(messageItem);
+      }
+    }
+    const chronological = (left, right) => String(left.created_at || '').localeCompare(String(right.created_at || '')) || messageIDValue(left) - messageIDValue(right);
+    roots.sort((left, right) => String(right.updated_at || right.created_at || '').localeCompare(String(left.updated_at || left.created_at || '')) || messageIDValue(right) - messageIDValue(left));
+    children.forEach(list => list.sort(chronological));
+    for (const root of roots) renderMessageCard(root, 0, children, messagesList);
   }
 
   async function loadMessageProjects() {
     if (!messagesList) return;
     try {
-      const data = await request('/api/v1/projects');
-      const items = (data && data.items) || [];
+      const data = await request(api);
+      const items = data.items || [];
+      if (messagesProjectSelect) {
+        messagesProjectSelect.replaceChildren();
+        for (const project of items) {
+          const option = document.createElement('option');
+          option.value = project.project_id;
+          option.textContent = project.item_address + ' · ' + project.project_name;
+          messagesProjectSelect.appendChild(option);
+        }
+      }
       if (!items.length) {
+        messagesProjectID = null;
         messagesProjectLabel.textContent = 'No projects yet';
         messagesList.className = 'messages-list empty';
-        messagesList.textContent = 'Create a project to start a message board.';
+        messagesList.textContent = 'Create a project to start a Trail of Thought board.';
         return;
       }
-      // Pick the most recent project (project_id) so the panel always
-      // shows something on load. Users can refine via a future picker.
-      const target = items[0];
-      messagesProjectID = target.project_id;
-      messagesProjectLabel.textContent = target.item_address + ' · ' + target.project_name;
+      const selected = items.find(item => item.project_id === messagesProjectID) || items[0];
+      messagesProjectID = selected.project_id;
+      if (messagesProjectSelect) messagesProjectSelect.value = messagesProjectID;
+      messagesProjectLabel.textContent = selected.item_address + ' · ' + selected.project_name;
       await loadMessages();
-    } catch (err) {
+    } catch (error) {
+      console.error('Trail of Thought project loading failed', error);
       messagesList.className = 'messages-list empty';
-      messagesList.textContent = 'Could not load projects: ' + err.message;
+      messagesList.textContent = 'Could not load projects: ' + error.message;
     }
   }
 
   async function loadMessages() {
     if (!messagesList || !messagesProjectID) return;
+    const token = ++messagesLoadToken;
     const q = (messagesSearch && messagesSearch.value || '').trim();
     const kind = (messagesKind && messagesKind.value || '').trim();
     messagesList.className = 'messages-list';
@@ -1783,75 +2115,81 @@
       let items = [];
       if (q) {
         const params = new URLSearchParams({ q: q, limit: '50' });
-        const data = await request('/api/v1/projects/' + encodeURIComponent(messagesProjectID) + '/messages/search?' + params.toString());
+        const data = await request(messagePath(messagesProjectID, 'search') + '?' + params.toString());
         items = (data && data.items) || [];
       } else {
-        const params = new URLSearchParams({ limit: '50' });
+        const params = new URLSearchParams({ limit: '100' });
         if (kind) params.set('kind', kind);
-        const data = await request('/api/v1/projects/' + encodeURIComponent(messagesProjectID) + '/messages?' + params.toString());
+        const data = await request(api + '/' + encodeURIComponent(messagesProjectID) + '/messages?' + params.toString());
         items = (data && data.items) || [];
       }
+      if (token !== messagesLoadToken) return;
+      if (q && kind) items = items.filter(item => item.kind === kind);
+      messageItems = items;
       if (!items.length) {
         messagesList.className = 'messages-list empty';
-        messagesList.textContent = q
-          ? 'No matches for "' + q + '".'
-          : (kind ? 'No ' + kind + ' messages yet.' : 'No messages yet — record one with `tk msg ' + messagesProjectID + ' add <body>`.');
+        messagesList.textContent = q ? 'No matches for "' + q + '".' : (kind ? 'No ' + kind + ' messages yet.' : 'No messages yet — post the first durable thought.');
         return;
       }
-      messagesList.className = 'messages-list';
-      messagesList.replaceChildren();
-      for (const m of items) {
-        const item = document.createElement('div');
-        item.className = 'message-item kind-' + escapeHTML(m.kind || 'note');
-        const meta = document.createElement('div');
-        meta.className = 'message-meta';
-        const kindTag = document.createElement('span');
-        kindTag.className = 'message-kind-tag';
-        kindTag.textContent = m.kind || 'note';
-        meta.appendChild(kindTag);
-        const author = document.createElement('span');
-        author.textContent = (m.author || 'anon') + ' · M-' + m.message_id;
-        meta.appendChild(author);
-        const ts = document.createElement('span');
-        ts.textContent = (m.created_at || '').replace('T', ' ').replace('Z', '');
-        meta.appendChild(ts);
-        item.appendChild(meta);
-        const body = document.createElement('div');
-        body.className = 'message-body';
-        body.innerHTML = m.snippet ? renderSnippet(m.snippet) : escapeHTML(m.body || '');
-        item.appendChild(body);
-        if (m.link) {
-          const link = document.createElement('a');
-          link.className = 'message-link';
-          link.href = m.link;
-          link.textContent = m.link;
-          link.target = '_blank';
-          link.rel = 'noopener noreferrer';
-          item.appendChild(link);
-        }
-        if (m.tags) {
-          const tags = document.createElement('div');
-          tags.className = 'message-tags';
-          tags.textContent = 'tags: ' + m.tags;
-          item.appendChild(tags);
-        }
-        messagesList.appendChild(item);
-      }
-    } catch (err) {
+      renderMessages(items);
+    } catch (error) {
+      console.error('Trail of Thought message loading failed', error);
+      if (token !== messagesLoadToken) return;
       messagesList.className = 'messages-list empty';
-      messagesList.textContent = 'Could not load messages: ' + err.message;
+      messagesList.textContent = 'Could not load messages: ' + error.message;
     }
   }
 
-  if (messagesSearch) {
-    messagesSearch.addEventListener('input', () => {
-      clearTimeout(messagesDebounce);
-      messagesDebounce = window.setTimeout(loadMessages, 200);
-    });
-  }
-  if (messagesKind) {
-    messagesKind.addEventListener('change', loadMessages);
-  }
+  if (messageBody) messageBody.addEventListener('input', updateMessageCount);
+  if (messageCancel) messageCancel.addEventListener('click', resetMessageComposer);
+  if (messagesProjectSelect) messagesProjectSelect.addEventListener('change', () => {
+    messagesProjectID = messagesProjectSelect.value;
+    const option = messagesProjectSelect.selectedOptions[0];
+    messagesProjectLabel.textContent = option ? option.textContent : 'Project board';
+    resetMessageComposer();
+    loadMessages();
+  });
+  if (messageForm) messageForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (!messagesProjectID) return;
+    const body = messageBody.value.trim();
+    if (!body || Array.from(body).length > MESSAGE_MAX) {
+      messageFeedback.className = 'inline-feedback error';
+      messageFeedback.textContent = 'Memory posts must contain 1–' + MESSAGE_MAX + ' characters.';
+      return;
+    }
+    messageSubmit.disabled = true;
+    messageFeedback.className = 'inline-feedback';
+    messageFeedback.textContent = editingMessageID ? 'Saving revision…' : 'Posting…';
+    const payload = {
+      kind: messageComposeKind.value,
+      author: agentID,
+      body: body,
+      tags: messageTags.value.trim(),
+      link: messageLink.value.trim()
+    };
+    if (replyParentID) payload.parent_message_id = replyParentID;
+    try {
+      if (editingMessageID) {
+        await request(messagePath(messagesProjectID, editingMessageID), { method: 'PATCH', body: JSON.stringify(payload) });
+      } else {
+        await request(api + '/' + encodeURIComponent(messagesProjectID) + '/messages', { method: 'POST', body: JSON.stringify(payload) });
+      }
+      resetMessageComposer();
+      await loadMessages();
+    } catch (error) {
+      console.error('Trail of Thought message mutation failed', error);
+      messageFeedback.className = 'inline-feedback error';
+      messageFeedback.textContent = error.message;
+    } finally {
+      messageSubmit.disabled = false;
+    }
+  });
+  if (messagesSearch) messagesSearch.addEventListener('input', () => {
+    clearTimeout(messagesDebounce);
+    messagesDebounce = window.setTimeout(loadMessages, 220);
+  });
+  if (messagesKind) messagesKind.addEventListener('change', loadMessages);
   loadMessageProjects();
 
 })();

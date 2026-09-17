@@ -9,8 +9,7 @@ and why.
 
 ## 1. Prerequisites
 
-- A clean TimeKeeper clone at the desired path (e.g.
-  `D:\dev\codebase\dev\TimeKeeper` or `/mnt/d/dev/codebase/dev/TimeKeeper`)
+- A clean TimeKeeper clone at the desired path
 - Git (the installer verifies the checkout origin and HEAD)
 - Go available on PATH (or set `TIMEKEEPER_GO=/path/to/go` to override)
 - Administrator / root for the friendly-URL hosts-file write and the
@@ -19,11 +18,19 @@ and why.
 
 ## 2. Run the installer
 
-From the repo root:
+From any working directory, execute the installer inside the checkout's
+`install/` directory:
 
 ```text
-./install.sh
+Linux/WSL:  install/install.sh
+Windows:   install\\install.bat
 ```
+
+These are the canonical one-file entrypoints. They resolve the repository
+relative to their own location, build or refresh the local app, install the
+OS service, and perform the post-install setup by default. The root
+`install.sh` and `install.bat` remain compatibility launchers for existing
+bootstrap checks.
 
 What it does, in order:
 
@@ -73,8 +80,13 @@ systemd user-scope on Linux.
 ./.timekeeper/app/bin/tk service install
 ```
 
-This dispatches to `scripts/service/service-manager.sh` (or
-`scripts/service/service-install.bat` from a Windows shell), which:
+This dispatches to the repo-relative installers:
+
+- Windows: `install/add-service.bat` (bundled `scripts/service/nssm/win64/nssm.exe`)
+- Linux: `install/add-service.sh` (systemd user service via `scripts/service/service-manager.sh`)
+- Remove: `install/remove-service.bat` or `install/remove-service.sh`
+
+These wrappers resolve their own repository path from the script location; no developer machine path is hardcoded. The implementation:
 
 - **Probes the default proxy port (127.0.0.1:80) at install time.**
   On native Linux, if the port is in use, the install prompts for
