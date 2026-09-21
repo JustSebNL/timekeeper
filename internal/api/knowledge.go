@@ -13,14 +13,14 @@ import (
 	"strings"
 
 	"github.com/JustSebNL/timekeeper/internal/knowledge"
-	"github.com/JustSebNL/timekeeper/internal/knowledge/obsidian"
 	"github.com/JustSebNL/timekeeper/internal/model"
 	"github.com/JustSebNL/timekeeper/internal/store"
 )
 
 // KnowledgeService is deliberately narrower than the rest of the API. The
-// Obsidian provider is optional; a nil service produces a typed unavailable
-// response rather than preventing TimeKeeper from starting.
+// knowledge provider is supplied by a plugin; a nil service produces a
+// typed unavailable response rather than preventing TimeKeeper from
+// starting. Core never names a concrete plugin here.
 type KnowledgeService interface {
 	Status(context.Context) (knowledge.ProviderStatus, error)
 	Search(context.Context, knowledge.KnowledgeQuery) ([]knowledge.KnowledgeResult, error)
@@ -159,8 +159,7 @@ func promoteProjectMessage(database *store.Store, service KnowledgeService) http
 		item, err := service.Create(r.Context(), candidate, promotionKey)
 		if err != nil {
 			status := model.KnowledgePromotionFailedPermanent
-			var providerErr *obsidian.ProviderError
-			if errors.As(err, &providerErr) && providerErr.Retryable {
+			if knowledge.IsRetryable(err) {
 				status = model.KnowledgePromotionFailedRetryable
 			}
 			_, _ = database.UpdateKnowledgeLink(r.Context(), link.LinkID, status, "", safeKnowledgeError(err))
@@ -191,17 +190,12 @@ func sensitiveKnowledgeContent(content string) bool {
 }
 
 func safeKnowledgeError(err error) string {
-	var providerErr *obsidian.ProviderError
-	if errors.As(err, &providerErr) {
-		return providerErr.Code
-	}
-	return "provider request failed"
+	return knowledge.ErrorCode(err)
 }
 
 func writeKnowledgeError(w http.ResponseWriter, err error) {
-	var providerErr *obsidian.ProviderError
-	if errors.As(err, &providerErr) {
-		status := http.StatusBadGateway
+	if providerErr := knowledge.AsProviderError(err); providerErr != nil {
+		status := knowledge.HTTPStatus(err)
 		if providerErr.Status == http.StatusNotFound {
 			status = http.StatusNotFound
 		}

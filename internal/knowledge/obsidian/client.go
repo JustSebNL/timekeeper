@@ -247,19 +247,10 @@ func (c *Client) doJSON(ctx context.Context, descriptor EndpointDescriptor, toke
 
 // ProviderError deliberately exposes only the typed provider envelope, never
 // the endpoint, token reference, filesystem path, or raw response body.
-type ProviderError struct {
-	Code      string
-	Message   string
-	Retryable bool
-	Status    int
-}
-
-func (e *ProviderError) Error() string {
-	if e == nil {
-		return "knowledge provider error"
-	}
-	return e.Message
-}
+//
+// It aliases the provider-agnostic knowledge.ProviderError so the HTTP
+// layer can classify a failure without importing this plugin.
+type ProviderError = knowledge.ProviderError
 
 func parseProviderError(status int, body []byte) error {
 	var envelope struct {

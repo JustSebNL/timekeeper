@@ -22,8 +22,9 @@ import (
 	"github.com/JustSebNL/timekeeper/internal/guardian"
 	"github.com/JustSebNL/timekeeper/internal/history"
 	"github.com/JustSebNL/timekeeper/internal/knowledge"
-	"github.com/JustSebNL/timekeeper/internal/knowledge/obsidian"
 	"github.com/JustSebNL/timekeeper/internal/logging"
+	"github.com/JustSebNL/timekeeper/internal/plugin"
+	obsidianplugin "github.com/JustSebNL/timekeeper/internal/plugin/knowledgeobsidian"
 	"github.com/JustSebNL/timekeeper/internal/store"
 )
 
@@ -294,9 +295,23 @@ func main() {
 		}
 	}
 	var knowledgeService api.KnowledgeService
-	if strings.TrimSpace(*obsidianDescriptor) != "" {
-		knowledgeService = knowledge.NewService(obsidian.NewClient(*obsidianDescriptor), 5*time.Second)
-		logger.Info("Obsidian Memory Galaxy provider configured")
+	if descriptor := strings.TrimSpace(*obsidianDescriptor); descriptor != "" {
+		// Resolve the provider through the plugin registry so core never
+		// names a concrete plugin. An unavailable plugin degrades to
+		// "unavailable" instead of preventing startup.
+		instance, err := plugin.Build(plugin.KindKnowledge, obsidianplugin.ID, map[string]string{
+			obsidianplugin.DescriptorKey: descriptor,
+		})
+		if err != nil {
+			logger.Warn("knowledge plugin unavailable", slog.Any("err", err))
+		} else if provider, ok := instance.(knowledge.KnowledgeProvider); ok {
+			knowledgeService = knowledge.NewService(provider, obsidianplugin.DefaultTimeout)
+			logger.Info("knowledge plugin configured",
+				slog.String("plugin", obsidianplugin.ID),
+				slog.String("provider", knowledge.ProviderNameObsidian))
+		} else {
+			logger.Warn("knowledge plugin returned an unexpected type", slog.String("plugin", obsidianplugin.ID))
+		}
 	}
 	var historyService api.FileHistoryService
 	if strings.TrimSpace(*historyRoot) != "" {

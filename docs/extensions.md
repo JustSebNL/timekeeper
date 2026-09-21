@@ -5,6 +5,8 @@ extensions**. Optional functionality is a Store package; something
 belongs in Core only when TimeKeeper no longer works normally without
 it.
 
+How a plugin is built and wired: [plugin-architecture.md](plugin-architecture.md).
+
 ## What is an extension
 
 ```

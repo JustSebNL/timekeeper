@@ -94,4 +94,10 @@ that adds `{"owned": true}` never reaches business logic.
 
 ## Authority
 
-The client requests. The server decides. See `docs/auth-protocol.md`.
+The client requests. The server decides. See [auth-protocol.md](auth-protocol.md).
+
+## Installing what you bought
+
+A Store package becomes a plugin through the registry seam; core is not
+edited to install one. See [plugin-architecture.md](plugin-architecture.md)
+and [package-format.md](package-format.md).
