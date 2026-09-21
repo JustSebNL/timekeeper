@@ -11,6 +11,9 @@ This document is the contract for writing one.
 Core defines the seam.  Plugins implement it.  Core never imports a plugin.
 ```
 
+The process-level boundary between the two boxes is
+[two-box-architecture.md](two-box-architecture.md).
+
 A package under `internal/api`, `internal/model`, `internal/store` or
 `internal/cli` must never import a plugin package. If you find yourself
 adding a plugin import to one of those, the seam is being bypassed.

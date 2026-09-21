@@ -6,6 +6,7 @@ belongs in Core only when TimeKeeper no longer works normally without
 it.
 
 How a plugin is built and wired: [plugin-architecture.md](plugin-architecture.md).
+How the two boxes talk: [two-box-architecture.md](two-box-architecture.md).
 
 ## What is an extension
 
