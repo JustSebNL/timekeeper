@@ -29,6 +29,9 @@ type RuntimeStatus struct {
 	// RecoveryPolicy is the fixed, allowlist-described recovery behaviour the
 	// local receiver performs. It is evidence, not an executable capability.
 	RecoveryPolicy string `json:"recovery_policy,omitempty"`
+	// PluginStoreRoot enables the optional read-only plugin registry. Empty
+	// disables plugin-store routes rather than exposing an implicit directory.
+	PluginStoreRoot string `json:"plugin_store_root,omitempty"`
 }
 
 // New returns the API with no process-local recovery worker assumed.
@@ -39,6 +42,20 @@ func New(database *store.Store) http.Handler {
 // NewWithRuntime exposes process-local runtime configuration without coupling the
 // Store to server flags or a framework-specific process supervisor.
 func NewWithRuntime(database *store.Store, runtime RuntimeStatus) http.Handler {
+	return NewWithHistory(database, runtime, nil, nil)
+}
+
+// NewWithKnowledge wires the optional provider-neutral Knowledge API. A nil
+// service keeps the ordinary TimeKeeper API fully usable and reports Galaxy
+// requests as typed provider_unavailable responses.
+func NewWithKnowledge(database *store.Store, runtime RuntimeStatus, knowledgeService KnowledgeService) http.Handler {
+	return NewWithHistory(database, runtime, knowledgeService, nil)
+}
+
+// NewWithHistory wires the optional tracked-file versioning API. A nil history
+// service keeps file routes explicitly unavailable rather than granting the
+// server implicit filesystem access.
+func NewWithHistory(database *store.Store, runtime RuntimeStatus, knowledgeService KnowledgeService, fileHistoryService FileHistoryService) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health)
 	mux.HandleFunc("GET /api/v1/connection-info", func(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +132,9 @@ func NewWithRuntime(database *store.Store, runtime RuntimeStatus) http.Handler {
 	mux.HandleFunc("GET /api/v1/sprints/{sprintID}/extensions", listSprintTimeExtensions(database))
 	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/extensions", addSprintTimeExtension(database))
 	mux.HandleFunc("GET /api/v1/sprints/{sprintID}/time-entries", listTimeEntries(database))
+	knowledgeRoutes(mux, knowledgeService, database)
+	fileHistoryRoutes(mux, fileHistoryService)
+	pluginStoreRoutes(mux, runtime.PluginStoreRoot)
 	return logging.NewRequestLogger().Wrap(withReqCtx(recoverJSON(requireJSONForMutations(mux))))
 }
 
@@ -183,6 +203,18 @@ func apiHelp(w http.ResponseWriter, _ *http.Request) {
 		{"method": "POST", "path": "/api/v1/llm-pipelines", "desc": "Create an LLM pipeline"},
 		{"method": "GET", "path": "/api/v1/pulse", "desc": "Local attention items needing follow-up"},
 		{"method": "GET", "path": "/api/v1/connection-info", "desc": "Discover friendly URLs using the running listener port"},
+		{"method": "GET", "path": "/api/v1/knowledge/status", "desc": "Memory Galaxy provider status"},
+		{"method": "POST", "path": "/api/v1/knowledge/search", "desc": "Search bounded cross-project Galaxy knowledge"},
+		{"method": "GET", "path": "/api/v1/knowledge/{id}", "desc": "Retrieve one Galaxy knowledge item"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/messages/{messageID}/promote", "desc": "Promote a redaction-verified Trail entry to Galaxy"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/files", "desc": "List tracked project files"},
+		{"method": "GET", "path": "/api/v1/files/{fileID}", "desc": "Read tracked file metadata"},
+		{"method": "GET", "path": "/api/v1/files/{fileID}/versions", "desc": "List immutable file versions"},
+		{"method": "GET", "path": "/api/v1/files/{fileID}/versions/{versionID}", "desc": "Read a historical file version"},
+		{"method": "POST", "path": "/api/v1/files/{fileID}/versions", "desc": "Save editor content as a new file version"},
+		{"method": "POST", "path": "/api/v1/files/{fileID}/snapshots", "desc": "Capture a code_start or code_end change boundary"},
+		{"method": "GET", "path": "/api/v1/files/{fileID}/compare", "desc": "Compare two file versions"},
+		{"method": "POST", "path": "/api/v1/files/{fileID}/restore", "desc": "Restore a historical version as a new version"},
 		{"method": "GET", "path": "/api/v1/guardian/status", "desc": "Guardian runtime status + registered callbacks"},
 		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/supervised-launches", "desc": "Atomically claim a bounded supervised run"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/coding-outcomes", "desc": "Record an immutable evidence-linked coding review"},

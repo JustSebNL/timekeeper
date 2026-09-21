@@ -167,9 +167,35 @@
           </form>
           <div id="messages-list" class="messages-list empty">Select a project to load its message board.</div>
         </section>
+
+        <section class="panel panel-file-history" id="file-history-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Tracked files</p><h2>File history &amp; editor</h2></div><span class="panel-link" id="file-history-status">History disabled</span></div>
+          <p class="panel-description">Open a tracked file, edit it safely, compare versions, or restore an earlier version without erasing history.</p>
+          <form id="file-history-load-form" class="file-history-toolbar">
+            <input id="file-history-id" class="form-control" required placeholder="File ID, e.g. F-10001" aria-label="Tracked file ID">
+            <button class="btn btn-primary" type="submit">Load file</button>
+          </form>
+          <div id="file-history-meta" class="file-history-meta empty">Enter a tracked file ID.</div>
+          <div class="file-history-workspace">
+            <div id="file-editor-host" class="file-editor-host" aria-label="Code editor"></div>
+            <textarea id="file-editor-fallback" class="file-editor-fallback" hidden aria-label="Code editor fallback"></textarea>
+          </div>
+          <div class="file-history-actions">
+            <button id="file-history-save" class="btn btn-primary" type="button" disabled>Save new version</button>
+            <select id="file-history-version" aria-label="Restore version" disabled></select>
+            <button id="file-history-restore" class="btn btn-outline-secondary" type="button" disabled>Restore selected</button>
+            <select id="file-history-compare-from" aria-label="Compare from version" disabled></select>
+            <select id="file-history-compare-to" aria-label="Compare to version" disabled></select>
+            <button id="file-history-compare" class="btn btn-outline-secondary" type="button" disabled>Compare</button>
+          </div>
+          <pre id="file-history-diff" class="file-history-diff" hidden></pre>
+          <div id="file-history-feedback" class="inline-feedback" role="status"></div>
+        </section>
       </div>
     </main>
   </div>
+  <script src="/vendor/codemirror-editor.js"></script>
   <script src="/timekeeper.js"></script>
+  <script src="/file-editor.js"></script>
 </body>
 </html>

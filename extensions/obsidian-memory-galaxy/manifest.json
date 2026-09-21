@@ -1,0 +1,10 @@
+{
+  "id": "timekeeper-memory-galaxy",
+  "name": "TimeKeeper Memory Galaxy",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "A local, authenticated bridge between TimeKeeper and an Obsidian Memory Galaxy vault.",
+  "author": "JustSebNL",
+  "authorUrl": "https://github.com/JustSebNL",
+  "isDesktopOnly": true
+}

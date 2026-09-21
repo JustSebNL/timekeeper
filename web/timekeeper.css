@@ -182,8 +182,18 @@ button.danger { border: 1px solid var(--red); background: transparent; color: va
 .message-actions button { border: 1px solid var(--line-soft); border-radius: 4px; padding: 3px 6px; background: transparent; color: var(--muted-strong); cursor: pointer; font-size: 8px; }
 .message-actions button:hover { color: var(--ink); border-color: var(--blue); }
 .message-pin { color: var(--amber) !important; }
-.message-pin:disabled { opacity: .55; cursor: wait; }
-.message-revisions { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: 8px; }
+.message-promote { color: var(--purple) !important; }
+.file-history-toolbar { display:flex; gap:8px; align-items:center; margin:8px 0; }
+.file-history-toolbar input { flex:1; }
+.file-history-meta { margin:6px 0; color:var(--muted); font-size:10px; }
+.file-history-workspace { min-height:280px; border:1px solid var(--line-soft); border-radius:6px; overflow:hidden; background:#1e1e1e; }
+.file-editor-host { min-height:280px; }
+.file-editor-fallback { width:100%; min-height:280px; box-sizing:border-box; resize:vertical; border:0; padding:12px; background:#1e1e1e; color:#d4d4d4; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.file-history-actions { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+.file-history-actions select { min-width:130px; padding:5px; border:1px solid var(--line-soft); border-radius:4px; background:var(--input); color:inherit; font-size:9px; }
+.file-history-diff { max-height:260px; overflow:auto; margin-top:8px; padding:10px; border:1px solid var(--line-soft); border-radius:5px; background:var(--input); color:var(--ink); white-space:pre-wrap; font:10px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.message-pin:disabled, .message-promote:disabled { opacity:.55; cursor:wait; }
+.message-revisions { margin-top:6px; padding-top:5px; border-top:1px solid var(--line-soft); color:var(--muted); font-size:8px; }
 .message-revision { padding: 3px 0; }
 .message-revision-body { color: var(--ink); white-space: pre-wrap; }
 .message-context { display: grid; gap: 4px; margin-top: 6px; padding: 7px; border-top: 1px solid var(--line-soft); border-left: 2px solid var(--purple); color: var(--muted); font-size: 8px; line-height: 1.45; }

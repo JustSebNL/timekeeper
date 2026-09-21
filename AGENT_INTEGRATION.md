@@ -51,7 +51,39 @@ X-LLM-Model: supplied only when known
 12. Persist returned public IDs and Item Addresses in the framework's own task context.
 13. Treat every response as the source of truth; do not derive IDs or reconstruct history from chat.
 
-## Trail of Thought Board
+## Ergonomic agent-facing entrypoint
+
+The low-level HTTP API remains available for framework integrations, but agents
+should not have to manually construct a long request containing project,
+category, task, and sprint IDs for ordinary work.
+
+The intended harness-level contract is:
+
+```bash
+tk log --project Suck-It-Up "Fix crash diagnostics upload"
+```
+
+When a project is already bound to the current agent session, the project flag
+may be omitted:
+
+```bash
+tk log "Fix crash diagnostics upload"
+```
+
+The adapter resolves the project name to its stable ID, reads the candidate
+Categories and active Tasks, submits the bounded project context and work
+intent to Jev through the Shadowbox adapter, and receives a typed category
+choice with probabilities/confidence. The adapter then invokes the existing
+TimeKeeper API using the selected IDs. TimeKeeper remains responsible for
+validation, persistence, idempotency, and provenance.
+
+The adapter must include `create_new`, `none_of_the_above`, or `needs_review`
+when the candidate set may not contain a valid match. Low-confidence results
+must produce a clarification/review request rather than silently filing work
+in the nearest-looking Category. The raw `curl`/HTTP workflow remains the
+fallback for advanced clients; this command is the ergonomic front door. This
+is a target contract until the CLI and Jev adapter are implemented and tested.
+
 
 Use the Project Board for short-lived context that deserves long-term survival: reasoning checkpoints, discoveries, decisions, questions, answers, lessons, and source links. Bodies are capped at 1000 Unicode characters. Store only the compact `ref` (for example `M-42`) in the active context, then retrieve the post or complete thread when needed.
 

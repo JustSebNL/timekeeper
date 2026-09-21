@@ -1,0 +1,9 @@
+{
+  "name": "timekeeper-memory-galaxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TimeKeeper Obsidian Memory Galaxy plugin",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

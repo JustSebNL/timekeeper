@@ -39,3 +39,7 @@ NUL
 .env
 .idea/
 .vscode/
+/web/editor/node_modules/
+
+# Nested third-party clone (lives at /mnt/d/dev/codebase/dev/picoclaw)
+dev-ops/picoclaw/

@@ -20,6 +20,9 @@ import (
 
 	"github.com/JustSebNL/timekeeper/internal/api"
 	"github.com/JustSebNL/timekeeper/internal/guardian"
+	"github.com/JustSebNL/timekeeper/internal/history"
+	"github.com/JustSebNL/timekeeper/internal/knowledge"
+	"github.com/JustSebNL/timekeeper/internal/knowledge/obsidian"
 	"github.com/JustSebNL/timekeeper/internal/logging"
 	"github.com/JustSebNL/timekeeper/internal/store"
 )
@@ -154,6 +157,8 @@ Agent / Guardian
 
 Server (start the HTTP service)
   timekeeper -addr 127.0.0.1:1618 -db .timekeeper/timekeeper.db -ui web/index.html -keep-alive-interval 5m
+  -obsidian-descriptor <path>                   Optional authenticated Galaxy endpoint descriptor
+  -history-root <path>                           Optional tracked-file history root
 
 Run 'tk <command> --help' for details on a specific command.
 
@@ -213,6 +218,9 @@ func main() {
 	}
 	addr := flag.String("addr", "127.0.0.1:1618", "HTTP listen address")
 	proxyAddr := flag.String("proxy-addr", envOr("TIMEKEEPER_PROXY_ADDR", "127.0.0.1:80"), "reverse-proxy listen address for the friendly URLs (http://timekeeper.local/ and http://api.timekeeper.local/); empty to disable")
+	obsidianDescriptor := flag.String("obsidian-descriptor", envOr("TIMEKEEPER_OBSIDIAN_DESCRIPTOR", ""), "optional Obsidian Memory Galaxy endpoint descriptor path")
+	historyRoot := flag.String("history-root", envOr("TIMEKEEPER_HISTORY_ROOT", ""), "optional tracked-file history root; empty disables file history routes")
+	pluginStoreRoot := flag.String("plugin-store-root", envOr("TIMEKEEPER_PLUGIN_STORE_ROOT", ""), "optional plugin-store directory; empty disables plugin registry routes")
 	dbPath := flag.String("db", "timekeeper.db", "SQLite database path")
 	uiPath := flag.String("ui", ".timekeeper/web/index.html", "dashboard HTML path")
 	keepAliveInterval := flag.Duration("keep-alive-interval", 5*time.Minute, "local dashboard keep-alive interval; 0 disables it")
@@ -285,12 +293,27 @@ func main() {
 			defer proxyListener.Close()
 		}
 	}
-	apiHandler := api.NewWithRuntime(database, api.RuntimeStatus{
+	var knowledgeService api.KnowledgeService
+	if strings.TrimSpace(*obsidianDescriptor) != "" {
+		knowledgeService = knowledge.NewService(obsidian.NewClient(*obsidianDescriptor), 5*time.Second)
+		logger.Info("Obsidian Memory Galaxy provider configured")
+	}
+	var historyService api.FileHistoryService
+	if strings.TrimSpace(*historyRoot) != "" {
+		configuredHistory, historyErr := history.New(*historyRoot, database)
+		if historyErr != nil {
+			log.Fatalf("configure file history: %v", historyErr)
+		}
+		historyService = configuredHistory
+		logger.Info("tracked-file history configured", slog.String("root", *historyRoot))
+	}
+	apiHandler := api.NewWithHistory(database, api.RuntimeStatus{
 		PulseGuardianEnabled:         *pulseGuardianInterval > 0,
 		PulseGuardianIntervalSeconds: int64(pulseGuardianInterval.Seconds()),
 		RecoveryPolicy:               recoveryPolicy(),
 		FriendlyURLs:                 friendlyURLs(friendlyAddr),
-	})
+		PluginStoreRoot:              *pluginStoreRoot,
+	}, knowledgeService, historyService)
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiHandler)
 	mux.Handle("/health", apiHandler)

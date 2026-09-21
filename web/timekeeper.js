@@ -1989,9 +1989,32 @@
         pinButton.disabled = false;
       }
     });
+    const promote = document.createElement('button');
+    promote.type = 'button';
+    promote.className = 'message-promote';
+    promote.textContent = 'Promote to Galaxy';
+    promote.addEventListener('click', async () => {
+      if (!window.confirm('Promote this Trail entry to the cross-project Memory Galaxy? Confirm that it contains no credentials, private prompts, cookies, or unbounded logs.')) return;
+      promote.disabled = true;
+      promote.textContent = 'Promoting…';
+      try {
+        const result = await request(messagePath(messagesProjectID, id, 'promote'), {
+          method: 'POST',
+          body: JSON.stringify({ redaction_status: 'verified', type: 'knowledge', visibility: 'galaxy' })
+        });
+        promote.textContent = result && result.item && result.item.id ? '✓ ' + result.item.id : '✓ Galaxy';
+        promote.title = 'Promoted to the Memory Galaxy';
+      } catch (error) {
+        console.error('Trail of Thought promotion failed', error);
+        promote.textContent = 'Promote failed';
+        promote.disabled = false;
+      }
+    });
+
     const contextButton = document.createElement('button');
     contextButton.type = 'button';
     contextButton.textContent = 'Context';
+
     const context = document.createElement('div');
     context.className = 'message-context';
     context.hidden = true;
@@ -2045,7 +2068,7 @@
         context.textContent = 'Could not hydrate context: ' + error.message;
       }
     });
-    actions.append(reply, edit, historyButton, contextButton, pinButton);
+    actions.append(reply, edit, historyButton, contextButton, pinButton, promote);
     item.append(actions, history, context);
     parent.appendChild(item);
     for (const child of children.get(id) || []) renderMessageCard(child, depth + 1, children, parent);

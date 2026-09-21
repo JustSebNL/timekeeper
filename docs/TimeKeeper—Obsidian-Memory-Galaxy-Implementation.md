@@ -15,6 +15,7 @@ The Galaxy is a cross-project storage layer for:
 - decisions
 - lessons/failures
 - research/reference material
+- evidence-backed self-improvement across projects
 
 TimeKeeper's existing **Trail of Thought** remains project-local working memory.
 
@@ -36,9 +37,23 @@ Search / RAG / retrieval
 
 ## Design status
 
-This document is an implementation specification for a future integration. The
-Memory Galaxy is **not currently implemented** in TimeKeeper. Trail of Thought
-is the currently available project-local memory surface.
+This document is the implementation specification for the Memory Galaxy integration.
+Trail of Thought remains the currently available project-local memory surface.
+
+Obsidian is the canonical Memory Galaxy vault and editor. Backup providers may
+mirror encrypted snapshots of that vault, but they are not alternate live
+Galaxy stores and must never replace Obsidian as the canonical write target.
+
+### Implementation progress
+
+Phase 0/1 has started in TimeKeeper:
+
+- `internal/knowledge` defines the provider-neutral contract, bounded candidate/query validation, and call deadlines.
+- `internal/knowledge/obsidian` provides a descriptor-driven, numeric-loopback HTTP client with token-file authentication and typed errors.
+- `knowledge_links` persists explicit promotion mappings with idempotent promotion keys, nullable pending Galaxy IDs, status transitions, and duplicate-ID protection.
+- Focused tests cover the contract, endpoint validation, authenticated requests, migration, retries, and persistence.
+
+The plugin repository/API skeleton and TimeKeeper Knowledge read routes are now implemented and fixture-tested. The Obsidian plugin's production packaging/settings UX, Trail promotion, `knowledge_links` API mutations, full Markdown repository semantics, and live Obsidian process remain later implementation slices. Do not describe the Galaxy as fully available until those integration checks pass.
 
 ## Non-goals
 
@@ -393,6 +408,47 @@ always explicit. Sensitive material, credentials, cookies, signed URLs, raw
 transcripts, and arbitrary tool-output dumps must not be promoted. The UI
 should show a redaction and visibility preview before sending a Trail item to a
 cross-project `galaxy` item.
+
+---
+
+# 8.1 Self-improvement loop
+
+The Galaxy is the agent's long-term learning layer. It should let a later agent
+or later project retrieve verified knowledge that originated elsewhere without
+copying a project board or replaying an old conversation.
+
+The intended loop is:
+
+```text
+Observe outcome in a Project
+        ↓
+Record evidence and lesson on the project Trail
+        ↓
+Explicitly promote a reusable candidate
+        ↓
+Review, verify, and classify in the Galaxy Inbox
+        ↓
+Retrieve before related future work
+        ↓
+Apply the lesson and record whether it helped
+```
+
+Self-improvement means changing future decisions, planning, retrieval, and
+verification behavior from durable evidence. It does not mean silently
+rewriting model weights, persona rules, credentials, or source code. Any such
+change remains a separate reviewed engineering action.
+
+A useful self-improvement item should state:
+
+- the observed situation and source Project;
+- the evidence that made the lesson trustworthy;
+- the reusable rule, pattern, failure, skill, or harness guidance;
+- the boundary where the lesson should not be applied;
+- how a future agent can verify whether it helped.
+
+`review_status: verified` is a curation claim, not a model-quality guarantee.
+The agent should prefer verified Galaxy items, preserve provenance, and record
+new contradictory evidence rather than silently overwriting the old lesson.
 
 ---
 

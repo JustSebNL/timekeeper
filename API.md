@@ -32,6 +32,8 @@ GET  /api/v1/projects/{projectID}/messages
 POST /api/v1/projects/{projectID}/messages
 GET  /api/v1/projects/{projectID}/messages/search
 GET  /api/v1/projects/{projectID}/messages/{messageID}
+GET  /api/v1/knowledge/{id}
+POST /api/v1/projects/{projectID}/messages/{messageID}/promote
 PATCH /api/v1/projects/{projectID}/messages/{messageID}
 GET  /api/v1/projects/{projectID}/messages/{messageID}/thread
 GET  /api/v1/projects/{projectID}/messages/{messageID}/revisions
@@ -340,6 +342,49 @@ Content-Type: application/json
 {"items":[{"extension_id":2,"sprint_id":"SP-10004","duration_seconds":600,"reason":"Migration uncovered an additional compatibility case.","created_at":"2026-08-11T00:00:00Z"}]}
 ```
 
+## Memory Galaxy provider boundary
+
+The Obsidian Memory Galaxy integration is optional. TimeKeeper remains fully usable when Obsidian is absent or disconnected. Configure the server with an endpoint descriptor only when the Obsidian plugin is installed:
+
+```text
+timekeeper -obsidian-descriptor <path>
+# or set TIMEKEEPER_OBSIDIAN_DESCRIPTOR
+```
+
+The descriptor is re-read for each provider operation so a plugin restart or dynamically selected port can be observed. It must contain a numeric loopback HTTP `base_url`, the exact `timekeeper-knowledge/v1` protocol, `provider: obsidian`, a vault identity, and a relative or absolute `token_file` reference. The capability token is read from that separate file and is never stored in Galaxy Markdown.
+
+Provider routes are exposed through TimeKeeper:
+
+```text
+GET  /api/v1/knowledge/status
+POST /api/v1/knowledge/search
+GET  /api/v1/knowledge/{id}
+```
+
+Search requests and provider responses are bounded. Provider errors use typed codes such as `provider_unavailable`, `invalid_endpoint`, `protocol_mismatch`, and `response_too_large`; endpoint paths, token values, filesystem paths, and raw provider bodies are not returned in errors. With no configured provider, these routes return `503 provider_unavailable` and ordinary TimeKeeper routes continue to work.
+
+The promotion route accepts only an explicit redaction confirmation:
+
+```http
+POST /api/v1/projects/P-10000/messages/42/promote
+Content-Type: application/json
+
+{"redaction_status":"verified","type":"pattern","visibility":"galaxy"}
+```
+
+The Trail entry remains unchanged. TimeKeeper derives an idempotency key from
+its stable M-reference and revision, writes a pending `knowledge_links` row,
+asks the configured provider to create the item, and updates the mapping to
+`created` or a visible retryable/permanent failure. Repeating the request uses
+the same key and cannot create a second mapping. Sensitive markers are rejected
+before promotion. A promotion without a configured provider returns a typed
+`503 provider_unavailable` response.
+
+The current slice provides the provider contract, client, API read surface, and
+explicit promotion path. The Obsidian plugin's production packaging/settings
+UX, richer Markdown metadata, and a live Obsidian process remain later
+implementation slices. See [the Memory Galaxy implementation specification](docs/TimeKeeper—Obsidian-Memory-Galaxy-Implementation.md) for the phase boundary.
+
 ## Local LLM planning (review-only)
 
 A local pipeline is configuration for either Ollama or an OpenAI-compatible local server (such as vLLM or llama.cpp). Only plain HTTP numeric-loopback base URLs are accepted; remote hosts, `localhost`, HTTPS, paths, credentials, query strings, and fragments are rejected.
@@ -377,6 +422,48 @@ Content-Type: application/json
 ```
 
 Apply revalidates the persisted artifact and atomically materializes its Categories, Tasks, Subtasks, and Sprints. A draft is then marked `Applied` and cannot be applied again. No model response directly mutates hierarchy.
+
+## File history and editor API
+
+File history is optional and is enabled only when the server receives an explicit
+`-history-root` (or `TIMEKEEPER_HISTORY_ROOT`) configuration. Without it, file
+routes return `503 history_unavailable` and TimeKeeper does not gain implicit
+filesystem access.
+
+```text
+GET  /api/v1/files/{fileID}
+GET  /api/v1/files/{fileID}/versions
+GET  /api/v1/files/{fileID}/versions/{versionID}
+POST /api/v1/files/{fileID}/versions
+POST /api/v1/files/{fileID}/snapshots
+GET  /api/v1/files/{fileID}/compare?from=FV-1&to=FV-2
+POST /api/v1/files/{fileID}/restore
+```
+
+A caller can capture a meaningful change boundary without saving every keystroke:
+
+```http
+POST /api/v1/files/F-10001/snapshots
+Content-Type: application/json
+
+{"phase":"code_start","agent_id":"agent-7","session_id":"S-42","task_id":"T-10331","sprint_id":"SP-10332","change_summary":"Before editor change"}
+```
+
+Use `phase: code_end` after the change and verification. The resulting versions
+retain the caller provenance and can be compared through the history endpoint.
+
+Restore requires the target version and the version the editor believes is
+current:
+
+```json
+{"version_id":"FV-10002","expected_current_version_id":"FV-10003"}
+```
+
+A stale expected version returns `409 file_version_conflict`. Restoring does
+not erase history; it writes a new version whose parent is the current version
+and whose content matches the selected historical version. The dashboard editor
+will use this contract through an editor adapter; CodeMirror 6 is the first
+planned adapter, with Monaco remaining a compatible future option.
 
 ## Project export and SQLite backup
 
