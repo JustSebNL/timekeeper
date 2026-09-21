@@ -43,3 +43,8 @@ NUL
 
 # Nested third-party clone (lives at /mnt/d/dev/codebase/dev/picoclaw)
 dev-ops/picoclaw/
+
+# Personal build/planning files. dev-ops/ is a local workspace, not part
+# of the published source: planning docs, contract-test harnesses and
+# screenshots stay out of the public repository.
+dev-ops/
