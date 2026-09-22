@@ -23,7 +23,9 @@ import (
 	"github.com/JustSebNL/timekeeper/internal/history"
 	"github.com/JustSebNL/timekeeper/internal/knowledge"
 	"github.com/JustSebNL/timekeeper/internal/logging"
+	"github.com/JustSebNL/timekeeper/internal/observer"
 	"github.com/JustSebNL/timekeeper/internal/plugin"
+	edgeplugin "github.com/JustSebNL/timekeeper/internal/plugin/edgeplugin"
 	obsidianplugin "github.com/JustSebNL/timekeeper/internal/plugin/knowledgeobsidian"
 	"github.com/JustSebNL/timekeeper/internal/store"
 )
@@ -220,6 +222,7 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:1618", "HTTP listen address")
 	proxyAddr := flag.String("proxy-addr", envOr("TIMEKEEPER_PROXY_ADDR", "127.0.0.1:80"), "reverse-proxy listen address for the friendly URLs (http://timekeeper.local/ and http://api.timekeeper.local/); empty to disable")
 	obsidianDescriptor := flag.String("obsidian-descriptor", envOr("TIMEKEEPER_OBSIDIAN_DESCRIPTOR", ""), "optional Obsidian Memory Galaxy endpoint descriptor path")
+	edgeJournal := flag.String("edge-journal", envOr("TIMEKEEPER_EDGE_JOURNAL", ""), "optional edge event journal path; enables the observer plugin")
 	historyRoot := flag.String("history-root", envOr("TIMEKEEPER_HISTORY_ROOT", ""), "optional tracked-file history root; empty disables file history routes")
 	pluginStoreRoot := flag.String("plugin-store-root", envOr("TIMEKEEPER_PLUGIN_STORE_ROOT", ""), "optional plugin-store directory; empty disables plugin registry routes")
 	dbPath := flag.String("db", "timekeeper.db", "SQLite database path")
@@ -313,6 +316,33 @@ func main() {
 			logger.Warn("knowledge plugin returned an unexpected type", slog.String("plugin", obsidianplugin.ID))
 		}
 	}
+	// The observer is optional. When no journal path is configured the
+	// capability is simply absent; the server still runs.
+	var eventObserver observer.Observer
+	if path := strings.TrimSpace(*edgeJournal); path != "" {
+		instance, err := plugin.Build(plugin.KindObserver, edgeplugin.ID, map[string]string{
+			edgeplugin.JournalPathKey: path,
+		})
+		if err != nil {
+			logger.Warn("observer plugin unavailable", slog.Any("err", err))
+		} else if obs, ok := instance.(observer.Observer); ok {
+			eventObserver = obs
+			logger.Info("observer plugin configured",
+				slog.String("plugin", edgeplugin.ID))
+		} else {
+			logger.Warn("observer plugin returned an unexpected type", slog.String("plugin", edgeplugin.ID))
+		}
+	}
+	// Report the observer on the runtime status so an agent can see whether
+	// journalling is active without guessing from the flag.
+	var observerEnabled, observerAvailable bool
+	if eventObserver != nil {
+		observerEnabled = true
+		if st, err := eventObserver.Status(context.Background()); err == nil {
+			observerAvailable = st.Available
+		}
+	}
+
 	var historyService api.FileHistoryService
 	if strings.TrimSpace(*historyRoot) != "" {
 		configuredHistory, historyErr := history.New(*historyRoot, database)
@@ -328,6 +358,8 @@ func main() {
 		RecoveryPolicy:               recoveryPolicy(),
 		FriendlyURLs:                 friendlyURLs(friendlyAddr),
 		PluginStoreRoot:              *pluginStoreRoot,
+		ObserverEnabled:              observerEnabled,
+		ObserverAvailable:            observerAvailable,
 	}, knowledgeService, historyService)
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiHandler)

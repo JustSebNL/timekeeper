@@ -32,6 +32,12 @@ type RuntimeStatus struct {
 	// PluginStoreRoot enables the optional read-only plugin registry. Empty
 	// disables plugin-store routes rather than exposing an implicit directory.
 	PluginStoreRoot string `json:"plugin_store_root,omitempty"`
+	// ObserverEnabled reports whether an event journal plugin is active.
+	// Absence is a normal state, so this is reported rather than omitted:
+	// callers must be able to tell "not configured" from "broken".
+	ObserverEnabled bool `json:"observer_enabled"`
+	// ObserverAvailable reports whether the active journal is usable.
+	ObserverAvailable bool `json:"observer_available"`
 }
 
 // New returns the API with no process-local recovery worker assumed.
