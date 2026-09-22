@@ -77,14 +77,38 @@ func Run(ctx context.Context, database *store.Store, interval time.Duration, rep
 		}
 	}
 	tick()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+
+	// Wake on the soonest stored lease expiry rather than a fixed global
+	// timetable. A 30-second lease must be noticed after 30 seconds, not
+	// whenever the next five-minute tick happens to land.
+	wait := func() time.Duration {
+		// Compare in UTC: the stored deadline is UTC and a local-time
+		// comparison would put an expired lease in the future.
+		deadline, ok, err := database.NextPulseDeadline(ctx, time.Now().UTC())
+		if err != nil || !ok {
+			return interval
+		}
+		// The stored deadline already includes the lease's grace
+		// period, so no extra margin is added here.
+		d := time.Until(deadline)
+		if d < minInterval {
+			return minInterval
+		}
+		if d > interval {
+			return interval
+		}
+		return d
+	}
+
+	timer := time.NewTimer(wait())
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			tick()
+			timer.Reset(wait())
 		}
 	}
 }
