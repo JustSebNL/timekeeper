@@ -36,7 +36,7 @@ func TestPluginStoreListsAndServesChecksummedArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := sha256.Sum256(artifact)
-	manifest := `{"schema_version":"timekeeper-plugin-manifest/v1","id":"cactus.needle","version":"0.1.0","name":"Needle","runtime":"python3","entrypoint":"plugin.py","protocol":"pico-hook-jsonrpc/v1","artifact":"needle.tar.gz","sha256":"` + hex.EncodeToString(hash[:]) + `"}`
+	manifest := `{"schema_version":"timekeeper-plugin-manifest/v1","id":"cactus.needle","version":"0.1.0","name":"Needle","runtime":"python3","entrypoint":"plugin.py","protocol":"edge-hook-jsonrpc/v1","artifact":"needle.tar.gz","sha256":"` + hex.EncodeToString(hash[:]) + `"}`
 	if err := os.WriteFile(filepath.Join(pluginDir, "plugin.json"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}

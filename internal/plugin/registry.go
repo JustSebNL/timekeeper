@@ -25,6 +25,10 @@ type Kind string
 const (
 	// KindKnowledge provides a Memory Galaxy / knowledge provider.
 	KindKnowledge Kind = "knowledge"
+
+	// KindObserver provides an event journal: durable local append,
+	// bounded replay and idempotent acknowledgement.
+	KindObserver Kind = "observer"
 )
 
 // Descriptor is the core-visible description of a registered plugin.
