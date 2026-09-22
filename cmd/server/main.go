@@ -28,6 +28,7 @@ import (
 	edgeplugin "github.com/JustSebNL/timekeeper/internal/plugin/edgeplugin"
 	obsidianplugin "github.com/JustSebNL/timekeeper/internal/plugin/knowledgeobsidian"
 	"github.com/JustSebNL/timekeeper/internal/store"
+	"github.com/JustSebNL/timekeeper/internal/version"
 )
 
 // modeFlag is a tiny adapter so we can use logging.Mode by value with flag.Var.
@@ -213,7 +214,7 @@ func main() {
 		return
 	}
 	if os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v" {
-		_, _ = fmt.Println("TimeKeeper 1.0")
+		_, _ = fmt.Println("TimeKeeper " + version.String())
 		return
 	}
 	if handled, code := dispatchClient(os.Args[1:], os.Getenv("TIMEKEEPER_URL"), os.Stdout, os.Stderr); handled {

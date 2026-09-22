@@ -19,6 +19,7 @@ import (
 
 	"github.com/JustSebNL/timekeeper/internal/logging"
 	"github.com/JustSebNL/timekeeper/internal/model"
+	"github.com/JustSebNL/timekeeper/internal/version"
 )
 
 const defaultBaseURL = "http://127.0.0.1:1618"
@@ -177,6 +178,9 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return listAliases(out, errOut, baseURL)
 	case "api-help":
 		return apiHelp(out, errOut, baseURL)
+	case "version":
+		_, _ = fmt.Fprintln(out, version.String())
+		return 0
 	case "service":
 		return serviceManager(args[1:], out, errOut, baseURL)
 	case "store":

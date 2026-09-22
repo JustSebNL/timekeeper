@@ -19,6 +19,7 @@ import (
 	"github.com/JustSebNL/timekeeper/internal/observer"
 	"github.com/JustSebNL/timekeeper/internal/planning"
 	"github.com/JustSebNL/timekeeper/internal/store"
+	"github.com/JustSebNL/timekeeper/internal/version"
 )
 
 // RuntimeStatus reports opt-in local runtime capabilities. It is informational:
@@ -77,6 +78,16 @@ func NewWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeService KnowledgeService, fileHistoryService FileHistoryService, obs observer.Observer) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health)
+	mux.HandleFunc("GET /api/v1/version", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"service":    "TimeKeeper",
+			"version":    version.Get().Version,
+			"commit":     version.Get().Commit,
+			"build_date": version.Get().Date,
+			"go_version": version.Get().GoVersion,
+			"display":    version.String(),
+		})
+	})
 	mux.HandleFunc("GET /api/v1/connection-info", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"friendly_urls": runtime.FriendlyURLs})
 	})
@@ -294,9 +305,12 @@ func apiHelp(w http.ResponseWriter, _ *http.Request) {
 		{"method": "GET", "path": "/api/v1/sprints/{sprintID}/time-entries", "desc": "List time entries"},
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"service": "TimeKeeper",
-		"version": "1.0",
-		"routes":  routes,
+		"service":    "TimeKeeper",
+		"version":    version.String(),
+		"commit":     version.Get().Commit,
+		"build_date": version.Get().Date,
+		"go_version": version.Get().GoVersion,
+		"routes":     routes,
 	})
 }
 
