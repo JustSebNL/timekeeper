@@ -16,6 +16,7 @@ import (
 	"github.com/JustSebNL/timekeeper/internal/lifecycle"
 	"github.com/JustSebNL/timekeeper/internal/logging"
 	"github.com/JustSebNL/timekeeper/internal/model"
+	"github.com/JustSebNL/timekeeper/internal/observer"
 	"github.com/JustSebNL/timekeeper/internal/planning"
 	"github.com/JustSebNL/timekeeper/internal/store"
 )
@@ -62,6 +63,18 @@ func NewWithKnowledge(database *store.Store, runtime RuntimeStatus, knowledgeSer
 // service keeps file routes explicitly unavailable rather than granting the
 // server implicit filesystem access.
 func NewWithHistory(database *store.Store, runtime RuntimeStatus, knowledgeService KnowledgeService, fileHistoryService FileHistoryService) http.Handler {
+	return newWithObserver(database, runtime, knowledgeService, fileHistoryService, nil)
+}
+
+// NewWithObserver builds the handler with an event journal attached.
+//
+// A nil observer disables journalling rather than failing, so the
+// capability stays optional end to end.
+func NewWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeService KnowledgeService, fileHistoryService FileHistoryService, obs observer.Observer) http.Handler {
+	return newWithObserver(database, runtime, knowledgeService, fileHistoryService, obs)
+}
+
+func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeService KnowledgeService, fileHistoryService FileHistoryService, obs observer.Observer) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health)
 	mux.HandleFunc("GET /api/v1/connection-info", func(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +154,9 @@ func NewWithHistory(database *store.Store, runtime RuntimeStatus, knowledgeServi
 	knowledgeRoutes(mux, knowledgeService, database)
 	fileHistoryRoutes(mux, fileHistoryService)
 	pluginStoreRoutes(mux, runtime.PluginStoreRoot)
-	return logging.NewRequestLogger().Wrap(withReqCtx(recoverJSON(requireJSONForMutations(mux))))
+	// Observe sits outermost of the capability layers so it records what
+	// actually happened, including rejections and panics handled below.
+	return logging.NewRequestLogger().Wrap(Observe(obs)(withReqCtx(recoverJSON(requireJSONForMutations(mux)))))
 }
 
 // withReqCtx attaches the current *http.Request to the context so logging.Recover

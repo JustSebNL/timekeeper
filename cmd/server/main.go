@@ -352,7 +352,7 @@ func main() {
 		historyService = configuredHistory
 		logger.Info("tracked-file history configured", slog.String("root", *historyRoot))
 	}
-	apiHandler := api.NewWithHistory(database, api.RuntimeStatus{
+	apiHandler := api.NewWithObserver(database, api.RuntimeStatus{
 		PulseGuardianEnabled:         *pulseGuardianInterval > 0,
 		PulseGuardianIntervalSeconds: int64(pulseGuardianInterval.Seconds()),
 		RecoveryPolicy:               recoveryPolicy(),
@@ -360,7 +360,7 @@ func main() {
 		PluginStoreRoot:              *pluginStoreRoot,
 		ObserverEnabled:              observerEnabled,
 		ObserverAvailable:            observerAvailable,
-	}, knowledgeService, historyService)
+	}, knowledgeService, historyService, eventObserver)
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiHandler)
 	mux.Handle("/health", apiHandler)
