@@ -91,13 +91,25 @@ func saveAgentContext(ctx *AgentContext) {
 
 func guardianWakeCLI(args []string, out, errOut io.Writer, baseURL string) int {
 	agentID := ""
+	pollInterval := 30 * time.Second
+	pollMode := false
+
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "--agent" {
 			agentID = args[i+1]
 		}
+		if args[i] == "--poll" {
+			pollMode = true
+		}
+		if args[i] == "--interval" && i+1 < len(args) {
+			if d, err := time.ParseDuration(args[i+1]); err == nil {
+				pollInterval = d
+			}
+		}
 	}
+
 	if agentID == "" {
-		_, _ = fmt.Fprintln(errOut, "usage: tk guardian wake --agent <id>")
+		_, _ = fmt.Fprintln(errOut, "usage: tk guardian wake --agent <id> [--poll] [--interval <duration>]")
 		return 1
 	}
 
@@ -111,6 +123,73 @@ func guardianWakeCLI(args []string, out, errOut io.Writer, baseURL string) int {
 	ctx := loadAgentContext(agentID)
 	ctx.AgentID = agentID
 
+	if pollMode {
+		return runPollLoop(agentID, tk, ctx, pollInterval, out, errOut)
+	}
+
+	// Single-shot wake.
+	return runWakeOnce(agentID, tk, ctx, out, errOut)
+}
+
+// runPollLoop continuously checks for pending nudges and processes them.
+// This is the durable fallback when ntfy/HTTP are unavailable.
+func runPollLoop(agentID string, tk *storeclient.Client, ctx *AgentContext, interval time.Duration, out, errOut io.Writer) int {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		pending, err := listPendingNudgesForAgent(context.Background(), tk, agentID)
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "list pending nudges: %v\n", err)
+			time.Sleep(interval)
+			continue
+		}
+		if len(pending) == 0 {
+			// No pending nudges — wait for next tick.
+			<-ticker.C
+			continue
+		}
+
+		nudgeID := pending[0]
+		_, _ = fmt.Fprintf(out, "waking agent %s (nudge %d, cycle %d)\n", agentID, nudgeID, ctx.WorkCycles+1)
+
+		// Record delivered event.
+		recordPulseEvent(context.Background(), tk, agentID, nudgeID, "delivered")
+
+		// Run the work cycle.
+		if err := runGuardianWorkCycle(agentID, ctx); err != nil {
+			_, _ = fmt.Fprintf(errOut, "work cycle failed: %v\n", err)
+			time.Sleep(interval)
+			continue
+		}
+
+		// Acknowledge the nudge.
+		ackURL := strings.TrimRight(tk.BaseURL, "/") + "/api/v1/agents/" + agentID + "/nudges/" + fmt.Sprintf("%d", nudgeID) + "/ack"
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ackURL, strings.NewReader("{}"))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+
+		// Record acknowledged event.
+		recordPulseEvent(context.Background(), tk, agentID, nudgeID, "acknowledged")
+
+		// Update and save agent context.
+		ctx.LastNudgeID = nudgeID
+		ctx.LastNudgeTime = time.Now().Format(time.RFC3339)
+		ctx.WorkCycles++
+		saveAgentContext(ctx)
+
+		_, _ = fmt.Fprintf(out, "agent %s completed work cycle %d\n", agentID, ctx.WorkCycles)
+
+		// Brief pause to avoid hammering.
+		time.Sleep(1 * time.Second)
+	}
+}
+
+// runWakeOnce processes a single nudge (one-shot mode).
+func runWakeOnce(agentID string, tk *storeclient.Client, ctx *AgentContext, out, errOut io.Writer) int {
 	// List pending nudges for this agent.
 	pending, err := listPendingNudgesForAgent(context.Background(), tk, agentID)
 	if err != nil || len(pending) == 0 {
@@ -131,7 +210,7 @@ func guardianWakeCLI(args []string, out, errOut io.Writer, baseURL string) int {
 	}
 
 	// Acknowledge the nudge.
-	ackURL := strings.TrimRight(baseURL, "/") + "/api/v1/agents/" + agentID + "/nudges/" + fmt.Sprintf("%d", nudgeID) + "/ack"
+	ackURL := strings.TrimRight(tk.BaseURL, "/") + "/api/v1/agents/" + agentID + "/nudges/" + fmt.Sprintf("%d", nudgeID) + "/ack"
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, ackURL, strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
