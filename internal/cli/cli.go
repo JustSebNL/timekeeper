@@ -4,6 +4,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/JustSebNL/timekeeper/internal/logging"
 	"github.com/JustSebNL/timekeeper/internal/model"
+	"github.com/JustSebNL/timekeeper/internal/ntfy"
 	"github.com/JustSebNL/timekeeper/internal/version"
 )
 
@@ -190,6 +192,8 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 	case "version":
 		_, _ = fmt.Fprintln(out, version.String())
 		return 0
+	case "ntfy":
+		return ntfyCommand(args[1:], out, errOut, baseURL)
 	case "service":
 		return serviceManager(args[1:], out, errOut, baseURL)
 	case "store":
@@ -574,6 +578,69 @@ func agentSessions(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintf(out, "no sessions found for agent %s\n", args[0])
 	}
 	return 0
+}
+
+func ntfyCommand(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(errOut, "usage: tk ntfy publish --server <url> --topic <name> [--token <token>] --nudge <id> --agent <id>")
+		_, _ = fmt.Fprintln(errOut, "       tk ntfy wake --agent <id>")
+		return 2
+	}
+	switch args[0] {
+	case "publish":
+		var server, topic, token, agentID string
+		var nudgeID int64
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--server":
+				if i+1 < len(args) { server = args[i+1]; i++ }
+			case "--topic":
+				if i+1 < len(args) { topic = args[i+1]; i++ }
+			case "--token":
+				if i+1 < len(args) { token = args[i+1]; i++ }
+			case "--nudge":
+				if i+1 < len(args) { nudgeID, _ = strconv.ParseInt(args[i+1], 10, 64); i++ }
+			case "--agent":
+				if i+1 < len(args) { agentID = args[i+1]; i++ }
+			}
+		}
+		if server == "" || topic == "" || agentID == "" {
+			_, _ = fmt.Fprintln(errOut, "--server, --topic, and --agent are required")
+			return 2
+		}
+		if err := ntfy.RunPublish(server, topic, token, nudgeID, agentID); err != nil {
+			_, _ = fmt.Fprintf(errOut, "ntfy publish: %v\n", err)
+			return 1
+		}
+		_, _ = fmt.Fprintf(out, "ntfy wake published: nudge=%d agent=%s topic=%s\n", nudgeID, agentID, topic)
+		return 0
+	case "wake":
+		var agentID string
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--agent" && i+1 < len(args) {
+				agentID = args[i+1]
+				i++
+			}
+		}
+		if agentID == "" {
+			_, _ = fmt.Fprintln(errOut, "--agent is required")
+			return 2
+		}
+		result, err := ntfy.Wake(context.Background(), baseURL, agentID)
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "wake: %v\n", err)
+			return 1
+		}
+		if result == nil || result.NudgeID == 0 {
+			_, _ = fmt.Fprintln(out, "no pending nudges")
+			return 0
+		}
+		_, _ = fmt.Fprintf(out, "wake: nudge=%d work=%v\n", result.NudgeID, result.WorkDone)
+		return 0
+	default:
+		_, _ = fmt.Fprintf(errOut, "unknown ntfy command %q\n", args[0])
+		return 2
+	}
 }
 
 func agentPulse(args []string, out, errOut io.Writer, baseURL string) int {

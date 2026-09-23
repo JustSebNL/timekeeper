@@ -26,7 +26,7 @@ func TestFriendlyListenerUsesPrimaryHandler(t *testing.T) {
 func TestFriendlyURLsUsesConfiguredPort(t *testing.T) {
 	for _, tc := range []struct{ addr, want string }{{"127.0.0.1:80", "http://timekeeper.local/"}, {"127.0.0.1:8080", "http://timekeeper.local:8080/"}, {"127.0.0.1:1618", "http://timekeeper.local:1618/"}} {
 		got := friendlyURLs(tc.addr)
-		if len(got) != 2 || got[0] != tc.want {
+		if len(got) != 3 || got[0] != tc.want {
 			t.Fatalf("%s -> %v", tc.addr, got)
 		}
 	}

@@ -3,7 +3,9 @@ module github.com/JustSebNL/timekeeper
 go 1.26.1
 
 require (
+	github.com/AnthonyHewins/gotfy v0.0.11 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/goccy/go-json v0.10.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
