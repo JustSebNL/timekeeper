@@ -84,7 +84,10 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("/pulse", func(w http.ResponseWriter, r *http.Request) {
+	// The guardian (pulse engine) delivers to whatever URL was registered
+	// as guardian_url. We register http://127.0.0.1:1619/pulse and handle
+	// both /pulse and /v1/recover for robustness.
+	nudgeHandler := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -125,7 +128,9 @@ func main() {
 		log.Printf("nudge %d acknowledged", sig.Nudge.NudgeID)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"accepted"}`))
-	})
+	}
+	mux.HandleFunc("/pulse", nudgeHandler)
+	mux.HandleFunc("/v1/recover", nudgeHandler)
 
 	ln, err := net.Listen("tcp", bindAddr)
 	if err != nil {
