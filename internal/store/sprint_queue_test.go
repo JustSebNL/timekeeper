@@ -11,7 +11,7 @@ import (
 	"github.com/JustSebNL/timekeeper/internal/store"
 )
 
-func TestClaimNextSprintStartsOldestRunnableWorkAndCompletingItClosesItsTask(t *testing.T) {
+func TestClaimNextSprintStartsOldestRunnableWorkAndCompletingItDoesNotCloseItsTask(t *testing.T) {
 	ctx := context.Background()
 	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
 	if err != nil {
@@ -63,11 +63,22 @@ func TestClaimNextSprintStartsOldestRunnableWorkAndCompletingItClosesItsTask(t *
 	if _, err = database.TransitionSprint(ctx, claimed.SprintID, "complete", "finished"); err != nil {
 		t.Fatalf("complete second: %v", err)
 	}
+	// Completing the final sprint does NOT auto-close the task.
+	// Agents close tasks explicitly via tk t status.
 	completed, err := database.GetTask(ctx, task.TaskID)
 	if err != nil {
 		t.Fatalf("read task after queue exhausted: %v", err)
 	}
-	if completed.Status != "Completed" {
-		t.Fatalf("task did not advance after final direct sprint: %#v", completed)
+	if completed.Status != "Open" {
+		t.Fatalf("task was auto-completed after final sprint: %#v", completed)
+	}
+
+	// Explicit closure works.
+	closed, err := database.UpdateTaskStatus(ctx, task.TaskID, model.UpdateTaskStatusInput{Status: "Completed"})
+	if err != nil {
+		t.Fatalf("explicit task closure: %v", err)
+	}
+	if closed.Status != "Completed" {
+		t.Fatalf("explicit closure did not complete task: %#v", closed)
 	}
 }

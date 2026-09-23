@@ -60,8 +60,8 @@ Before completing the Sprint, run a real check: test, build, reproduction, file 
 tk pulse
 tk events <project-id>
 tk msg <project-id> checkpoint --author <agent-id> \
-  --entry 'evidence|Tests/build/reproduction result.|verification' \
-  --entry 'next|Next concrete action.|handoff'
+  --entry 'observation|Tests/build/reproduction result.|verification' \
+  --entry 'note|Next concrete action.|handoff'
 ```
 
 After interruption, repeat `tk doctor`, `tk tree`, `tk summary`, and read the latest events/checkpoint before continuing. Do not infer state from an old conversation.

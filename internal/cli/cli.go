@@ -75,7 +75,11 @@ func runCommand(name string, fn func() int) int {
 	dur := time.Since(start)
 	attrs := []any{slog.String("cmd", name), slog.Int("exit", code), slog.Duration("duration", dur)}
 	if code != 0 {
-		logger.Error("cli command failed", append(attrs, slog.String("trace", string(debug.Stack())))...)
+		if logging.IsDebug() {
+			logger.Error("cli command failed", append(attrs, slog.String("trace", string(debug.Stack())))...)
+		} else {
+			logger.Error("cli command failed", attrs...)
+		}
 		return code
 	}
 	if logging.IsDebug() {

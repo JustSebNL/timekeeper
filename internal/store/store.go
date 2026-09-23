@@ -3238,21 +3238,9 @@ func (s *Store) TransitionSprint(ctx context.Context, sprintID, action, reason s
 	if err != nil {
 		return model.Sprint{}, fmt.Errorf("update sprint transition: %w", err)
 	}
-	if rule.Action == "complete" && state.Sprint.SubtaskID == "" {
-		var remainingDirect, subtasks int
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sprints WHERE task_id = ? AND subtask_id IS NULL AND status != 'Completed'`, state.Sprint.TaskID).Scan(&remainingDirect); err == nil {
-			err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM subtasks WHERE task_id = ?`, state.Sprint.TaskID).Scan(&subtasks)
-		}
-		if err == nil && remainingDirect == 0 && subtasks == 0 {
-			_, err = tx.ExecContext(ctx, `UPDATE tasks SET status = 'Completed', updated_at = ? WHERE task_id = ? AND status = 'Open'`, stamp(now), state.Sprint.TaskID)
-			if err == nil {
-				err = recordProjectEvent(ctx, tx, state.Sprint.ProjectID, "task", state.Sprint.TaskID, "task_completed_from_sprints", "Task completed after its final direct Sprint.", now)
-			}
-		}
-		if err != nil {
-			return model.Sprint{}, fmt.Errorf("advance task after sprint completion: %w", err)
-		}
-	}
+	// Task completion is explicit. Agents close tasks via tk t status.
+	// Auto-completing a task when its final sprint completes silently
+	// corrupts the plan for design-only sprints (see dev-ops evaluation).
 	updated, err := loadSprintState(ctx, tx, sprintID)
 	if err != nil {
 		return model.Sprint{}, err
