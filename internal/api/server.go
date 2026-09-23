@@ -98,6 +98,7 @@ func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 	mux.HandleFunc("GET /api/v1/guardian/status", guardianStatus(database, runtime))
 	mux.HandleFunc("GET /api/v1/agents", listActiveAgents(database))
 	mux.HandleFunc("POST /api/v1/agents/broadcast", createBroadcastNudge(database))
+	mux.HandleFunc("GET /api/v1/agents/{agentID}/progress", getAgentProgress(database))
 	mux.HandleFunc("POST /api/v1/agents/{agentID}/progress", reportAgentProgress(database))
 	mux.HandleFunc("GET /api/v1/agents/{agentID}/nudges/history", listPulseNudgeHistory(database))
 	mux.HandleFunc("GET /api/v1/agents/{agentID}/nudges", listPendingPulseNudges(database))
@@ -344,6 +345,18 @@ func pulse(database *store.Store) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, value)
+	}
+}
+
+func getAgentProgress(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		agentID := r.PathValue("agentID")
+		progress, err := database.GetAgentProgress(r.Context(), agentID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "agent_not_found", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, progress)
 	}
 }
 

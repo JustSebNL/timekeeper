@@ -427,12 +427,121 @@ func pulse(out, errOut io.Writer, baseURL string) int {
 	return 0
 }
 
+func agentStatus(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage: tk agent status <agent-id>")
+		return 2
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/agents/" + url.PathEscape(args[0]) + "/progress"
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "TimeKeeper API unavailable at %s: %v\n", endpoint, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		return 1
+	}
+	var progress struct {
+		AgentID              string `json:"agent_id"`
+		ActiveSprintID       string `json:"active_sprint_id"`
+		LeaseDurationSeconds int64  `json:"lease_duration_seconds"`
+		GuardianURL          string `json:"guardian_url"`
+		LastProgressAt       string `json:"last_progress_at"`
+		UpdatedAt            string `json:"updated_at"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&progress); err != nil {
+		_, _ = fmt.Fprintf(errOut, "TimeKeeper API returned invalid JSON: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(out, "%s\tlease=%ds\tsprint=%s\tguardian=%s\tlast=%s\tupdated=%s\n",
+		progress.AgentID, progress.LeaseDurationSeconds, progress.ActiveSprintID,
+		progress.GuardianURL, progress.LastProgressAt, progress.UpdatedAt)
+	return 0
+}
+
+func agentSessions(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage: tk agent sessions <agent-id>")
+		return 2
+	}
+	// Use the usage-summary endpoint filtered by agent — but since there's
+	// no direct "by agent" endpoint, we fetch all projects' summaries.
+	// This is a known limitation; a dedicated /api/v1/agents/{id}/sessions
+	// endpoint would be the right long-term fix.
+	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/projects"
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		return 1
+	}
+	var projects struct {
+		Items []struct {
+			ProjectID string `json:"project_id"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&projects); err != nil {
+		_, _ = fmt.Fprintf(errOut, "TimeKeeper API returned invalid JSON: %v\n", err)
+		return 1
+	}
+	found := false
+	for _, p := range projects.Items {
+		usageEndpoint := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + p.ProjectID + "/usage-summary"
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(usageEndpoint)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			continue
+		}
+		var summary struct {
+			Sessions []struct {
+				SessionID string `json:"session_id"`
+				AgentID   string `json:"agent_id"`
+				Model     string `json:"model"`
+				TurnSeq   int64  `json:"turn_seq"`
+				InputTokens int64 `json:"input_tokens"`
+				OutputTokens int64 `json:"output_tokens"`
+				Messages  int64  `json:"messages"`
+				LastActivityAt string `json:"last_activity_at"`
+			} `json:"sessions"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&summary); err != nil {
+			resp.Body.Close()
+			continue
+		}
+		resp.Body.Close()
+		for _, s := range summary.Sessions {
+			if s.AgentID == args[0] {
+				_, _ = fmt.Fprintf(out, "%s\t%s\t%s\tturn=%d\tinput=%d\toutput=%d\tmessages=%d\tlast=%s\n",
+					p.ProjectID, s.SessionID, s.Model, s.TurnSeq, s.InputTokens, s.OutputTokens, s.Messages, s.LastActivityAt)
+				found = true
+			}
+		}
+	}
+	if !found {
+		_, _ = fmt.Fprintf(out, "no sessions found for agent %s\n", args[0])
+	}
+	return 0
+}
+
 func agentPulse(args []string, out, errOut io.Writer, baseURL string) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(errOut, "usage: tk agent <progress|nudges|ack> ...")
+		_, _ = fmt.Fprintln(errOut, "usage: tk agent <progress|status|sessions|nudges|ack> ...")
 		return 2
 	}
 	switch args[0] {
+	case "status":
+		return agentStatus(args[1:], out, errOut, baseURL)
+	case "sessions":
+		return agentSessions(args[1:], out, errOut, baseURL)
 	case "progress":
 		if len(args) < 3 || len(args) > 5 || strings.TrimSpace(args[1]) == "" {
 			_, _ = fmt.Fprintln(errOut, "usage: tk agent progress <agent-id> <lease> [sprint-id] [guardian-url]")

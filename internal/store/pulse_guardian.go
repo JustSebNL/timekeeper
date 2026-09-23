@@ -43,6 +43,31 @@ func validatePulseGuardianURL(raw string) error {
 // ReportAgentProgress records an agent's explicit material-progress lease. It is
 // deliberately not a passive health probe: an agent must renew it while it has
 // active work, and the Guardian can escalate after it expires.
+// GetAgentProgress returns the agent's current progress lease, or an error
+// if the agent has no recorded lease.
+func (s *Store) GetAgentProgress(ctx context.Context, agentID string) (model.AgentPulseProgress, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return model.AgentPulseProgress{}, errors.New("agent_id is required")
+	}
+	var progress model.AgentPulseProgress
+	var lastProgress, updatedAt string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT agent_id, active_sprint_id, lease_duration_seconds, guardian_url, last_progress_at, updated_at
+		FROM agent_pulse_progress WHERE agent_id = ?`, agentID).
+		Scan(&progress.AgentID, &progress.ActiveSprintID, &progress.LeaseDurationSeconds,
+			&progress.GuardianURL, &lastProgress, &updatedAt)
+	if err == sql.ErrNoRows {
+		return model.AgentPulseProgress{}, fmt.Errorf("agent %s has no progress lease", agentID)
+	}
+	if err != nil {
+		return model.AgentPulseProgress{}, fmt.Errorf("read agent progress: %w", err)
+	}
+	progress.LastProgressAt, _ = time.Parse(time.RFC3339, lastProgress)
+	progress.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return progress, nil
+}
+
 func (s *Store) ReportAgentProgress(ctx context.Context, agentID string, input model.AgentPulseProgressInput) (model.AgentPulseProgress, error) {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" || len(agentID) > 256 {
