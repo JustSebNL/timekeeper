@@ -165,6 +165,8 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return agentPulse(args[1:], out, errOut, baseURL)
 	case "agents":
 		return agentsCommand(args[1:], out, errOut, baseURL)
+	case "init":
+		return tkInit(args[1:], out, errOut, baseURL)
 	case "guardian":
 		if len(args) > 1 && args[1] == "wake" {
 			return guardianWakeCLI(args[2:], out, errOut, baseURL)

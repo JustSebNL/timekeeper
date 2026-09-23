@@ -12,6 +12,13 @@
 # The script is intentionally generic — the actual work (build, test,
 # verify) is delegated to the agent's own tooling. The key invariant is
 # that each nudge produces visible, recorded progress.
+#
+# Environment variables passed from guardian_wake.go:
+#   AGENT_ID — the agent identifier
+#   AGENT_WORK_CYCLES — number of work cycles completed so far
+#   AGENT_LAST_NUDGE_ID — last nudge ID processed
+#   AGENT_LAST_SPRINT_ID — last sprint ID claimed
+#   AGENT_LAST_PROJECT_ID — last project ID worked on
 
 set -euo pipefail
 
@@ -22,6 +29,11 @@ MAX_ITERATIONS="${MAX_ITERATIONS:-10}"
 if [[ -z "$PROJECT_ID" ]]; then
     echo "PROJECT_ID is required" >&2
     exit 1
+fi
+
+# Log agent context if available
+if [[ -n "${AGENT_WORK_CYCLES:-}" ]]; then
+    echo "Agent context: cycle $AGENT_WORK_CYCLES, last nudge ${AGENT_LAST_NUDGE_ID:-none}, last sprint ${AGENT_LAST_SPRINT_ID:-none}"
 fi
 
 for i in $(seq 1 "$MAX_ITERATIONS"); do

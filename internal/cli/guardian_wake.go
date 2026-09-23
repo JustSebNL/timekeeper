@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
+	"github.com/JustSebNL/timekeeper/internal/cache"
 	"github.com/JustSebNL/timekeeper/internal/storeclient"
 )
 
@@ -23,6 +25,70 @@ import (
 // 3. Runs the work cycle (same as self-nudge-work.sh)
 // 4. Acknowledges the nudge via AcknowledgePulseNudge
 // 5. Records a PulseEventAcknowledged
+// agentContextCache is the shared bounded context cache for guardian wake cycles.
+// It stores agent state between nudges so the agent has memory of previous work.
+var agentContextCache *cache.Cache
+
+// getAgentContextCache returns the shared agent context cache, initializing it on first use.
+func getAgentContextCache() *cache.Cache {
+	if agentContextCache == nil {
+		cfg := cache.DefaultConfig()
+		cfg.NumShards = 256
+		cfg.MaxEntries = 1000
+		cfg.MaxBytes = 8 * 1024 * 1024 // 8MB
+		cfg.AdmissionEnabled = false    // always admit; evict on pressure
+		c, err := cache.New(cfg)
+		if err == nil {
+			agentContextCache = c
+		}
+	}
+	return agentContextCache
+}
+
+// AgentContext is the per-agent state stored in the bounded context cache.
+type AgentContext struct {
+	AgentID        string `json:"agent_id"`
+	LastNudgeID    int64  `json:"last_nudge_id"`
+	LastNudgeTime  string `json:"last_nudge_time"`
+	WorkCycles     int    `json:"work_cycles"`
+	LastSprintID   string `json:"last_sprint_id"`
+	LastProjectID  string `json:"last_project_id"`
+	Notes          string `json:"notes"`
+}
+
+// loadAgentContext retrieves the agent's context from the bounded cache.
+func loadAgentContext(agentID string) *AgentContext {
+	c := getAgentContextCache()
+	if c == nil {
+		return &AgentContext{AgentID: agentID}
+	}
+	key := []byte("agent:" + agentID)
+	val, err := c.Get(key)
+	if err != nil {
+		return &AgentContext{AgentID: agentID}
+	}
+	var ctx AgentContext
+	if err := json.Unmarshal(val, &ctx); err != nil {
+		return &AgentContext{AgentID: agentID}
+	}
+	return &ctx
+}
+
+// saveAgentContext stores the agent's context in the bounded cache.
+func saveAgentContext(ctx *AgentContext) {
+	c := getAgentContextCache()
+	if c == nil {
+		return
+	}
+	key := []byte("agent:" + ctx.AgentID)
+	val, err := json.Marshal(ctx)
+	if err != nil {
+		return
+	}
+	// Store with 24h TTL — agent context is ephemeral
+	_, _ = c.Set(key, val, 24*time.Hour)
+}
+
 func guardianWakeCLI(args []string, out, errOut io.Writer, baseURL string) int {
 	agentID := ""
 	for i := 0; i < len(args)-1; i++ {
@@ -41,6 +107,10 @@ func guardianWakeCLI(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 
+	// Load agent context from bounded cache.
+	ctx := loadAgentContext(agentID)
+	ctx.AgentID = agentID
+
 	// List pending nudges for this agent.
 	pending, err := listPendingNudgesForAgent(context.Background(), tk, agentID)
 	if err != nil || len(pending) == 0 {
@@ -49,13 +119,13 @@ func guardianWakeCLI(args []string, out, errOut io.Writer, baseURL string) int {
 	}
 
 	nudgeID := pending[0]
-	_, _ = fmt.Fprintf(out, "waking agent %s (nudge %d)\n", agentID, nudgeID)
+	_, _ = fmt.Fprintf(out, "waking agent %s (nudge %d, cycle %d)\n", agentID, nudgeID, ctx.WorkCycles+1)
 
 	// Record delivered event.
 	recordPulseEvent(context.Background(), tk, agentID, nudgeID, "delivered")
 
 	// Run the work cycle.
-	if err := runGuardianWorkCycle(agentID); err != nil {
+	if err := runGuardianWorkCycle(agentID, ctx); err != nil {
 		_, _ = fmt.Fprintf(errOut, "work cycle failed: %v\n", err)
 		return 1
 	}
@@ -72,7 +142,13 @@ func guardianWakeCLI(args []string, out, errOut io.Writer, baseURL string) int {
 	// Record acknowledged event.
 	recordPulseEvent(context.Background(), tk, agentID, nudgeID, "acknowledged")
 
-	_, _ = fmt.Fprintf(out, "agent %s completed work cycle\n", agentID)
+	// Update and save agent context.
+	ctx.LastNudgeID = nudgeID
+	ctx.LastNudgeTime = time.Now().Format(time.RFC3339)
+	ctx.WorkCycles++
+	saveAgentContext(ctx)
+
+	_, _ = fmt.Fprintf(out, "agent %s completed work cycle %d\n", agentID, ctx.WorkCycles)
 	return 0
 }
 
@@ -117,11 +193,19 @@ func recordPulseEvent(ctx context.Context, tk *storeclient.Client, agentID strin
 	}
 }
 
-func runGuardianWorkCycle(agentID string) error {
+func runGuardianWorkCycle(agentID string, ctx *AgentContext) error {
 	// Run the work cycle script via cmd.exe (Windows).
 	script := "scripts/guardian/self-nudge-work.sh"
 	cmd := exec.CommandContext(context.Background(), "cmd.exe", "/c", script)
-	cmd.Env = append(os.Environ(), "AGENT_ID="+agentID)
+	env := os.Environ()
+	env = append(env, "AGENT_ID="+agentID)
+	if ctx != nil {
+		env = append(env, "AGENT_WORK_CYCLES="+fmt.Sprintf("%d", ctx.WorkCycles))
+		env = append(env, "AGENT_LAST_NUDGE_ID="+fmt.Sprintf("%d", ctx.LastNudgeID))
+		env = append(env, "AGENT_LAST_SPRINT_ID="+ctx.LastSprintID)
+		env = append(env, "AGENT_LAST_PROJECT_ID="+ctx.LastProjectID)
+	}
+	cmd.Env = env
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
