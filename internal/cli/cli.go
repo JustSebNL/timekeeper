@@ -157,7 +157,7 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 	case "usage":
 		return usage(args[1:], out, errOut, baseURL)
 	case "pulse":
-		return pulse(out, errOut, baseURL)
+		return pulse(args[1:], out, errOut, baseURL)
 	case "agent":
 		return agentPulse(args[1:], out, errOut, baseURL)
 	case "agents":
@@ -384,11 +384,21 @@ func summary(args []string, out, errOut io.Writer, baseURL string) int {
 	return 0
 }
 
-func pulse(out, errOut io.Writer, baseURL string) int {
+func pulse(args []string, out, errOut io.Writer, baseURL string) int {
+	activeOnly := false
+	staleOnly := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--active-only":
+			activeOnly = true
+		case "--stale":
+			staleOnly = true
+		}
+	}
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/pulse"
 	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(url)
 	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
+		_, _ = fmt.Fprintf(errOut, "TimeKeeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
@@ -410,19 +420,50 @@ func pulse(out, errOut io.Writer, baseURL string) int {
 		} `json:"attention"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&value); err != nil {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
+		_, _ = fmt.Fprintf(errOut, "TimeKeeper API returned invalid JSON: %v\n", err)
 		return 1
 	}
 	if value.Format != "timekeeper-pulse/v1" {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned unsupported Pulse format %q\n", value.Format)
+		_, _ = fmt.Fprintf(errOut, "TimeKeeper API returned unsupported Pulse format %q\n", value.Format)
 		return 1
 	}
-	if len(value.Attention) == 0 {
-		_, _ = fmt.Fprintf(out, "clear\tnext=%ds\n", value.RecommendedNextPulseSeconds)
+
+	// Filter items based on flags. Stale = overdue > 3x planned.
+	type pulseItem struct {
+		Kind                   string
+		ProjectID              string
+		SprintID               string
+		Name                   string
+		PlannedDurationSeconds int64
+		ActiveDurationSeconds  int64
+		OverdueDurationSeconds int64
+	}
+	filtered := make([]pulseItem, 0, len(value.Attention))
+	for _, item := range value.Attention {
+		isStale := item.OverdueDurationSeconds > item.PlannedDurationSeconds*3
+		if activeOnly && isStale {
+			continue
+		}
+		if staleOnly && !isStale {
+			continue
+		}
+		filtered = append(filtered, pulseItem{
+			Kind:                   item.Kind,
+			ProjectID:              item.ProjectID,
+			SprintID:               item.SprintID,
+			Name:                   item.Name,
+			PlannedDurationSeconds: item.PlannedDurationSeconds,
+			ActiveDurationSeconds:  item.ActiveDurationSeconds,
+			OverdueDurationSeconds: item.OverdueDurationSeconds,
+		})
+	}
+
+	if len(filtered) == 0 {
+		_, _ = fmt.Fprintf(out, "clear	next=%ds\n", value.RecommendedNextPulseSeconds)
 		return 0
 	}
-	for _, item := range value.Attention {
-		_, _ = fmt.Fprintf(out, "%s\t%s\t%s\tactive=%ds\tplanned=%ds\toverdue=%ds\t%s\n", item.Kind, item.ProjectID, item.SprintID, item.ActiveDurationSeconds, item.PlannedDurationSeconds, item.OverdueDurationSeconds, item.Name)
+	for _, item := range filtered {
+		_, _ = fmt.Fprintf(out, "%s	%s	%s	active=%ds	planned=%ds	overdue=%ds	%s\n", item.Kind, item.ProjectID, item.SprintID, item.ActiveDurationSeconds, item.PlannedDurationSeconds, item.OverdueDurationSeconds, item.Name)
 	}
 	return 0
 }
@@ -750,14 +791,33 @@ func agentsCommand(args []string, out, errOut io.Writer, baseURL string) int {
 }
 
 func events(args []string, out, errOut io.Writer, baseURL string) int {
-	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
-		_, _ = fmt.Fprintln(errOut, "usage: tk events <project-id>")
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(errOut, "usage: tk events <project-id> [--timestamps] [--since <duration>]")
 		return 2
 	}
-	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + args[0] + "/events"
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(url)
+	projectID := args[0]
+	showTimestamps := false
+	since := ""
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--timestamps":
+			showTimestamps = true
+		case "--since":
+			if i+1 >= len(args) {
+				_, _ = fmt.Fprintln(errOut, "--since requires a duration (e.g. 1h, 30m)")
+				return 2
+			}
+			since = args[i+1]
+			i++
+		}
+	}
+	eventsURL := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/events"
+	if since != "" {
+		eventsURL += "?since=" + url.QueryEscape(since)
+	}
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(eventsURL)
 	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
+		_, _ = fmt.Fprintf(errOut, "TimeKeeper API unavailable at %s: %v\n", eventsURL, err)
 		return 1
 	}
 	defer response.Body.Close()
@@ -771,6 +831,7 @@ func events(args []string, out, errOut io.Writer, baseURL string) int {
 			EventType string `json:"event_type"`
 			EntityID  string `json:"entity_id"`
 			Message   string `json:"message"`
+			CreatedAt string `json:"created_at"`
 		} `json:"items"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
@@ -778,7 +839,11 @@ func events(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	for _, event := range payload.Items {
-		_, _ = fmt.Fprintf(out, "%d\t%s\t%s\t%s\n", event.EventID, event.EventType, event.EntityID, event.Message)
+		if showTimestamps {
+			_, _ = fmt.Fprintf(out, "%d	%s	%s	%s	%s\n", event.EventID, event.CreatedAt, event.EventType, event.EntityID, event.Message)
+		} else {
+			_, _ = fmt.Fprintf(out, "%d	%s	%s	%s\n", event.EventID, event.EventType, event.EntityID, event.Message)
+		}
 	}
 	return 0
 }

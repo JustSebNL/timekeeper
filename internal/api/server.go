@@ -683,6 +683,7 @@ func listProjectEvents(database *store.Store) http.HandlerFunc {
 			}
 			limit = n
 		}
+		since := r.URL.Query().Get("since")
 		var events []model.ProjectEvent
 		var err error
 		if limit > 0 {
@@ -697,6 +698,22 @@ func listProjectEvents(database *store.Store) http.HandlerFunc {
 			}
 			writeError(w, http.StatusInternalServerError, "list_project_events_failed", "Could not list project events.")
 			return
+		}
+		// Filter by --since duration if provided.
+		if since != "" {
+			d, err := time.ParseDuration(since)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_since", "since must be a valid duration (e.g. 1h, 30m).")
+				return
+			}
+			cutoff := time.Now().Add(-d)
+			filtered := make([]model.ProjectEvent, 0, len(events))
+			for _, evt := range events {
+				if evt.CreatedAt.After(cutoff) || evt.CreatedAt.Equal(cutoff) {
+					filtered = append(filtered, evt)
+				}
+			}
+			events = filtered
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": events})
 	}
