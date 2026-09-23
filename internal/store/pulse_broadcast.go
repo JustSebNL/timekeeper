@@ -21,8 +21,8 @@ func (s *Store) ListActiveAgents(ctx context.Context) ([]ActiveAgent, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT agent_id, active_sprint_id, lease_duration_seconds, last_progress_at, guardian_url
 		FROM agent_pulse_progress
-		WHERE last_process_at + CAST(lease_duration_seconds AS INTEGER) > ?
-		ORDER BY agent_id`, time.Now().Unix())
+		WHERE datetime(last_progress_at, '+' || CAST(lease_duration_seconds AS TEXT) || ' seconds') > datetime('now')
+		ORDER BY agent_id`)
 	if err != nil {
 		return nil, fmt.Errorf("read active agents: %w", err)
 	}
@@ -31,9 +31,16 @@ func (s *Store) ListActiveAgents(ctx context.Context) ([]ActiveAgent, error) {
 	agents := make([]ActiveAgent, 0)
 	for rows.Next() {
 		var a ActiveAgent
-		if err := rows.Scan(&a.AgentID, &a.ActiveSprintID, &a.LeaseDurationSeconds, &a.LastProgressAt, &a.GuardianURL); err != nil {
+		var lastProgress string
+		if err := rows.Scan(&a.AgentID, &a.ActiveSprintID, &a.LeaseDurationSeconds, &lastProgress, &a.GuardianURL); err != nil {
 			return nil, fmt.Errorf("scan active agent: %w", err)
 		}
+		// last_progress_at is stored as ISO8601 text in SQLite.
+		t, err := time.Parse(time.RFC3339, lastProgress)
+		if err != nil {
+			return nil, fmt.Errorf("parse last_progress_at: %w", err)
+		}
+		a.LastProgressAt = t
 		agents = append(agents, a)
 	}
 	if err := rows.Err(); err != nil {

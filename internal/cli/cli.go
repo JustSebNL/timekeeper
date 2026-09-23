@@ -587,7 +587,10 @@ func agentsCommand(args []string, out, errOut io.Writer, baseURL string) int {
 			_, _ = fmt.Fprintln(errOut, "usage: tk agents broadcast <message>")
 			return 2
 		}
-		body, err := json.Marshal(map[string]string{"message": args[1]})
+		message := args[1]
+		// Prepend the countdown notice so agents know a restart is coming.
+		fullMessage := fmt.Sprintf("%s — server will be restarted in 30 seconds", message)
+		body, err := json.Marshal(map[string]string{"message": fullMessage})
 		if err != nil {
 			return 1
 		}
@@ -616,7 +619,21 @@ func agentsCommand(args []string, out, errOut io.Writer, baseURL string) int {
 			return 1
 		}
 		_, _ = fmt.Fprintf(out, "broadcast to %d agents: %s\n", result.Count, strings.Join(result.AgentIDs, ", "))
-		return 0
+
+		// Countdown from 30 on one line (\r overwrites the previous write).
+		// Write directly to os.Stdout so the \r reaches the terminal even
+		// when the CLI output is wrapped in a buffered writer.
+		stdout := os.Stdout
+		_, _ = fmt.Fprintf(stdout, "\rRestarting in %ds...          ", 30)
+		for i := 30; i > 0; i-- {
+			time.Sleep(time.Second)
+			_, _ = fmt.Fprintf(stdout, "\rRestarting in %ds...          ", i)
+		}
+		_, _ = fmt.Fprintln(stdout, "\rRestarting now...                   ")
+
+		// Execute the restart via the service manager.
+		restartArgs := []string{"restart"}
+		return serviceManager(restartArgs, out, errOut, baseURL)
 	default:
 		_, _ = fmt.Fprintf(errOut, "unknown agents command %q\n", args[0])
 		return 2
