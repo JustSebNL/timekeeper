@@ -67,12 +67,15 @@ for i in $(seq 1 "$MAX_ITERATIONS"); do
         "$TK" msg "$PROJECT_ID" add --kind observation --agent "xatia-self-nudge" \
             "Self-nudge work cycle $i: completed $sprint_id" 2>/dev/null || true
         echo "Evidence recorded."
+        echo "Build OK for $sprint_id"
+        echo "Tests passed for $sprint_id"
 
         # Complete the sprint.
         "$TK" sp complete "$sprint_id" --reason "self-nudge work cycle completed" 2>/dev/null || true
         echo "Sprint $sprint_id completed."
     else
         echo "Build/test cycle failed. Sprint $sprint_id not completed."
+        echo "Error: build or test failed for $sprint_id"
         exit 1
     fi
 done

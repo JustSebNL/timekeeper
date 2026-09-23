@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/JustSebNL/timekeeper/internal/cache"
+	"github.com/JustSebNL/timekeeper/internal/stuck"
 	"github.com/JustSebNL/timekeeper/internal/storeclient"
 )
 
@@ -156,8 +158,9 @@ func runPollLoop(agentID string, tk *storeclient.Client, ctx *AgentContext, inte
 		// Record delivered event.
 		recordPulseEvent(context.Background(), tk, agentID, nudgeID, "delivered")
 
-		// Run the work cycle.
-		if err := runGuardianWorkCycle(agentID, ctx); err != nil {
+		// Run the work cycle with stuck detection.
+		detector := newStuckDetector()
+		if err := runGuardianWorkCycle(agentID, ctx, detector); err != nil {
 			_, _ = fmt.Fprintf(errOut, "work cycle failed: %v\n", err)
 			time.Sleep(interval)
 			continue
@@ -203,8 +206,9 @@ func runWakeOnce(agentID string, tk *storeclient.Client, ctx *AgentContext, out,
 	// Record delivered event.
 	recordPulseEvent(context.Background(), tk, agentID, nudgeID, "delivered")
 
-	// Run the work cycle.
-	if err := runGuardianWorkCycle(agentID, ctx); err != nil {
+	// Run the work cycle with stuck detection.
+	detector := newStuckDetector()
+	if err := runGuardianWorkCycle(agentID, ctx, detector); err != nil {
 		_, _ = fmt.Fprintf(errOut, "work cycle failed: %v\n", err)
 		return 1
 	}
@@ -272,7 +276,19 @@ func recordPulseEvent(ctx context.Context, tk *storeclient.Client, agentID strin
 	}
 }
 
-func runGuardianWorkCycle(agentID string, ctx *AgentContext) error {
+func newStuckDetector() *stuck.Detector {
+	cfg := stuck.DefaultConfig()
+	cfg.OnEscalate = func(level int, reason string) {
+		// Escalation is logged but does not block the work cycle.
+		// The guardian will deliver the nudge again if the agent is truly stuck.
+		if level >= 2 {
+			fmt.Fprintf(os.Stderr, "STUCK DETECTOR: level %d — %s\n", level, reason)
+		}
+	}
+	return stuck.NewDetector(cfg)
+}
+
+func runGuardianWorkCycle(agentID string, ctx *AgentContext, detector *stuck.Detector) error {
 	// Run the work cycle script via cmd.exe (Windows).
 	script := "scripts/guardian/self-nudge-work.sh"
 	cmd := exec.CommandContext(context.Background(), "cmd.exe", "/c", script)
@@ -285,6 +301,47 @@ func runGuardianWorkCycle(agentID string, ctx *AgentContext) error {
 		env = append(env, "AGENT_LAST_PROJECT_ID="+ctx.LastProjectID)
 	}
 	cmd.Env = env
+
+	// Wire stuck detector to capture signals from work cycle output.
+	if detector != nil {
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			return fmt.Errorf("create stdout pipe: %w", err)
+		}
+		cmd.Stderr = cmd.Stdout // merge stderr into stdout
+
+		// Start the command
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start work cycle: %w", err)
+		}
+
+		// Scan output for signals.
+		go func() {
+			scanner := bufio.NewScanner(stdoutPipe)
+			for scanner.Scan() {
+				line := scanner.Text()
+				// Record signals based on output patterns.
+				if strings.Contains(line, "Build OK") || strings.Contains(line, "build pass") {
+					detector.RecordNow(stuck.SignalBuildPass, nil)
+				} else if strings.Contains(line, "Tests passed") || strings.Contains(line, "test pass") {
+					detector.RecordNow(stuck.SignalTestPass, nil)
+				} else if strings.Contains(line, "Sprint") && strings.Contains(line, "completed") {
+					detector.RecordNow(stuck.SignalWorkCycle, nil)
+				} else if strings.Contains(line, "failed") || strings.Contains(line, "error") {
+					detector.RecordNow(stuck.SignalError, map[string]string{"reason": line})
+				}
+				// Echo the line to stdout for visibility.
+				fmt.Println(line)
+			}
+		}()
+
+		if err := cmd.Wait(); err != nil {
+			return fmt.Errorf("work cycle: %w", err)
+		}
+		return nil
+	}
+
+	// No detector — run without signal capture.
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
