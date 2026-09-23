@@ -231,6 +231,9 @@ func main() {
 	keepAliveInterval := flag.Duration("keep-alive-interval", 5*time.Minute, "local dashboard keep-alive interval; 0 disables it")
 	backupTo := flag.String("backup-to", "", "create a SQLite backup at this new path, then exit")
 	pulseGuardianInterval := flag.Duration("pulse-guardian-interval", 5*time.Minute, "run the local Pulse Guardian at this interval; 0 disables it")
+	pulseGuardianNtfyServer := flag.String("pulse-guardian-ntfy-server", "", "ntfy server URL for guardian wake-up (e.g. https://ntfy.sh); empty disables ntfy publishing")
+	pulseGuardianNtfyTopic := flag.String("pulse-guardian-ntfy-topic", "", "ntfy topic for guardian wake-up messages")
+	pulseGuardianNtfyToken := flag.String("pulse-guardian-ntfy-token", "", "ntfy authentication token (optional)")
 	logPath := flag.String("log", ".timekeeper/log/app.log", "structured JSON log path; empty disables file logging")
 	logMode := logging.ModeNormal
 	flag.Var(modeFlag{&logMode}, "log-mode", "log mode: normal|debug (debug logs every step, raw inputs, full errors)")
@@ -271,7 +274,18 @@ func main() {
 	if *pulseGuardianInterval > 0 {
 		guardianContext, guardianStop := context.WithCancel(context.Background())
 		defer guardianStop()
-		go guardian.Run(guardianContext, database, *pulseGuardianInterval, func(err error) {
+		var ntfyConfig *guardian.NtfyConfig
+		if *pulseGuardianNtfyServer != "" && *pulseGuardianNtfyTopic != "" {
+			ntfyConfig = &guardian.NtfyConfig{
+				ServerURL: *pulseGuardianNtfyServer,
+				Topic:      *pulseGuardianNtfyTopic,
+				Token:      *pulseGuardianNtfyToken,
+			}
+			logger.Info("pulse guardian ntfy enabled",
+				slog.String("server", *pulseGuardianNtfyServer),
+				slog.String("topic", *pulseGuardianNtfyTopic))
+		}
+		go guardian.Run(guardianContext, database, *pulseGuardianInterval, ntfyConfig, func(err error) {
 			logger.Error("pulse guardian", slog.Any("err", err))
 			log.Printf("Pulse Guardian: %v", err)
 		})

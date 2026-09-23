@@ -1,6 +1,6 @@
 // Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 
-// Package guardian runs Time Keeper's dependency-free local Pulse Guardian.
+// Package guardian runs TimeKeeper's dependency-free local Pulse Guardian.
 package guardian
 
 import (
@@ -14,10 +14,21 @@ import (
 	"time"
 
 	"github.com/JustSebNL/timekeeper/internal/model"
+	"github.com/JustSebNL/timekeeper/internal/ntfy"
 	"github.com/JustSebNL/timekeeper/internal/store"
 )
 
 const minInterval = time.Second
+
+// NtfyConfig holds the optional ntfy publisher configuration for guardian wake-up.
+type NtfyConfig struct {
+	// ServerURL is the ntfy server address (e.g. https://ntfy.sh).
+	ServerURL string
+	// Topic is the agent wake-up topic.
+	Topic string
+	// Token is the optional authentication token.
+	Token string
+}
 
 type TickResult struct {
 	Created          int
@@ -29,7 +40,9 @@ type TickResult struct {
 // Tick expires material-progress leases and sends every unacknowledged nudge to
 // the agent's explicitly registered numeric-loopback Guardian endpoint. Failed
 // callbacks stay durable and are retried by a later tick.
-func Tick(ctx context.Context, database *store.Store, at time.Time) (TickResult, error) {
+// If ntfyConfig is non-nil, also publishes a wake message via ntfy for each
+// pending nudge (the agent-side ntfy client runs `tk guardian wake`).
+func Tick(ctx context.Context, database *store.Store, at time.Time, ntfyConfig *NtfyConfig) (TickResult, error) {
 	if database == nil {
 		return TickResult{}, errors.New("Pulse Guardian store is required")
 	}
@@ -41,6 +54,26 @@ func Tick(ctx context.Context, database *store.Store, at time.Time) (TickResult,
 		return TickResult{}, err
 	}
 	result := TickResult{Created: len(created)}
+
+	// Publish wake messages via ntfy for newly created nudges.
+	if ntfyConfig != nil && ntfyConfig.ServerURL != "" && ntfyConfig.Topic != "" {
+		publisher, err := ntfy.NewPublisher(ntfy.Config{
+			ServerURL: ntfyConfig.ServerURL,
+			Topic:      ntfyConfig.Topic,
+			Token:      ntfyConfig.Token,
+		})
+		if err == nil {
+			for _, nudge := range created {
+				if err := publisher.WakeAgent(ctx, nudge.NudgeID, nudge.AgentID); err != nil {
+					// ntfy delivery failure is not fatal — the nudge stays pending
+					// and the HTTP fallback will still deliver it.
+					result.DeliveryFailures++
+				}
+			}
+			publisher.Close()
+		}
+	}
+
 	deliveries, err := database.ListPendingPulseNudgeDeliveries(ctx)
 	if err != nil {
 		return TickResult{}, err
@@ -64,7 +97,9 @@ func Tick(ctx context.Context, database *store.Store, at time.Time) (TickResult,
 // Run owns the periodic Guardian loop. It performs an immediate tick to surface
 // already-stale work, then remains outside the agent's work loop until context
 // cancellation. It has no dependency on any agent framework or other repo.
-func Run(ctx context.Context, database *store.Store, interval time.Duration, report func(error)) {
+// If ntfyConfig is non-nil, the guardian also publishes wake messages via ntfy
+// for each newly created nudge (the agent-side ntfy client runs `tk guardian wake`).
+func Run(ctx context.Context, database *store.Store, interval time.Duration, ntfyConfig *NtfyConfig, report func(error)) {
 	if interval < minInterval {
 		if report != nil {
 			report(fmt.Errorf("Pulse Guardian interval must be at least %s", minInterval))
@@ -72,7 +107,7 @@ func Run(ctx context.Context, database *store.Store, interval time.Duration, rep
 		return
 	}
 	tick := func() {
-		if _, err := Tick(ctx, database, time.Now().UTC().Round(0)); err != nil && report != nil {
+		if _, err := Tick(ctx, database, time.Now().UTC().Round(0), ntfyConfig); err != nil && report != nil {
 			report(err)
 		}
 	}

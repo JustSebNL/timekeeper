@@ -38,14 +38,14 @@ func TestTickDoesNotRedeliverAnAcceptedNudgeBeforeAcknowledgement(t *testing.T) 
 		t.Fatalf("report progress: %v", err)
 	}
 
-	first, err := guardian.Tick(context.Background(), database, progress.LastProgressAt.Add(2*time.Second))
+	first, err := guardian.Tick(context.Background(), database, progress.LastProgressAt.Add(2*time.Second), nil)
 	if err != nil {
 		t.Fatalf("first tick: %v", err)
 	}
 	if first.Created != 1 || first.DeliveryAttempts != 1 || first.Delivered != 1 {
 		t.Fatalf("first tick = %#v", first)
 	}
-	second, err := guardian.Tick(context.Background(), database, progress.LastProgressAt.Add(3*time.Second))
+	second, err := guardian.Tick(context.Background(), database, progress.LastProgressAt.Add(3*time.Second), nil)
 	if err != nil {
 		t.Fatalf("second tick: %v", err)
 	}

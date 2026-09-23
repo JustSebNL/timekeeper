@@ -34,7 +34,7 @@ func TestTickDoesNotTreatUnmarkedCallbackResponseAsGuardianAcceptance(t *testing
 		t.Fatalf("report progress: %v", err)
 	}
 
-	result, err := guardian.Tick(context.Background(), database, progress.LastProgressAt.Add(2*time.Second))
+	result, err := guardian.Tick(context.Background(), database, progress.LastProgressAt.Add(2*time.Second), nil)
 	if err != nil {
 		t.Fatalf("tick guardian: %v", err)
 	}
