@@ -33,6 +33,24 @@ func messages(args []string, out, errOut io.Writer, baseURL string) int {
 		fmt.Fprintln(errOut, "usage: tk msg <project-id-or-alias> <add|list|search|show|edit|checkpoint|pin|unpin|thread|context|revisions|seed> ...")
 		return 2
 	}
+	if args[0] == "--help" || args[0] == "-h" {
+		fmt.Fprintln(out, "usage: tk msg <project-id-or-alias> <add|list|search|show|edit|checkpoint|pin|unpin|thread|context|revisions|seed> ...")
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "Subcommands:")
+		fmt.Fprintln(out, "  add [--kind note|decision|observation|link|lesson|question|answer] [--author <id>] [--tags <t>] [--parent <id>] [--link <url>] <body...>")
+		fmt.Fprintln(out, "  list [--kind <kind>] [--limit <n>]")
+		fmt.Fprintln(out, "  search <query>")
+		fmt.Fprintln(out, "  show <message-id>")
+		fmt.Fprintln(out, "  edit <message-id> [--kind <kind>] [--body <text>] [--add-tags <t>] [--remove-tags <t>]")
+		fmt.Fprintln(out, "  thread <message-id>")
+		fmt.Fprintln(out, "  context <message-id>")
+		fmt.Fprintln(out, "  revisions <message-id>")
+		fmt.Fprintln(out, "  checkpoint --author <id> --entry kind|body|tags [--entry ...]")
+		fmt.Fprintln(out, "  pin <message-id>")
+		fmt.Fprintln(out, "  unpin <message-id>")
+		fmt.Fprintln(out, "  seed <parent-id> --count <n>")
+		return 0
+	}
 	projectID, err := resolveProjectID(baseURL, args[0])
 	if err != nil {
 		fmt.Fprintln(errOut, err)

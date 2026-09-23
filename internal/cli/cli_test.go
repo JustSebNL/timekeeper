@@ -36,11 +36,18 @@ func TestRunExportPrintsPortableProjectSnapshot(t *testing.T) {
 
 func TestRunDoctorReportsHealthyConfiguredAPI(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/health" {
+		switch r.URL.Path {
+		case "/health":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case "/api/v1/plugins", "/api/v1/history/status":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case "/api/v1/version":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":"test"}`))
+		default:
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 	t.Cleanup(server.Close)
 

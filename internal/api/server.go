@@ -96,6 +96,8 @@ func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 	mux.HandleFunc("POST /api/v1/llm-pipelines", createLLMPipeline(database))
 	mux.HandleFunc("GET /api/v1/pulse", pulse(database))
 	mux.HandleFunc("GET /api/v1/guardian/status", guardianStatus(database, runtime))
+	mux.HandleFunc("GET /api/v1/agents", listActiveAgents(database))
+	mux.HandleFunc("POST /api/v1/agents/broadcast", createBroadcastNudge(database))
 	mux.HandleFunc("POST /api/v1/agents/{agentID}/progress", reportAgentProgress(database))
 	mux.HandleFunc("GET /api/v1/agents/{agentID}/nudges/history", listPulseNudgeHistory(database))
 	mux.HandleFunc("GET /api/v1/agents/{agentID}/nudges", listPendingPulseNudges(database))
@@ -251,6 +253,8 @@ func apiHelp(w http.ResponseWriter, _ *http.Request) {
 		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/supervised-launches", "desc": "Atomically claim a bounded supervised run"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/coding-outcomes", "desc": "Record an immutable evidence-linked coding review"},
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/coding-outcomes", "desc": "Compare reported outcomes in matching cohorts"},
+		{"method": "GET", "path": "/api/v1/agents", "desc": "List active agents (non-expired leases)"},
+		{"method": "POST", "path": "/api/v1/agents/broadcast", "desc": "Broadcast a nudge to all active agents"},
 		{"method": "POST", "path": "/api/v1/agents/{agentID}/progress", "desc": "Renew agent progress lease"},
 		{"method": "GET", "path": "/api/v1/agents/{agentID}/nudges", "desc": "List pending Guardian nudges"},
 		{"method": "GET", "path": "/api/v1/agents/{agentID}/nudges/history", "desc": "Guardian nudge delivery/recovery history"},
@@ -362,6 +366,40 @@ func reportAgentProgress(database *store.Store) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusCreated, progress)
+	}
+}
+
+func listActiveAgents(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		agents, err := database.ListActiveAgents(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "active_agents_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": agents})
+	}
+}
+
+func createBroadcastNudge(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Message string `json:"message"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_broadcast", "Broadcast input must be valid JSON.")
+			return
+		}
+		if input.Message == "" {
+			writeError(w, http.StatusBadRequest, "invalid_broadcast", "Broadcast message must not be empty.")
+			return
+		}
+		result, err := database.CreateBroadcastNudge(r.Context(), input.Message)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "broadcast_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, result)
 	}
 }
 

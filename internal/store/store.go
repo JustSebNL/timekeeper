@@ -535,7 +535,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate Pulse nudge delivered timestamp: %w", err)
 	}
 	if err := s.migratePulseDeadlineKind(ctx); err != nil {
-		return err
+		return fmt.Errorf("migrate Pulse deadline notifications: %w", err)
+	}
+	if err := s.migratePulseBroadcastKind(ctx); err != nil {
+		return fmt.Errorf("migrate Pulse broadcast notifications: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS sprints_subtask_updated_idx ON sprints(subtask_id, updated_at DESC)"); err != nil {
 		return fmt.Errorf("migrate sprints subtask index: %w", err)

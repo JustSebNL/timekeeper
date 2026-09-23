@@ -160,6 +160,8 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return pulse(out, errOut, baseURL)
 	case "agent":
 		return agentPulse(args[1:], out, errOut, baseURL)
+	case "agents":
+		return agentsCommand(args[1:], out, errOut, baseURL)
 	case "events":
 		return events(args[1:], out, errOut, baseURL)
 	case "notes":
@@ -541,6 +543,82 @@ func agentPulse(args []string, out, errOut io.Writer, baseURL string) int {
 		return 0
 	default:
 		_, _ = fmt.Fprintf(errOut, "unknown agent command %q\n", args[0])
+		return 2
+	}
+}
+
+func agentsCommand(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(errOut, "usage: tk agents <list|broadcast> ...")
+		return 2
+	}
+	switch args[0] {
+	case "list":
+		endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/agents"
+		response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
+			return 1
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+			return 1
+		}
+		var payload struct {
+			Items []struct {
+				AgentID              string `json:"agent_id"`
+				ActiveSprintID       string `json:"active_sprint_id"`
+				LeaseDurationSeconds int64  `json:"lease_duration_seconds"`
+				LastProgressAt       string `json:"last_progress_at"`
+				GuardianURL          string `json:"guardian_url"`
+			} `json:"items"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
+			return 1
+		}
+		for _, a := range payload.Items {
+			_, _ = fmt.Fprintf(out, "%s\tlease=%ds\tsprint=%s\tguardian=%s\tlast=%s\n", a.AgentID, a.LeaseDurationSeconds, a.ActiveSprintID, a.GuardianURL, a.LastProgressAt)
+		}
+		return 0
+	case "broadcast":
+		if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
+			_, _ = fmt.Fprintln(errOut, "usage: tk agents broadcast <message>")
+			return 2
+		}
+		body, err := json.Marshal(map[string]string{"message": args[1]})
+		if err != nil {
+			return 1
+		}
+		endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/agents/broadcast"
+		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return 1
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
+			return 1
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusCreated {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+			return 1
+		}
+		var result struct {
+			AgentIDs []string `json:"agent_ids"`
+			Count    int      `json:"count"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
+			return 1
+		}
+		_, _ = fmt.Fprintf(out, "broadcast to %d agents: %s\n", result.Count, strings.Join(result.AgentIDs, ", "))
+		return 0
+	default:
+		_, _ = fmt.Fprintf(errOut, "unknown agents command %q\n", args[0])
 		return 2
 	}
 }
@@ -1656,6 +1734,11 @@ func doctor(out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintf(out, "[skip] install info: %v\n", err)
 	}
 
+	// Config visibility: report optional subsystems that have routes but
+	// are unconfigured, so a fresh `tk doctor` tells the operator what to
+	// set up rather than leaving them guessing from 503s.
+	reportOptionalSubsystems(out, baseURL)
+
 	if allOK {
 		_, _ = fmt.Fprintln(out, "\nTime Keeper is ready.")
 		return 0
@@ -1668,6 +1751,57 @@ func doctor(out, errOut io.Writer, baseURL string) int {
 	_, _ = fmt.Fprintln(errOut, "\nTime Keeper is not fully ready.")
 	_, _ = fmt.Fprintln(errOut, "Start Time Keeper, then run tk doctor again.")
 	return 1
+}
+
+// reportOptionalSubsystems probes optional subsystems that have routes but
+// may be unconfigured. Each check prints one line with a "[skip]" or
+// "[hint]" prefix so the operator knows what to configure without having
+// to hit a 503 first.
+func reportOptionalSubsystems(out io.Writer, baseURL string) {
+	// Plugin store: GET /api/v1/plugins → 503 when unconfigured.
+	code, _ := probeStatusCode(baseURL + "/api/v1/plugins")
+	if code == http.StatusServiceUnavailable {
+		_, _ = fmt.Fprintln(out, "[hint] plugin store: not configured (set TIMEKEEPER_STORE_URL)")
+	}
+
+	// History: GET /api/v1/history/status → 503 when unconfigured.
+	code, _ = probeStatusCode(baseURL + "/api/v1/history/status")
+	if code == http.StatusServiceUnavailable {
+		_, _ = fmt.Fprintln(out, "[hint] history: not configured (rebuild with NewWithHistory or set HISTORY_ROOT)")
+	}
+
+	// Server version: always print so the operator knows what's running.
+	code, body := probeBody(baseURL + "/api/v1/version")
+	if code == http.StatusOK && body != "" {
+		var v struct {
+			Version string `json:"version"`
+			Commit  string `json:"commit"`
+		}
+		if json.Unmarshal([]byte(body), &v) == nil {
+			_, _ = fmt.Fprintf(out, "[info] server version: %s (%s)\n", v.Version, v.Commit)
+		}
+	}
+}
+
+// probeStatusCode fetches a URL and returns the HTTP status code, or 0 on error.
+func probeStatusCode(url string) (int, string) {
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Get(url)
+	if err != nil {
+		return 0, ""
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, ""
+}
+
+// probeBody fetches a URL and returns the status code and body.
+func probeBody(url string) (int, string) {
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Get(url)
+	if err != nil {
+		return 0, ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
 }
 
 // reportInstallInfo prints a one-line summary of the install that the

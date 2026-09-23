@@ -214,6 +214,10 @@ func TestSafeguardMigratesLegacyNudges(t *testing.T) {
 		t.Fatal(err)
 	}
 	schema = strings.Replace(schema, "pulse_nudges", "legacy_nudges", 1)
+	// Revert to the original pre-deadline, pre-broadcast schema.
+	// The current schema has: 'agent_unresponsive', 'sprint_overdue', 'broadcast'
+	// We need to go back to just: 'agent_unresponsive'
+	schema = strings.Replace(schema, "'agent_unresponsive', 'sprint_overdue', 'broadcast'", "'agent_unresponsive'", 1)
 	schema = strings.Replace(schema, "'agent_unresponsive', 'sprint_overdue'", "'agent_unresponsive'", 1)
 	for _, stmt := range []string{schema, "INSERT INTO legacy_nudges SELECT * FROM pulse_nudges", "DROP TABLE pulse_nudges", "ALTER TABLE legacy_nudges RENAME TO pulse_nudges"} {
 		if _, err := raw.Exec(stmt); err != nil {
