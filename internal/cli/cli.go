@@ -166,6 +166,9 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 	case "agents":
 		return agentsCommand(args[1:], out, errOut, baseURL)
 	case "guardian":
+		if len(args) > 1 && args[1] == "wake" {
+			return guardianWakeCLI(args[2:], out, errOut, baseURL)
+		}
 		return guardianSelfNudge(args[1:], out, errOut, baseURL)
 	case "events":
 		return events(args[1:], out, errOut, baseURL)
