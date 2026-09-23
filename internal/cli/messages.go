@@ -91,6 +91,7 @@ func msgAdd(projectID string, args []string, out, errOut io.Writer, baseURL stri
 	var kind model.MessageKind = model.MessageKindNote
 	var author, link, tags string
 	var parentMessageID *int64
+	var fileBody string
 	bodyParts := make([]string, 0, len(args))
 	i := 0
 	for i < len(args) {
@@ -140,8 +141,20 @@ func msgAdd(projectID string, args []string, out, errOut io.Writer, baseURL stri
 				return 2
 			}
 			parentMessageID = &id
+		case "--file":
+			if i+1 >= len(args) {
+				fmt.Fprintln(errOut, "--file requires a path")
+				return 2
+			}
+			i++
+			content, err := os.ReadFile(args[i])
+			if err != nil {
+				fmt.Fprintf(errOut, "read file %q: %v\n", args[i], err)
+				return 2
+			}
+			fileBody = string(content)
 		case "--help", "-h":
-			fmt.Fprintln(out, "usage: tk msg <project> add [--kind <k>] [--author <a>] [--link <u>] [--tags <t>] [--reply-to M-1] <body...>")
+			fmt.Fprintln(out, "usage: tk msg <project> add [--kind <k>] [--author <a>] [--link <u>] [--tags <t>] [--reply-to M-1] [--file <path>] <body...>")
 			return 0
 		default:
 			bodyParts = append(bodyParts, a)
@@ -149,8 +162,11 @@ func msgAdd(projectID string, args []string, out, errOut io.Writer, baseURL stri
 		i++
 	}
 	body := strings.TrimSpace(strings.Join(bodyParts, " "))
+	if fileBody != "" {
+		body = strings.TrimSpace(fileBody)
+	}
 	if body == "" {
-		fmt.Fprintln(errOut, "message body is required (pass it as the final argument)")
+		fmt.Fprintln(errOut, "message body is required (pass it as the final argument or use --file)")
 		return 2
 	}
 	input := model.CreateProjectMessageInput{Kind: kind, Author: author, Body: body, Link: link, Tags: tags, ParentMessageID: parentMessageID}

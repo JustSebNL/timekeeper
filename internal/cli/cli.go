@@ -1148,6 +1148,70 @@ func sprintAttempts(args []string, out, errOut io.Writer, baseURL string) int {
 	return 0
 }
 
+func sprintClaimNew(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) != 5 && len(args) != 6 {
+		_, _ = fmt.Fprintln(errOut, "usage: tk sp claim-new <project-id> <task-id> <owner-id> <sprint-name> <estimate> [buffer-percent]")
+		return 2
+	}
+	projectID, taskID, _, name := args[0], args[1], args[2], args[3]
+	estimate, err := time.ParseDuration(args[4])
+	if err != nil || estimate <= 0 {
+		_, _ = fmt.Fprintln(errOut, "estimate must be a positive duration such as 30m or 2h")
+		return 2
+	}
+	bufferPct := int64(0)
+	if len(args) == 6 {
+		bufferPct, err = strconv.ParseInt(args[5], 10, 64)
+		if err != nil || bufferPct < 0 || bufferPct > 100 {
+			_, _ = fmt.Fprintln(errOut, "buffer percent must be a whole number from 0 to 100")
+			return 2
+		}
+	}
+	createBody, err := json.Marshal(map[string]any{"name": name, "estimated_duration_seconds": int64(estimate.Seconds()), "buffer_pct": bufferPct})
+	if err != nil {
+		return 1
+	}
+	createURL := strings.TrimRight(baseURL, "/") + "/api/v1/tasks/" + url.PathEscape(taskID) + "/sprints"
+	req, err := http.NewRequest(http.MethodPost, createURL, bytes.NewReader(createBody))
+	if err != nil {
+		return 1
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "create sprint: %v\n", err)
+		return 1
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		_, _ = fmt.Fprintf(errOut, "create sprint: %s\n", resp.Status)
+		return 1
+	}
+	// Now claim the next sprint for the project.
+	claimURL := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + url.PathEscape(projectID) + "/sprints/claim-next"
+	claimReq, err := http.NewRequest(http.MethodPost, claimURL, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return 1
+	}
+	claimResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(claimReq)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "claim sprint: %v\n", err)
+		return 1
+	}
+	defer claimResp.Body.Close()
+	if claimResp.StatusCode != http.StatusOK {
+		_, _ = fmt.Fprintf(errOut, "claim sprint: %s\n", claimResp.Status)
+		return 1
+	}
+	var sprint model.Sprint
+	if err := json.NewDecoder(claimResp.Body).Decode(&sprint); err != nil {
+		_, _ = fmt.Fprintf(errOut, "claim sprint: invalid JSON: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(out, "created and claimed %s\t%s\t%s\n", sprint.SprintID, sprint.Name, sprint.Status)
+	return 0
+}
+
 func sprintNext(args []string, out, errOut io.Writer, baseURL string) int {
 	if len(args) != 2 || strings.TrimSpace(args[1]) == "" {
 		_, _ = fmt.Fprintln(errOut, "usage: tk sp next <project-id>")
@@ -1194,6 +1258,9 @@ func sprint(args []string, out, errOut io.Writer, baseURL string) int {
 	}
 	if len(args) > 0 && args[0] == "next" {
 		return sprintNext(args, out, errOut, baseURL)
+	}
+	if len(args) > 0 && args[0] == "claim-new" {
+		return sprintClaimNew(args[1:], out, errOut, baseURL)
 	}
 	if len(args) > 0 && args[0] == "entries" {
 		return sprintEntries(args, out, errOut, baseURL)
