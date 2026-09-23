@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
@@ -162,6 +163,8 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return agentPulse(args[1:], out, errOut, baseURL)
 	case "agents":
 		return agentsCommand(args[1:], out, errOut, baseURL)
+	case "guardian":
+		return guardianSelfNudge(args[1:], out, errOut, baseURL)
 	case "events":
 		return events(args[1:], out, errOut, baseURL)
 	case "notes":
@@ -788,6 +791,127 @@ func agentsCommand(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintf(errOut, "unknown agents command %q\n", args[0])
 		return 2
 	}
+}
+
+func guardianSelfNudge(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) == 0 || args[0] != "self-nudge" {
+		_, _ = fmt.Fprintln(errOut, "usage: tk guardian self-nudge --agent-id <id> [--lease <duration>] [--project <id>] [--work <script>]")
+		return 2
+	}
+	// Parse flags.
+	agentID := ""
+	lease := "30m"
+	projectID := ""
+	workScript := "scripts/guardian/self-nudge-work.sh"
+	bindAddr := "127.0.0.1:1619"
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--agent-id":
+			if i+1 >= len(args) {
+				_, _ = fmt.Fprintln(errOut, "--agent-id requires a value")
+				return 2
+			}
+			agentID = args[i+1]
+			i++
+		case "--lease":
+			if i+1 >= len(args) {
+				_, _ = fmt.Fprintln(errOut, "--lease requires a value")
+				return 2
+			}
+			lease = args[i+1]
+			i++
+		case "--project":
+			if i+1 >= len(args) {
+				_, _ = fmt.Fprintln(errOut, "--project requires a value")
+				return 2
+			}
+			projectID = args[i+1]
+			i++
+		case "--work":
+			if i+1 >= len(args) {
+				_, _ = fmt.Fprintln(errOut, "--work requires a value")
+				return 2
+			}
+			workScript = args[i+1]
+			i++
+		case "--bind":
+			if i+1 >= len(args) {
+				_, _ = fmt.Fprintln(errOut, "--bind requires a value")
+				return 2
+			}
+			bindAddr = args[i+1]
+			i++
+		}
+	}
+	if agentID == "" {
+		_, _ = fmt.Fprintln(errOut, "--agent-id is required")
+		return 2
+	}
+	// Register the agent with the guardian.
+	guardianURL := "http://" + bindAddr + "/pulse"
+	leaseDur, err := time.ParseDuration(lease)
+	if err != nil || leaseDur < time.Second {
+		_, _ = fmt.Fprintln(errOut, "lease must be a positive duration such as 30m or 1h")
+		return 2
+	}
+	regInput := map[string]any{"lease_duration_seconds": int64(leaseDur.Seconds()), "guardian_url": guardianURL}
+	regBody, err := json.Marshal(regInput)
+	if err != nil {
+		return 1
+	}
+	regURL := strings.TrimRight(baseURL, "/") + "/api/v1/agents/" + agentID + "/progress"
+	regReq, err := http.NewRequest(http.MethodPost, regURL, bytes.NewReader(regBody))
+	if err != nil {
+		return 1
+	}
+	regReq.Header.Set("Content-Type", "application/json")
+	regResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(regReq)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "register agent: %v\n", err)
+		return 1
+	}
+	regResp.Body.Close()
+	if regResp.StatusCode != http.StatusOK && regResp.StatusCode != http.StatusCreated {
+		_, _ = fmt.Fprintf(errOut, "register agent: %s\n", regResp.Status)
+		return 1
+	}
+	_, _ = fmt.Fprintf(out, "registered agent %s with lease %s and guardian %s\n", agentID, lease, guardianURL)
+
+	// Launch the self-nudge receiver as a subprocess.
+	selfExe := os.Args[0]
+	// If we're running from tk.exe, the receiver is tk-guardian-self.exe.
+	// Try to find it next to the current executable.
+	selfDir := filepath.Dir(selfExe)
+	receiverExe := filepath.Join(selfDir, "tk-guardian-self.exe")
+	if _, err := os.Stat(receiverExe); err != nil {
+		// Fall back to running the receiver inline via the current binary.
+		// This requires the receiver to be built into tk.exe — for now,
+		// instruct the user to build it separately.
+		_, _ = fmt.Fprintf(errOut, "tk-guardian-self.exe not found next to tk.exe. Build it with: go build -o %s ./cmd/tk-guardian-self\n", receiverExe)
+		return 1
+	}
+
+	// Start the receiver subprocess.
+	cmd := exec.Command(receiverExe)
+	cmd.Env = append(os.Environ(),
+		"TK_AGENT_ID="+agentID,
+		"TK_GUARDIAN_SELF_BIND="+bindAddr,
+		"TK_GUARDIAN_SELF_WORK="+workScript,
+		"TK_BASE_URL="+strings.TrimRight(baseURL, "/"),
+	)
+	if projectID != "" {
+		cmd.Env = append(cmd.Env, "PROJECT_ID="+projectID)
+	}
+	cmd.Stdout = out
+	cmd.Stderr = errOut
+	if err := cmd.Start(); err != nil {
+		_, _ = fmt.Fprintf(errOut, "start receiver: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(out, "self-nudge receiver started (pid %d)\n", cmd.Process.Pid)
+	// Don't wait — the receiver runs until killed. The user can stop it
+	// with Ctrl+C or by killing the process.
+	return 0
 }
 
 func events(args []string, out, errOut io.Writer, baseURL string) int {
