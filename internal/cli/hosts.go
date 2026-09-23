@@ -66,6 +66,7 @@ const (
 	hostsEnd    = "# <<< timekeeper end"
 	hostsEntry1 = "127.0.0.1 timekeeper.local"
 	hostsEntry2 = "127.0.0.1 api.timekeeper.local"
+	hostsEntry3 = "127.0.0.1 guardian.local"
 )
 
 func hostsAdd(path string, out, errOut io.Writer) int {
@@ -74,11 +75,11 @@ func hostsAdd(path string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "could not read %s: %v\n", path, err)
 		return 1
 	}
-	if hostsBlockExists(string(body)) && hasHostMapping(string(body), "timekeeper.local") && hasHostMapping(string(body), "api.timekeeper.local") {
+	if hostsBlockExists(string(body)) && hasHostMapping(string(body), "timekeeper.local") && hasHostMapping(string(body), "api.timekeeper.local") && hasHostMapping(string(body), "guardian.local") {
 		fmt.Fprintf(out, "Hosts entries already present in %s; nothing to do.\n", path)
 		return 0
 	}
-	block := strings.Join([]string{"", hostsBegin, hostsEntry1, hostsEntry2, hostsEnd, ""}, "\n")
+	block := strings.Join([]string{"", hostsBegin, hostsEntry1, hostsEntry2, hostsEntry3, hostsEnd, ""}, "\n")
 	base, _ := stripHostsBlock(string(body))
 	newBody := base + block
 	if err := os.WriteFile(path, []byte(newBody), 0o644); err != nil {
@@ -132,7 +133,7 @@ func hostsStatus(path string, out, errOut io.Writer) int {
 		return 1
 	}
 	complete := true
-	for _, name := range []string{"timekeeper.local", "api.timekeeper.local"} {
+	for _, name := range []string{"timekeeper.local", "api.timekeeper.local", "guardian.local"} {
 		if hasHostMapping(string(body), name) {
 			fmt.Fprintf(out, "found: 127.0.0.1 %s\n", name)
 		} else {

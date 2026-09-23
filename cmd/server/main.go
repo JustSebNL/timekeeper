@@ -205,7 +205,7 @@ func friendlyURLs(addr string) []string {
 	if port != "80" {
 		suffix = ":" + port
 	}
-	return []string{"http://timekeeper.local" + suffix + "/", "http://api.timekeeper.local" + suffix + "/"}
+	return []string{"http://timekeeper.local" + suffix + "/", "http://api.timekeeper.local" + suffix + "/", "http://guardian.local" + suffix + "/"}
 }
 
 func main() {

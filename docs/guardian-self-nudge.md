@@ -21,16 +21,16 @@ When the guardian fires a nudge, the agent should:
 ## Architecture
 
 ```
-TimeKeeper Server
-  └── Pulse Guardian (internal/guardian)
+TimeKeeper Server (port 1618)
+  └── Pulse Guardian (internal/guardian) — the SENDER
         ├── Watches agent_pulse_progress for expired leases
         ├── Creates pulse_nudges (kind: agent_unresponsive)
-        └── POSTs to guardian_url (registered callback)
+        └── POSTs nudge to guardian_url (registered callback)
               │
               ▼
-        Self-Nudge Receiver (new: cmd/tk-guardian-self/)
-          ├── Listens on 127.0.0.1:1619 (loopback only)
-          ├── Receives nudge signal
+        Self-Nudge Receiver (cmd/tk-guardian-self, port 1619) — the LISTENER
+          ├── HTTP server on 127.0.0.1:1619 (loopback only)
+          ├── Receives nudge signal from guardian
           ├── Triggers work cycle:
           │     1. tk pulse → check for overdue sprints
           │     2. tk sp next → claim next sprint
@@ -38,9 +38,13 @@ TimeKeeper Server
           │     4. tk msg add --kind observation → record evidence
           │     5. tk sp complete → close sprint
           │     6. Repeat until no work
-          ├── Acknowledges nudge back to TimeKeeper
+          ├── Acknowledges nudge back to TimeKeeper API
           └── Goes back to idle
 ```
+
+**Key distinction:** The pulse engine (inside TimeKeeper) SENDS nudges.
+The receiver (separate process) LISTENS for them. The receiver is not a
+pulse engine — it is a work-cycle trigger.
 
 ## Components
 
