@@ -139,6 +139,14 @@ func (s *Store) EvaluatePulseGuardianAt(ctx context.Context, at time.Time) ([]mo
 	for _, item := range pulse.Attention {
 		overdue[item.SprintID] = item
 	}
+	states, err := s.ListAgentWorkStatesAt(ctx, at)
+	if err != nil {
+		return nil, err
+	}
+	stateByAgent := make(map[string]model.AgentWorkState, len(states))
+	for _, state := range states {
+		stateByAgent[state.AgentID] = state
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT p.agent_id, p.active_sprint_id, p.lease_duration_seconds, p.last_progress_at, s.status
 		FROM agent_pulse_progress p LEFT JOIN sprints s ON s.sprint_id = p.active_sprint_id
  WHERE NOT (p.guardian_url = '' AND EXISTS (SELECT 1 FROM supervised_launches l WHERE l.agent_id=p.agent_id)) ORDER BY p.agent_id`)
@@ -166,7 +174,19 @@ func (s *Store) EvaluatePulseGuardianAt(ctx context.Context, at time.Time) ([]mo
 		}
 		detectedAfter := elapsedSeconds(progressAt, at)
 		kind := "agent_unresponsive"
-		if item, ok := overdue[activeSprintID]; ok {
+		if state, known := stateByAgent[agentID]; known {
+			// A missed schedule is not inactivity. Registered state-aware agents
+			// are nudged only when their work/wait deadline actually expires.
+			if state.State != "idle" {
+				continue
+			}
+			if state.Deadline != nil {
+				detectedAfter = elapsedSeconds(*state.Deadline, at)
+			}
+			if detectedAfter < 1 {
+				detectedAfter = 1
+			}
+		} else if item, ok := overdue[activeSprintID]; ok {
 			kind = "sprint_overdue"
 			detectedAfter = item.OverdueDurationSeconds
 		} else if detectedAfter <= leaseSeconds {
@@ -223,11 +243,15 @@ func (s *Store) listPulseNudges(ctx context.Context, agentID string, pendingOnly
 	if agentID == "" || len(agentID) > 256 {
 		return nil, errors.New("agent_id is required and must be at most 256 characters")
 	}
-	query := `SELECT nudge_id, agent_id, active_sprint_id, kind, status,
+	state, stateErr := s.AgentWorkStateAt(ctx, agentID, time.Now().UTC())
+	if stateErr != nil && !errors.Is(stateErr, ErrNotFound) {
+		return nil, stateErr
+	}
+	query := `SELECT nudge_id, agent_id, active_sprint_id, kind, CASE WHEN superseded_at IS NOT NULL THEN 'Superseded' ELSE status END,
 		detected_after_seconds, delivery_attempts, last_delivery_at, delivered_at, created_at, acknowledged_at, acknowledged_by
 		FROM pulse_nudges WHERE agent_id = ?`
 	if pendingOnly {
-		query += " AND status = 'Pending'"
+		query += " AND status = 'Pending' AND superseded_at IS NULL"
 	}
 	query += " ORDER BY created_at, nudge_id"
 	rows, err := s.db.QueryContext(ctx, query, agentID)
@@ -240,6 +264,9 @@ func (s *Store) listPulseNudges(ctx context.Context, agentID string, pendingOnly
 		nudge, err := scanPulseNudge(rows)
 		if err != nil {
 			return nil, err
+		}
+		if pendingOnly && stateErr == nil && nudge.Kind != "broadcast" && (state.State != "idle" || state.ActiveSprintID != nudge.ActiveSprintID) {
+			continue
 		}
 		nudges = append(nudges, nudge)
 	}
@@ -262,10 +289,18 @@ type PulseNudgeDelivery struct {
 // is validated before it can be stored; failed callbacks remain eligible for a
 // later retry, while confirmed acceptance is not spammed before acknowledgement.
 func (s *Store) ListPendingPulseNudgeDeliveries(ctx context.Context) ([]PulseNudgeDelivery, error) {
+	states, err := s.ListAgentWorkStatesAt(ctx, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	stateByAgent := make(map[string]model.AgentWorkState, len(states))
+	for _, state := range states {
+		stateByAgent[state.AgentID] = state
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT n.nudge_id, n.agent_id, n.active_sprint_id, n.kind, n.status,
 		n.detected_after_seconds, n.delivery_attempts, n.last_delivery_at, n.delivered_at, n.created_at, n.acknowledged_at, n.acknowledged_by, p.guardian_url
 		FROM pulse_nudges n JOIN agent_pulse_progress p ON p.agent_id = n.agent_id
-		WHERE n.status = 'Pending' AND n.delivered_at IS NULL AND p.guardian_url <> '' ORDER BY n.created_at, n.nudge_id`)
+		WHERE n.status = 'Pending' AND n.superseded_at IS NULL AND n.delivered_at IS NULL AND p.guardian_url <> '' ORDER BY n.created_at, n.nudge_id`)
 	if err != nil {
 		return nil, fmt.Errorf("list pending Pulse Guardian deliveries: %w", err)
 	}
@@ -299,6 +334,9 @@ func (s *Store) ListPendingPulseNudgeDeliveries(ctx context.Context) ([]PulseNud
 		}
 		if acknowledgedBy.Valid {
 			delivery.Nudge.AcknowledgedBy = acknowledgedBy.String
+		}
+		if state, known := stateByAgent[delivery.Nudge.AgentID]; known && delivery.Nudge.Kind != "broadcast" && (state.State != "idle" || state.ActiveSprintID != delivery.Nudge.ActiveSprintID) {
+			continue
 		}
 		deliveries = append(deliveries, delivery)
 	}
@@ -352,7 +390,7 @@ func (s *Store) AcknowledgePulseNudge(ctx context.Context, nudgeID int64, agentI
 	}
 	defer tx.Rollback()
 
-	nudge, err := scanPulseNudge(tx.QueryRowContext(ctx, `SELECT nudge_id, agent_id, active_sprint_id, kind, status,
+	nudge, err := scanPulseNudge(tx.QueryRowContext(ctx, `SELECT nudge_id, agent_id, active_sprint_id, kind, CASE WHEN superseded_at IS NOT NULL THEN 'Superseded' ELSE status END,
 		detected_after_seconds, delivery_attempts, last_delivery_at, delivered_at, created_at, acknowledged_at, acknowledged_by
 		FROM pulse_nudges WHERE nudge_id = ?`, nudgeID))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -367,15 +405,15 @@ func (s *Store) AcknowledgePulseNudge(ctx context.Context, nudgeID int64, agentI
 	if nudge.Status == "Acknowledged" {
 		return nudge, tx.Commit()
 	}
-	if nudge.Status != "Pending" {
+	if nudge.Status != "Pending" && nudge.Status != "Superseded" {
 		return model.PulseNudge{}, fmt.Errorf("unsupported pulse nudge status %q", nudge.Status)
 	}
 
 	now := time.Now().UTC().Round(0)
-	if _, err := tx.ExecContext(ctx, `UPDATE pulse_nudges SET status = 'Acknowledged', acknowledged_at = ?, acknowledged_by = ? WHERE nudge_id = ?`, stamp(now), agentID, nudgeID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE pulse_nudges SET status = 'Acknowledged', acknowledged_at = ?, acknowledged_by = ?, superseded_at = NULL WHERE nudge_id = ?`, stamp(now), agentID, nudgeID); err != nil {
 		return model.PulseNudge{}, fmt.Errorf("acknowledge pulse nudge: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_pulse_progress SET last_progress_at = ?, updated_at = ? WHERE agent_id = ?`, stamp(now), stamp(now), agentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_pulse_progress SET last_progress_at = ?, updated_at = ? WHERE agent_id = ? AND NOT EXISTS (SELECT 1 FROM agent_work_states a WHERE a.agent_id=agent_pulse_progress.agent_id)`, stamp(now), stamp(now), agentID); err != nil {
 		return model.PulseNudge{}, fmt.Errorf("renew agent progress lease: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

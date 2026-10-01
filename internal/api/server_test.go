@@ -71,6 +71,29 @@ func TestTaskMetadataAPIUpdatesDurably(t *testing.T) {
 	}
 }
 
+func TestTaskMetadataAPIRejectsOversizedInputAsValidation(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	project, _ := database.CreateProject(ctx, model.CreateProjectInput{Name: "Task metadata validation"})
+	category, _ := database.CreateCategory(ctx, project.ProjectID, model.CreateCategoryInput{Name: "Delivery"})
+	task, _ := database.CreateTask(ctx, project.ProjectID, model.CreateTaskInput{CategoryID: category.CategoryID, Name: "Parent"})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.TaskID+"/metadata", bytes.NewBufferString(`{"goal":"`+strings.Repeat("g", 1001)+`","description":"ok"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	api.New(database).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"code":"validation_error"`) || !strings.Contains(body, "task goal must be at most 1000 characters") {
+		t.Fatalf("body=%s", body)
+	}
+}
+
 func TestCategoryStatusAPIUpdatesDurably(t *testing.T) {
 	ctx := context.Background()
 	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
@@ -120,8 +143,18 @@ func TestSubtaskStatusAPIUpdatesDurably(t *testing.T) {
 		t.Fatalf("updated=%#v err=%v", updated, err)
 	}
 	events, err := database.ListProjectEvents(ctx, project.ProjectID)
-	if err != nil || len(events) != 1 || events[0].EventType != "subtask_status_changed" {
+	if err != nil || len(events) == 0 {
 		t.Fatalf("events=%#v err=%v", events, err)
+	}
+	hasSubtaskEvent := false
+	for _, evt := range events {
+		if evt.EventType == "subtask_status_changed" {
+			hasSubtaskEvent = true
+			break
+		}
+	}
+	if !hasSubtaskEvent {
+		t.Fatalf("expected subtask_status_changed event in %#v", events)
 	}
 }
 
@@ -456,5 +489,33 @@ func TestProjectCreatedThroughAPIIsListedAfterDatabaseReopen(t *testing.T) {
 	}
 	if len(response.Items) != 1 || response.Items[0].ProjectID != "P-10000" || response.Items[0].ProjectName != "HSAM" {
 		t.Fatalf("unexpected persisted project list: %#v", response.Items)
+	}
+}
+
+func TestAPIHelpListsIdentityAdministrationAndMessageRoutes(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	request := httptest.NewRequest(http.MethodGet, "/api/help", nil)
+	response := httptest.NewRecorder()
+	api.New(database).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("help status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, route := range []string{
+		"/api/v1/version",
+		"/api/v1/agent-identities/resolve",
+		"/api/v1/admin/me",
+		"/api/v1/admin/groups/{groupID}/members",
+		"/api/v1/projects/{projectID}/messages/checkpoint",
+		"/api/v1/projects/{projectID}/messages/{messageID}/context",
+		"/api/v1/plugins/{pluginID}/artifact",
+	} {
+		if !strings.Contains(response.Body.String(), route) {
+			t.Errorf("help route list omitted %q", route)
+		}
 	}
 }

@@ -234,7 +234,7 @@ func main() {
 	pulseGuardianNtfyServer := flag.String("pulse-guardian-ntfy-server", "", "ntfy server URL for guardian wake-up (e.g. https://ntfy.sh); empty disables ntfy publishing")
 	pulseGuardianNtfyTopic := flag.String("pulse-guardian-ntfy-topic", "", "ntfy topic for guardian wake-up messages")
 	pulseGuardianNtfyToken := flag.String("pulse-guardian-ntfy-token", "", "ntfy authentication token (optional)")
-	logPath := flag.String("log", ".timekeeper/log/app.log", "structured JSON log path; empty disables file logging")
+	logPath := flag.String("log", "/data/logs/app.log", "structured JSON log path; empty disables file logging")
 	logMode := logging.ModeNormal
 	flag.Var(modeFlag{&logMode}, "log-mode", "log mode: normal|debug (debug logs every step, raw inputs, full errors)")
 	flag.Parse()
@@ -379,6 +379,10 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiHandler)
 	mux.Handle("/health", apiHandler)
+	portalDir := filepath.Join(filepath.Dir(*uiPath), "..", "portal")
+	if info, err := os.Stat(portalDir); err == nil && info.IsDir() {
+		mux.Handle("/portal/", http.StripPrefix("/portal/", http.FileServer(http.Dir(portalDir))))
+	}
 	mux.HandleFunc("/", dashboard(*uiPath))
 
 	primaryHandler := securityHeaders(mux)

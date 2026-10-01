@@ -33,12 +33,20 @@ func graceFor(leaseSeconds int64) time.Duration {
 // no agent is registered there is nothing to wait for, and the caller
 // falls back to its interval.
 func (s *Store) NextPulseDeadline(ctx context.Context, now time.Time) (time.Time, bool, error) {
+	states, err := s.ListAgentWorkStatesAt(ctx, now)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	stateByAgent := make(map[string]*time.Time, len(states))
+	for _, state := range states {
+		stateByAgent[state.AgentID] = state.Deadline
+	}
 	// Every registered lease counts, not only those with a callback or
 	// an active sprint. Filtering to those would make a bare lease
 	// invisible to the Guardian, so its timer would run out and nothing
 	// would ever notice.
 	const query = `
-		SELECT last_progress_at, lease_duration_seconds
+		SELECT agent_id, last_progress_at, lease_duration_seconds
 		FROM agent_pulse_progress`
 
 	rows, err := s.db.QueryContext(ctx, query)
@@ -50,9 +58,9 @@ func (s *Store) NextPulseDeadline(ctx context.Context, now time.Time) (time.Time
 	var soonest time.Time
 	found := false
 	for rows.Next() {
-		var lastProgress string
+		var agentID, lastProgress string
 		var leaseSeconds int64
-		if err := rows.Scan(&lastProgress, &leaseSeconds); err != nil {
+		if err := rows.Scan(&agentID, &lastProgress, &leaseSeconds); err != nil {
 			return time.Time{}, false, err
 		}
 		at, err := parseTimestamp(lastProgress)
@@ -62,6 +70,12 @@ func (s *Store) NextPulseDeadline(ctx context.Context, now time.Time) (time.Time
 		deadline := at.
 			Add(time.Duration(leaseSeconds) * time.Second).
 			Add(graceFor(leaseSeconds))
+		if stateDeadline, known := stateByAgent[agentID]; known {
+			if stateDeadline == nil {
+				continue
+			}
+			deadline = *stateDeadline
+		}
 		if !found || deadline.Before(soonest) {
 			soonest = deadline
 			found = true

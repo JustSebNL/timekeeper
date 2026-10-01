@@ -4,9 +4,7 @@ This project uses TimeKeeper as its durable execution authority. This file is a 
 
 ## First use
 
-Start with [`docs/HARNESS.md`](docs/HARNESS.md), or run
-`timekeeper --help` to see the compact agent workflow. It points to
-`harness/SKILL.md` and the project-local Skills under `harness/skills/`.
+For a new agent, start with [`harness/skills/onboarding/SKILL.md`](harness/skills/onboarding/SKILL.md), then follow [`docs/HARNESS.md`](docs/HARNESS.md) and the operational `harness/SKILL.md` contract. If the server executable is not on `PATH`, use `.timekeeper/app/timekeeper --help` on Linux/WSL or `.timekeeper/app/bin/timekeeper.exe --help` on Windows.
 
 1. Run `tk doctor` against `http://127.0.0.1:1618`.
 2. Inspect or create the Project landscape before changing code.

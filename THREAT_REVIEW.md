@@ -8,7 +8,7 @@ This review covers the local Go HTTP server, SQLite authority, read-only Sprint 
 
 ## Security boundary
 
-Time Keeper is a local single-user/process-boundary tool, not a multi-tenant service and not an authenticated network API.
+Time Keeper is a local, single-operating-system-user trust boundary, not a multi-tenant service or authenticated network API. “Single-user” describes the local security boundary, not the number of agents: multiple agents can coordinate through the same local Project records, but they do not receive separate OS-level security isolation.
 
 The server only accepts explicit numeric loopback listeners (`127.0.0.1` or `::1`). Wildcard, hostname, and remote bind addresses fail at configuration validation. There is deliberately no option to bypass this in the current binary.
 
@@ -44,7 +44,9 @@ Server startup now rejects wildcard and remote interfaces before database startu
 
 ### Closed: unsafe installer surface
 
-`install.sh` is a deliberately narrow local-source bootstrap, not a release installer. It accepts only the clean checkout it is run from, whose official `origin` and locally verified `origin/main` exactly match `HEAD`. It archives that pinned commit and stages the result under the checkout's ignored `.timekeeper/app` root. A later run refreshes the app files there while preserving its existing runtime state. It neither downloads code, elevates privileges, modifies `PATH`, manages a service, nor starts a server. Disposable harness tests prove the clean-source, repository-contained, state-preserving refresh, and no-start boundary.
+Installer behavior was rechecked against the current scripts on 2026-09-28. The Linux/WSL `install/install.sh` wrapper invokes the repository-local `install.sh`. It accepts only the canonical origin and `HEAD == origin/main`, archives that committed source, builds with Go modules already available locally, and stages the app under `.timekeeper/app`. It preserves the local runtime state and database. By default it attempts the managed hosts-file update and installs/starts a systemd user service; `--no-service` skips the service step. The shell installer does not elevate itself or change `PATH`, and the service remains loopback-only.
+
+The Windows `install/install.bat` wrapper invokes `install.bat`, which requests UAC elevation and builds from the checked-out source through `install-windows.ps1`. When Bend2Will source or a trusted `obey.exe` is available, the installer registers the Core as a `LocalService` service with delayed automatic startup, SCM restart-on-failure, and bounded logs; health checks verify that the service owns the TimeKeeper listener. The legacy launcher task is retained unless `-RetireLegacyLauncher` is explicitly supplied. NSSM remains a compatibility fallback. Replacing an existing NSSM TimeKeeper service requires the explicit `-MigrateFromNssm` option, checks the configured application path, and backs up the legacy settings for rollback. The currently installed service has not been migrated by these source changes. Unlike the Linux/WSL source installer, this Windows path does not require the same origin/`origin/main` check. macOS can use the shell build-only path with `--no-service`; an automated launchd service installer is not provided. See [Installation](docs/install.md) for current platform requirements and [Friendly local URLs](docs/friendly-url.md) for proxy behavior.
 
 ### Closed: incomplete SQLite file copying
 

@@ -9,6 +9,8 @@ extension.memory-galaxy-0.1.0.tkp
 ├── extension.js      the code the extension runtime loads
 ├── assets/           optional static assets
 ├── migrations/       optional SQLite migrations
+├── package.json      optional runtime dependency declarations
+├── package-lock.json required when package.json declares runtime dependencies
 └── checksums.json    generated — sha256 of every other file
 ```
 
@@ -31,6 +33,17 @@ does not include itself.
 
 `id` and `version` are required. Permissions are a request, not a
 grant: TimeKeeper Core decides what the extension receives.
+
+## Dependency evidence
+
+`package.json` is optional. If it declares runtime dependencies, the archive
+must also contain `package-lock.json`. The Store's dependency scan does not
+resolve or download packages: it checks the checked-in lock inventory for a
+version, HTTPS registry source, integrity checksum, and allowlisted license for
+each dependency. It emits a deterministic `timekeeper-sbom/v1` inventory with
+`required_by` relationships and stores its SHA-256 digest in the immutable scan
+record. Missing lock entries, lock drift, untrusted registries, missing
+licenses, and disallowed licenses fail publication before signing.
 
 ## Signing
 
@@ -69,6 +82,18 @@ public half.
 
 A mismatch, a missing signature or a foreign key leaves nothing behind
 but the rejected archive.
+
+Verification is necessary but not sufficient for activation. After extraction,
+the package remains staged data until Core starts it through the supervised
+two-box bridge described in `docs/two-box-architecture.md`. Core must never
+`exec` an archive entry directly, import downloaded code, pass a database
+handle, or create a connector from package-controlled input. The bridge
+launcher chooses the executable, loopback port, capability allowlist, timeout,
+filesystem grants, and shutdown policy from trusted Core configuration.
+
+A `.tkp` is a delivery artifact, not a Core module. The complete developer
+workflow—including how to implement the external bridge process—is in
+[store-developer-guide.md](store-developer-guide.md).
 
 ## Extraction limits
 

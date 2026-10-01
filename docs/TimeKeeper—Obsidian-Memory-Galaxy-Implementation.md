@@ -53,7 +53,7 @@ Phase 0/1 has started in TimeKeeper:
 - `knowledge_links` persists explicit promotion mappings with idempotent promotion keys, nullable pending Galaxy IDs, status transitions, and duplicate-ID protection.
 - Focused tests cover the contract, endpoint validation, authenticated requests, migration, retries, and persistence.
 
-The plugin repository/API skeleton and TimeKeeper Knowledge read routes are now implemented and fixture-tested. The Obsidian plugin's production packaging/settings UX, Trail promotion, `knowledge_links` API mutations, full Markdown repository semantics, and live Obsidian process remain later implementation slices. Do not describe the Galaxy as fully available until those integration checks pass.
+The provider contract/client, Knowledge read routes, redaction-gated Trail promotion, durable `knowledge_links`, dashboard promotion control, and plugin settings/package contract are implemented and fixture-tested in source. The Obsidian repository source validates schema-v1 frontmatter and UTC timestamps, preserves topics/tags, recalculates canonical content hashes, serializes concurrent promotion retries through one repository instance, quarantines duplicate Galaxy IDs in a visible `Quarantine/` folder, and returns topic/tag metadata through Get/Search. These behaviors are fixture- and API-tested; the extension test suite passes. This does not establish a live Obsidian installation or smoke. That process smoke and release artifact remain separate at T-10321/SP-10322 and are On Hold while Obsidian is unavailable. Do not describe the Galaxy integration as fully available until the live checks pass.
 
 ## Non-goals
 

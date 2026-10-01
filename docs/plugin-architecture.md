@@ -18,11 +18,31 @@ A package under `internal/api`, `internal/model`, `internal/store` or
 `internal/cli` must never import a plugin package. If you find yourself
 adding a plugin import to one of those, the seam is being bypassed.
 
-## The seam
+## Two integration paths
+
+### Supported Store path: external plugin box
+
+Store-installed plugins implement an existing stable capability in a separate
+process and connect through `timekeeper-bridge/v1`. This path requires no Core
+source change, no Core import, and no Core rebuild per plugin. The Store package
+is staged and verified; a trusted Core launcher supplies the executable,
+loopback connector, timeout, filesystem root, and granted capabilities.
+
+Read [store-developer-guide.md](store-developer-guide.md) for the complete
+package and bridge contract.
+
+### Legacy in-process path: built-in development wiring
+
+The registry below documents the older in-process development seam. It is useful
+for Core-owned adapters and tests, but it is **not** the Store installation path:
+its registration package is linked into the server binary and therefore requires
+a Core build change. Do not publish a Store package that relies on this path.
+
+## The in-process seam
 
 ```text
 internal/plugin            registry — owned by core
-internal/plugin/<name>     registration adapter — names one plugin
+internal/plugin/<name>     registration adapter — Core-owned wiring
 internal/<capability>      the interface a plugin implements
 ```
 
@@ -34,8 +54,9 @@ cmd/server  ──> internal/plugin            (asks for a kind)
                      └─ registration pkg ──> the plugin itself
 ```
 
-`cmd/server` imports a plugin's *registration* package only. That
-package is the single place allowed to name both core and the plugin.
+`cmd/server` imports a plugin's *registration* package only. That package is
+acceptable for Core-shipped functionality, not for an independently installed
+Store plugin.
 
 ## Kinds
 

@@ -18,6 +18,7 @@ type Task struct {
 	EstimatedDurationSeconds int64     `json:"estimated_duration_seconds"`
 	ReportedCompletionPct    float64   `json:"reported_completion_pct"`
 	CalculatedCompletionPct  float64   `json:"calculated_completion_pct"`
+	AutoClose                bool      `json:"auto_close"`
 	CreatedAt                time.Time `json:"created_at"`
 	UpdatedAt                time.Time `json:"updated_at"`
 }
@@ -30,6 +31,12 @@ type CreateTaskInput struct {
 	Goal                     string `json:"goal"`
 	Priority                 string `json:"priority"`
 	EstimatedDurationSeconds int64  `json:"estimated_duration_seconds"`
+	AutoClose                *bool  `json:"auto_close,omitempty"`
+}
+
+// CreateTasksBatchInput holds a list of client-supplied task inputs for bulk ingestion.
+type CreateTasksBatchInput struct {
+	Tasks []CreateTaskInput `json:"tasks"`
 }
 
 // UpdateTaskMetadataInput holds editable Task context; workflow state is updated separately.

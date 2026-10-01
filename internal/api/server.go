@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/JustSebNL/timekeeper/internal/guardian"
 	"github.com/JustSebNL/timekeeper/internal/lifecycle"
 	"github.com/JustSebNL/timekeeper/internal/logging"
 	"github.com/JustSebNL/timekeeper/internal/model"
@@ -45,6 +47,13 @@ type RuntimeStatus struct {
 // New returns the API with no process-local recovery worker assumed.
 func New(database *store.Store) http.Handler {
 	return NewWithRuntime(database, RuntimeStatus{})
+}
+
+// NewWithRateLimiter wraps the ordinary API in per-agent token bucket
+// protection. A nil limiter disables throttling, so the capability stays
+// optional end to end.
+func NewWithRateLimiter(database *store.Store, limiter *guardian.RateLimiter) http.Handler {
+	return rateLimitMiddleware(limiter)(New(database))
 }
 
 // NewWithRuntime exposes process-local runtime configuration without coupling the
@@ -144,6 +153,7 @@ func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 	mux.HandleFunc("POST /api/v1/categories/{categoryID}/status", updateCategoryStatus(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/tasks", listTasks(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/tasks", createTask(database))
+	mux.HandleFunc("GET /api/v1/tasks/{taskID}", getTask(database))
 	mux.HandleFunc("GET /api/v1/tasks/{taskID}/subtasks", listSubtasks(database))
 	mux.HandleFunc("POST /api/v1/tasks/{taskID}/subtasks", createSubtask(database))
 	mux.HandleFunc("POST /api/v1/tasks/{taskID}/metadata", updateTaskMetadata(database))
@@ -151,6 +161,7 @@ func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 	mux.HandleFunc("GET /api/v1/tasks/{taskID}/sprints", listSprints(database))
 	mux.HandleFunc("POST /api/v1/tasks/{taskID}/sprints", createSprint(database))
 	mux.HandleFunc("POST /api/v1/subtasks/{subtaskID}/status", updateSubtaskStatus(database))
+	mux.HandleFunc("GET /api/v1/subtasks/{subtaskID}", getSubtask(database))
 	mux.HandleFunc("GET /api/v1/subtasks/{subtaskID}/sprints", listSubtaskSprints(database))
 	mux.HandleFunc("POST /api/v1/subtasks/{subtaskID}/sprints", createSubtaskSprint(database))
 	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/start", transitionSprint(database, "start"))
@@ -165,12 +176,22 @@ func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 	mux.HandleFunc("GET /api/v1/sprints/{sprintID}/extensions", listSprintTimeExtensions(database))
 	mux.HandleFunc("POST /api/v1/sprints/{sprintID}/extensions", addSprintTimeExtension(database))
 	mux.HandleFunc("GET /api/v1/sprints/{sprintID}/time-entries", listTimeEntries(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/handoff", projectHandoff(database))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/tasks/batch", createTasksBatch(database))
+	mux.HandleFunc("GET /api/v1/events/stream", eventsStream(database, false))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/events/stream", eventsStream(database, true))
 	knowledgeRoutes(mux, knowledgeService, database)
 	fileHistoryRoutes(mux, fileHistoryService)
 	pluginStoreRoutes(mux, runtime.PluginStoreRoot)
-	// Observe sits outermost of the capability layers so it records what
-	// actually happened, including rejections and panics handled below.
-	return logging.NewRequestLogger().Wrap(Observe(obs)(withReqCtx(recoverJSON(requireJSONForMutations(mux)))))
+	adminRoutes(mux, database)
+	faseIdentityRoutes(mux, database)
+	agentActivityRoutes(mux, database)
+	// Activity tracking resolves the calling FASE actor into the request
+	// context before handlers run, so sprint transitions can enforce execution
+	// claims and events can be attributed. Observe sits outermost of the
+	// capability layers so it records what actually happened, including
+	// rejections and panics handled below.
+	return logging.NewRequestLogger().Wrap(Observe(obs)(withReqCtx(recoverJSON(requireJSONForMutations(trackAgentActivity(database, mux))))))
 }
 
 // withReqCtx attaches the current *http.Request to the context so logging.Recover
@@ -288,6 +309,7 @@ func apiHelp(w http.ResponseWriter, _ *http.Request) {
 		{"method": "POST", "path": "/api/v1/categories/{categoryID}/status", "desc": "Set category status"},
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/tasks", "desc": "List tasks"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/tasks", "desc": "Create a task"},
+		{"method": "GET", "path": "/api/v1/tasks/{taskID}", "desc": "Read one Task with subtasks, sprints and completion blockers"},
 		{"method": "GET", "path": "/api/v1/tasks/{taskID}/subtasks", "desc": "List subtasks"},
 		{"method": "POST", "path": "/api/v1/tasks/{taskID}/subtasks", "desc": "Create a subtask"},
 		{"method": "POST", "path": "/api/v1/tasks/{taskID}/metadata", "desc": "Update task context"},
@@ -295,6 +317,7 @@ func apiHelp(w http.ResponseWriter, _ *http.Request) {
 		{"method": "GET", "path": "/api/v1/tasks/{taskID}/sprints", "desc": "List task sprints"},
 		{"method": "POST", "path": "/api/v1/tasks/{taskID}/sprints", "desc": "Create a sprint"},
 		{"method": "POST", "path": "/api/v1/subtasks/{subtaskID}/status", "desc": "Set subtask status"},
+		{"method": "GET", "path": "/api/v1/subtasks/{subtaskID}", "desc": "Read one subtask with its sprints"},
 		{"method": "GET", "path": "/api/v1/subtasks/{subtaskID}/sprints", "desc": "List subtask sprints"},
 		{"method": "POST", "path": "/api/v1/subtasks/{subtaskID}/sprints", "desc": "Create subtask sprint"},
 		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/start", "desc": "Start a sprint"},
@@ -1025,6 +1048,130 @@ func updateSubtaskStatus(database *store.Store) http.HandlerFunc {
 	}
 }
 
+// projectHandoff compiles the agent session snapshot. Markdown is opt-in via
+// ?format=markdown or an Accept header so the default stays machine-readable.
+func projectHandoff(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		snapshot, err := database.GetHandoffSnapshot(r.Context(), r.PathValue("projectID"))
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		format := r.URL.Query().Get("format")
+		if strings.EqualFold(format, "markdown") || strings.Contains(r.Header.Get("Accept"), "text/markdown") {
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			_, _ = io.WriteString(w, snapshot.Markdown)
+			return
+		}
+		writeJSON(w, http.StatusOK, snapshot)
+	}
+}
+
+// createTasksBatch ingests many tasks in one atomic write so a codebase audit
+// does not pay a round trip per finding.
+func createTasksBatch(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input model.CreateTasksBatchInput
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_tasks_batch", "Tasks batch input must be valid JSON.")
+			return
+		}
+		if len(input.Tasks) == 0 {
+			writeError(w, http.StatusBadRequest, "invalid_tasks_batch", "Tasks batch requires at least one task.")
+			return
+		}
+		tasks, err := database.CreateTasksBatch(r.Context(), r.PathValue("projectID"), input.Tasks)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"tasks": tasks, "count": len(tasks)})
+	}
+}
+
+// getTask returns one Task with its children so an agent can recover the
+// current goal and description without exporting the whole Project.
+func getTask(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		task, err := database.GetTask(r.Context(), r.PathValue("taskID"))
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "task_not_found", "Task was not found.")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "read_task_failed", "Could not read the Task.")
+			return
+		}
+		subtasks, err := database.ListSubtasks(r.Context(), task.TaskID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusInternalServerError, "read_task_failed", "Could not read Task Subtasks.")
+			return
+		}
+		sprints, err := database.ListSprints(r.Context(), task.TaskID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusInternalServerError, "read_task_failed", "Could not read Task Sprints.")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"task":     task,
+			"subtasks": subtasks,
+			"sprints":  sprints,
+			"children": summariseChildren(subtasks, sprints),
+		})
+	}
+}
+
+// summariseChildren reports the child identifiers and whether anything still
+// blocks completion, so the caller can see why a completion would be refused.
+func summariseChildren(subtasks []model.Subtask, sprints []model.Sprint) map[string]any {
+	openSubtasks := 0
+	subtaskIDs := make([]string, 0, len(subtasks))
+	for _, subtask := range subtasks {
+		if subtask.Status != "Completed" && subtask.Status != "Cancelled" {
+			openSubtasks++
+		}
+		subtaskIDs = append(subtaskIDs, subtask.SubtaskID)
+	}
+	openSprints := 0
+	sprintIDs := make([]string, 0, len(sprints))
+	for _, sprint := range sprints {
+		if sprint.Status != "Completed" && sprint.Status != "Cancelled" {
+			openSprints++
+		}
+		sprintIDs = append(sprintIDs, sprint.SprintID)
+	}
+	return map[string]any{
+		"subtask_ids":   subtaskIDs,
+		"sprint_ids":    sprintIDs,
+		"open_subtasks": openSubtasks,
+		"open_sprints":  openSprints,
+		"can_complete":  openSubtasks == 0 && openSprints == 0,
+	}
+}
+
+// getSubtask returns one Subtask with its Sprints for the same reason.
+func getSubtask(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		subtask, err := database.GetSubtask(r.Context(), r.PathValue("subtaskID"))
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "subtask_not_found", "Subtask was not found.")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "read_subtask_failed", "Could not read the Subtask.")
+			return
+		}
+		sprints, err := database.ListSubtaskSprints(r.Context(), subtask.SubtaskID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusInternalServerError, "read_subtask_failed", "Could not read Subtask Sprints.")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"subtask": subtask, "sprints": sprints})
+	}
+}
+
 func listSubtasks(database *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		subtasks, err := database.ListSubtasks(r.Context(), r.PathValue("taskID"))
@@ -1183,6 +1330,11 @@ func transitionSprint(database *store.Store, action string) http.HandlerFunc {
 				}})
 				return
 			}
+			if store.IsBusyError(err) {
+				w.Header().Set("Retry-After", "1")
+				writeError(w, http.StatusServiceUnavailable, "database_busy", "The database is busy writing. Retry the request.")
+				return
+			}
 			writeError(w, http.StatusConflict, "invalid_transition", err.Error())
 			return
 		}
@@ -1326,7 +1478,13 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "validation_error", strings.TrimSpace(strings.TrimPrefix(err.Error(), store.ErrValidation.Error()+": ")))
 		return
 	}
-	writeError(w, http.StatusInternalServerError, "project_export_failed", "Could not build the portable Project export.")
+	if store.IsBusyError(err) {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "database_busy", "The database is busy writing. Retry the request.")
+		return
+	}
+	slog.Error("api/store", "error", err)
+	writeError(w, http.StatusInternalServerError, "internal_error", "Internal server error.")
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {

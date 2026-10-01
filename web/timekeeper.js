@@ -12,8 +12,11 @@
   const usageSessions = document.querySelector('#usage-sessions');
   const usageInput = document.querySelector('#usage-input');
   const usageOutput = document.querySelector('#usage-output');
+  const usageCost = document.querySelector('#usage-cost');
   const usageBreakdownBar = document.querySelector('#usage-breakdown-bar');
   const usageLegend = document.querySelector('#usage-legend');
+  const usageAgents = document.querySelector('#usage-agents');
+  const usageModels = document.querySelector('#usage-models');
   const usageProjects = document.querySelector('#usage-projects');
   const usageTimeline = document.querySelector('#usage-timeline');
   const usageSessionList = document.querySelector('#usage-session-list');
@@ -30,6 +33,17 @@
   const statAttention = document.querySelector('#stat-attention');
   const navProjectCount = document.querySelector('#nav-project-count');
   const navAttentionCount = document.querySelector('#nav-attention-count');
+  const adminNav = document.querySelector('#admin-nav');
+  const adminCard = document.querySelector('#admin-card');
+  const adminIdentity = document.querySelector('#admin-identity');
+  const adminUsers = document.querySelector('#admin-users');
+  const adminGroups = document.querySelector('#admin-groups');
+  const adminUserCount = document.querySelector('#admin-user-count');
+  const adminGroupCount = document.querySelector('#admin-group-count');
+  const adminGroupForm = document.querySelector('#admin-group-form');
+  const adminPermissions = document.querySelector('#admin-permissions');
+  const adminAudit = document.querySelector('#admin-audit');
+  const adminFeedback = document.querySelector('#admin-feedback');
   const form = document.querySelector('#project-form');
   const submit = document.querySelector('#submit');
   const agentID = localStorage.getItem('timekeeper_agent_id') || crypto.randomUUID();
@@ -43,6 +57,8 @@
         'X-Agent-ID': agentID,
         'X-Agent-Name': 'Time Keeper UI',
         'X-Agent-Type': 'human',
+        'X-TimeKeeper-Client': 'timekeeper-web-ui',
+        'X-TimeKeeper-Surface': 'web_ui',
         ...(options.headers || {})
       }
     });
@@ -1182,6 +1198,13 @@
       const messageText = document.createElement('div');
       messageText.className = 'activity-message';
       messageText.textContent = entry.event.message || entry.event.event_type || 'Project activity recorded';
+      if (entry.event.actor && entry.event.actor.fase_id) {
+        const actorLink = document.createElement('a');
+        actorLink.href = '/api/v1/agent-profiles/' + encodeURIComponent(entry.event.actor.fase_id) + '/view';
+        actorLink.textContent = ' · ' + entry.event.actor.fase_id;
+        actorLink.className = 'activity-agent';
+        messageText.append(actorLink);
+      }
       const eventType = document.createElement('span');
       eventType.className = 'activity-type';
       eventType.textContent = (entry.event.event_type || 'project event').split('_').join(' ');
@@ -1341,6 +1364,69 @@
     return String(value);
   }
 
+  function usageCostLabel(cost) {
+    if (!cost || cost.status !== 'priced' || !/^[A-Z]{3}$/.test(cost.currency || '')) return 'Unpriced';
+    try {
+      return new Intl.NumberFormat(undefined, {style: 'currency', currency: cost.currency}).format((cost.amount_micros || 0) / 1000000);
+    } catch (_) {
+      return cost.currency + ' ' + ((cost.amount_micros || 0) / 1000000).toFixed(2);
+    }
+  }
+
+  function aggregateUsageCost(entries) {
+    let priced = false;
+    let currency = '';
+    let amountMicros = 0;
+    let reason = 'no recorded usage sessions';
+    for (const entry of entries) {
+      const cost = entry.summary?.totals?.cost;
+      if (!cost) continue;
+      if (cost.status !== 'priced') {
+        return {status: 'unpriced', reason: cost.reason || 'one or more usage sessions have no trusted price'};
+      }
+      if (currency && currency !== cost.currency) {
+        return {status: 'unpriced', reason: 'usage sessions do not share one trusted pricing currency'};
+      }
+      priced = true;
+      currency = cost.currency;
+      amountMicros += cost.amount_micros || 0;
+      reason = '';
+    }
+    return priced ? {status: 'priced', currency, amount_micros: amountMicros} : {status: 'unpriced', reason};
+  }
+
+  function renderUsageOwners(target, values, emptyText) {
+    target.replaceChildren();
+    if (!values.length) {
+      target.className = 'usage-owner-list empty';
+      target.textContent = emptyText;
+      return;
+    }
+    target.className = 'usage-owner-list';
+    const max = values[0][1] || 1;
+    for (const [name, value] of values.slice(0, 6)) {
+      const row = document.createElement('div');
+      row.className = 'usage-owner-row';
+      const main = document.createElement('div');
+      main.className = 'usage-owner-main';
+      const label = document.createElement('div');
+      label.className = 'usage-owner-name';
+      label.textContent = name;
+      const track = document.createElement('div');
+      track.className = 'usage-owner-track';
+      const fill = document.createElement('div');
+      fill.className = 'usage-owner-fill';
+      fill.style.width = (value / max * 100) + '%';
+      track.append(fill);
+      main.append(label, track);
+      const amount = document.createElement('span');
+      amount.className = 'usage-owner-value';
+      amount.textContent = compactTokenCount(value);
+      row.append(main, amount);
+      target.append(row);
+    }
+  }
+
   function renderUsage(entries) {
     const sessions = entries.flatMap(entry => (entry.summary?.sessions || []).map(session => ({session, projectName: entry.projectName})));
     const totals = sessions.reduce((sum, entry) => {
@@ -1351,10 +1437,13 @@
       return sum;
     }, {input: 0, output: 0, cacheCreation: 0, cacheRead: 0});
     const totalTokens = totals.input + totals.output + totals.cacheCreation + totals.cacheRead;
+    const cost = aggregateUsageCost(entries);
     usageTokens.textContent = compactTokenCount(totalTokens);
     usageSessions.textContent = sessions.length;
     usageInput.textContent = compactTokenCount(totals.input);
     usageOutput.textContent = compactTokenCount(totals.output);
+    usageCost.textContent = usageCostLabel(cost);
+    usageCost.title = cost.reason || (cost.status === 'priced' ? 'Trusted server-side estimate' : 'No trusted price available');
     usageCoverage.textContent = sessions.length ? sessions.length + ' recorded' : 'Awaiting data';
     usageBreakdownBar.replaceChildren();
     usageLegend.replaceChildren();
@@ -1390,6 +1479,8 @@
       usageProjects.textContent = 'No agent usage recorded yet. The panel will populate when a connected agent sends its first snapshot.';
       usageTimeline.className = 'usage-days empty';
       usageTimeline.textContent = 'No daily usage recorded yet.';
+      renderUsageOwners(usageAgents, [], 'No agents recorded yet.');
+      renderUsageOwners(usageModels, [], 'No models recorded yet.');
       usageSessionList.className = 'usage-session-list empty';
       usageSessionList.textContent = 'No sessions recorded yet.';
       return;
@@ -1427,6 +1518,17 @@
         usageTimeline.append(column);
       }
     }
+    const agentTotals = new Map();
+    const modelTotals = new Map();
+    for (const entry of sessions) {
+      const value = (entry.session.input_tokens || 0) + (entry.session.output_tokens || 0) + (entry.session.cache_creation_tokens || 0) + (entry.session.cache_read_tokens || 0);
+      const agent = entry.session.agent_id || 'Unknown agent';
+      const model = entry.session.model || 'Unknown model';
+      agentTotals.set(agent, (agentTotals.get(agent) || 0) + value);
+      modelTotals.set(model, (modelTotals.get(model) || 0) + value);
+    }
+    renderUsageOwners(usageAgents, [...agentTotals.entries()].sort((left, right) => right[1] - left[1]), 'No agents recorded yet.');
+    renderUsageOwners(usageModels, [...modelTotals.entries()].sort((left, right) => right[1] - left[1]), 'No models recorded yet.');
     usageSessionList.className = 'usage-session-list';
     for (const entry of sessions.slice().sort((left, right) => {
       const leftTotal = (left.session.input_tokens || 0) + (left.session.output_tokens || 0) + (left.session.cache_creation_tokens || 0) + (left.session.cache_read_tokens || 0);
@@ -1628,6 +1730,12 @@
       const item = document.createElement('div');
       item.className = 'event-item';
       item.textContent = event.message;
+      if (event.actor && event.actor.fase_id) {
+        const actorLink = document.createElement('a');
+        actorLink.href = '/api/v1/agent-profiles/' + encodeURIComponent(event.actor.fase_id) + '/view';
+        actorLink.textContent = ' · ' + event.actor.fase_id;
+        item.append(actorLink);
+      }
       list.append(item);
     }
     body.append(list);
@@ -2162,6 +2270,198 @@
       messagesList.textContent = 'Could not load messages: ' + error.message;
     }
   }
+
+  function canAdmin(principal, permission) {
+    return (principal.permissions || []).includes('*') || (principal.permissions || []).includes(permission);
+  }
+
+  function renderAdminUsers(users, principal) {
+    adminUsers.replaceChildren();
+    adminUserCount.textContent = String(users.length);
+    if (!users.length) {
+      adminUsers.className = 'admin-list empty';
+      adminUsers.textContent = 'No accounts have been discovered yet.';
+      return;
+    }
+    adminUsers.className = 'admin-list';
+    for (const user of users) {
+      const row = document.createElement('div');
+      row.className = 'admin-user-row';
+      const copy = document.createElement('div');
+      copy.className = 'admin-identity-copy';
+      const name = document.createElement('strong');
+      name.textContent = user.display_name + ' · ' + user.kind;
+      const detail = document.createElement('small');
+      detail.textContent = user.external_id + ' · ' + ((user.groups || []).join(', ') || 'no groups');
+      copy.append(name, detail);
+      const actions = document.createElement('div');
+      const status = document.createElement('span');
+      status.className = 'admin-status' + (user.enabled ? '' : ' disabled');
+      status.textContent = user.enabled ? 'Enabled' : 'Disabled';
+      actions.appendChild(status);
+      if (canAdmin(principal, 'admin.users.manage')) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'secondary';
+        toggle.textContent = user.enabled ? 'Disable' : 'Enable';
+        toggle.addEventListener('click', async () => {
+          toggle.disabled = true;
+          try {
+            await request('/api/v1/admin/users/' + encodeURIComponent(user.user_id), { method: 'PATCH', body: JSON.stringify({ enabled: !user.enabled }) });
+            await loadAdministrator();
+          } catch (error) {
+            adminFeedback.className = 'inline-feedback error';
+            adminFeedback.textContent = error.message;
+          } finally {
+            toggle.disabled = false;
+          }
+        });
+        actions.appendChild(toggle);
+      }
+      row.append(copy, actions);
+      adminUsers.appendChild(row);
+    }
+  }
+
+  function renderAdminGroups(groups, users, principal) {
+    adminGroups.replaceChildren();
+    adminGroupCount.textContent = String(groups.length);
+    if (!groups.length) {
+      adminGroups.className = 'admin-list empty';
+      adminGroups.textContent = 'No security groups exist.';
+      return;
+    }
+    adminGroups.className = 'admin-list';
+    for (const group of groups) {
+      const row = document.createElement('div');
+      row.className = 'admin-group-row';
+      const copy = document.createElement('div');
+      copy.className = 'admin-identity-copy';
+      const name = document.createElement('strong');
+      name.textContent = group.name + (group.built_in ? ' · built-in' : '');
+      const detail = document.createElement('small');
+      detail.textContent = group.slug + ' · ' + group.member_count + ' member(s) · ' + ((group.permissions || []).join(', ') || 'no permissions');
+      copy.append(name, detail);
+      const actions = document.createElement('div');
+      if (canAdmin(principal, 'admin.groups.manage')) {
+        const members = document.createElement('select');
+        members.multiple = true;
+        members.title = 'Group members';
+        members.setAttribute('aria-label', 'Members of ' + group.name);
+        for (const user of users) {
+          const option = document.createElement('option');
+          option.value = user.user_id;
+          option.textContent = user.display_name;
+          option.selected = (user.groups || []).includes(group.slug);
+          members.appendChild(option);
+        }
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'secondary';
+        save.textContent = 'Save members';
+        save.addEventListener('click', async () => {
+          save.disabled = true;
+          try {
+            await request('/api/v1/admin/groups/' + encodeURIComponent(group.group_id) + '/members', { method: 'PUT', body: JSON.stringify({ user_ids: Array.from(members.selectedOptions).map(option => option.value) }) });
+            await loadAdministrator();
+          } catch (error) {
+            adminFeedback.className = 'inline-feedback error';
+            adminFeedback.textContent = error.message;
+          } finally {
+            save.disabled = false;
+          }
+        });
+        actions.append(members, save);
+      }
+      row.append(copy, actions);
+      adminGroups.appendChild(row);
+    }
+  }
+
+  function renderAdminPermissions(permissions) {
+    if (!adminPermissions) return;
+    adminPermissions.replaceChildren();
+    for (const permission of permissions) {
+      const label = document.createElement('label');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = permission.resource + '.' + permission.action;
+      label.append(checkbox, document.createTextNode(' ' + checkbox.value));
+      adminPermissions.appendChild(label);
+    }
+  }
+
+  function renderAdminAudit(events) {
+    if (!adminAudit) return;
+    adminAudit.replaceChildren();
+    if (!events.length) {
+      adminAudit.className = 'admin-list empty';
+      adminAudit.textContent = 'No administrator events yet.';
+      return;
+    }
+    adminAudit.className = 'admin-list';
+    for (const event of events) {
+      const row = document.createElement('div');
+      row.className = 'admin-audit-row';
+      const action = document.createElement('strong');
+      action.textContent = event.action + ' · ' + event.target_type + (event.target_id ? '/' + event.target_id : '');
+      const detail = document.createElement('small');
+      detail.textContent = event.actor_user_id + ' · ' + (event.surface || 'unknown surface') + ' · ' + new Date(event.created_at).toLocaleString();
+      row.append(action, detail);
+      adminAudit.appendChild(row);
+    }
+  }
+
+  async function loadAdministrator() {
+    if (!adminCard) return;
+    try {
+      const principal = await request('/api/v1/admin/me');
+      const visible = canAdmin(principal, 'admin.users.read') || canAdmin(principal, 'admin.groups.read');
+      if (!visible) {
+        adminNav.hidden = true;
+        adminCard.hidden = true;
+        return;
+      }
+      adminNav.hidden = false;
+      adminCard.hidden = false;
+      adminIdentity.textContent = principal.user.display_name + ' · ' + ((principal.user.groups || []).join(', ') || 'no group');
+      const [usersPayload, groupsPayload, permissionsPayload, auditPayload] = await Promise.all([
+        canAdmin(principal, 'admin.users.read') ? request('/api/v1/admin/users') : Promise.resolve({ users: [] }),
+        canAdmin(principal, 'admin.groups.read') ? request('/api/v1/admin/groups') : Promise.resolve({ groups: [] }),
+        canAdmin(principal, 'admin.groups.read') ? request('/api/v1/admin/permissions') : Promise.resolve({ permissions: [] }),
+        canAdmin(principal, 'admin.audit.read') ? request('/api/v1/admin/audit?limit=20') : Promise.resolve({ events: [] })
+      ]);
+      renderAdminUsers(usersPayload.users || [], principal);
+      renderAdminGroups(groupsPayload.groups || [], usersPayload.users || [], principal);
+      renderAdminPermissions(permissionsPayload.permissions || []);
+      renderAdminAudit(auditPayload.events || []);
+      adminGroupForm.hidden = !canAdmin(principal, 'admin.groups.manage');
+      adminFeedback.className = 'inline-feedback';
+      adminFeedback.textContent = principal.is_bootstrap ? 'Bootstrap administrator account created for this local identity.' : 'Access is enforced by the API.';
+    } catch (error) {
+      console.error('Administrator panel failed', error);
+      adminNav.hidden = true;
+      adminCard.hidden = true;
+    }
+  }
+
+  if (adminGroupForm) adminGroupForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    const selected = Array.from(adminPermissions.querySelectorAll('input:checked')).map(input => input.value);
+    const slug = document.querySelector('#admin-group-slug').value.trim();
+    const name = document.querySelector('#admin-group-name').value.trim();
+    const description = document.querySelector('#admin-group-description').value.trim();
+    try {
+      await request('/api/v1/admin/groups', { method: 'POST', body: JSON.stringify({ slug, name, description, permissions: selected }) });
+      adminGroupForm.reset();
+      await loadAdministrator();
+    } catch (error) {
+      adminFeedback.className = 'inline-feedback error';
+      adminFeedback.textContent = error.message;
+    }
+  });
+
+  loadAdministrator();
 
   if (messageBody) messageBody.addEventListener('input', updateMessageCount);
   if (messageCancel) messageCancel.addEventListener('click', resetMessageComposer);

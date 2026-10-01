@@ -1,267 +1,187 @@
-# Install — TimeKeeper
+# Install TimeKeeper
 
-This is the end-to-end install walkthrough. It covers a clean clone, the
-friendly-URL setup, the OS service install, and the post-install checks.
+TimeKeeper is built from this repository checkout and stores its runtime data in the checkout's `.timekeeper/` directory. There is no downloadable application package in this repository. The Windows and Linux/WSL installers set up an OS service by default; macOS has a build-only path but no automated launchd service installer.
 
-If anything here disagrees with `install.sh` itself, the script wins —
-the script is the source of truth; this document explains what it does
-and why.
+If you only need the commands, start with the [README](../README.md). This guide covers prerequisites, what each installer changes, and how to check or remove an installation.
 
-## 1. Prerequisites
+## Before you start
 
-- A clean TimeKeeper clone at the desired path
-- Git (the installer verifies the checkout origin and HEAD)
-- Go available on PATH (or set `TIMEKEEPER_GO=/path/to/go` to override)
-- Administrator / root for the friendly-URL hosts-file write and the
-  NSSM service install. The installer will *not* ask for elevation;
-  the user is expected to run it elevated.
+- Use a checkout you trust. The Windows installer builds from the checked-out source. The Linux/WSL installer checks that the repository origin is the canonical TimeKeeper repository and that `HEAD` matches `origin/main`.
+- Go must be available to build the app. The Linux/WSL installer also requires Git and the Go modules to already be available locally; it does not download application code or Go modules.
+- The app, database, dashboard assets, and logs are kept under `.timekeeper/`. Back up data you need before replacing an installation or removing the checkout.
+- The installer does not add the CLI to `PATH`. Use its checkout-local path in the commands below.
 
-## 2. Run the installer
+For a new Linux/WSL installation, the working tree must be clean. When an existing `.timekeeper/app` is present, the shell installer can refresh from a dirty checkout, but it builds the committed `HEAD`; uncommitted source changes are not included.
 
-From any working directory, execute the installer inside the checkout's
-`install/` directory:
+## Linux / WSL
 
-```text
-Linux/WSL:  install/install.sh
-Windows:   install\\install.bat
+From the repository root, run:
+
+```bash
+./install/install.sh
 ```
 
-These are the canonical one-file entrypoints. They resolve the repository
-relative to their own location, build or refresh the local app, install the
-OS service, and perform the post-install setup by default. The root
-`install.sh` and `install.bat` remain compatibility launchers for existing
-bootstrap checks.
+By default, this builds the server, CLI, and Guardian from the verified commit, stages the dashboard, attempts to add the friendly local hostnames, and installs and starts a systemd **user** service. The service setup needs a working systemd user manager; this may require enabling systemd in WSL.
 
-What it does, in order:
+Useful options are:
 
-1. Verifies the checkout origin is `git@github.com:JustSebNL/timekeeper.git`
-   (or the HTTPS variant) and HEAD is at `origin/main`.
-2. Verifies `go` is available.
-3. Builds `timekeeper` (server), `tk` (CLI), and `guardian` into
-   `.timekeeper/app/bin/` using `go build -trimpath`.
-4. Stages the web assets into `.timekeeper/web/`.
-5. Writes the launcher scripts (`.timekeeper/app/timekeeper` and
-   `.timekeeper/app/tk`) and `INSTALLATION.env`.
-6. Atomically swaps the new install into place, preserving any
-   existing `.timekeeper/state/` and `.timekeeper/web/`.
-7. Calls `tk hosts add` to write the friendly-URL entries
-   (`timekeeper.local`, `api.timekeeper.local`) to the OS hosts
-   file. This step is best-effort: if the user is not elevated,
-   the install still completes and the failure is reported.
-
-## 3. Verify the install
-
-After `install.sh` returns:
-
-```text
-./.timekeeper/app/bin/tk doctor
+```bash
+./install/install.sh --no-service
+./install/install.sh --with-port=127.0.0.1:8080
+./install/install.sh --without-proxy
 ```
 
-You should see something like:
+- `--no-service` builds and stages the app without installing or starting a service.
+- `--with-port` selects the loopback port for the optional friendly-URL proxy.
+- `--without-proxy` disables that proxy; the canonical `127.0.0.1:1618` address remains available.
 
-```text
-[ok] http://127.0.0.1:1618/health: ok
-[ok] http://timekeeper.local/health: ok
-[ok] http://api.timekeeper.local/health: ok
+The proxy/host setup is optional. Writing `/etc/hosts` may require elevated permission; a failed host-file update is reported, but does not invalidate a healthy canonical listener. A port-80 conflict can also prevent the friendly URL from working. See [Friendly local URLs](friendly-url.md).
 
-Time Keeper is ready.
+If you used `--no-service`, start the server manually from the repository root:
+
+```bash
+./.timekeeper/app/timekeeper
 ```
 
-If the canonical address works but the friendly URLs do not, the
-installer has not been run with elevation, or port 80 is already
-in use (see [Friendly URLs](friendly-url.md#real-world-constraint-port-80-may-already-be-in-use)).
+The installed CLI is available as `./.timekeeper/app/tk` (or the binary at `./.timekeeper/app/bin/tk`). To install a service later, run `./.timekeeper/app/tk service install` on a host with a working systemd user service.
 
-## 4. Install as an OS service
+## Windows
 
-The service is the right primary recovery mechanism. NSSM on Windows,
-systemd user-scope on Linux.
+From the repository root, run in PowerShell or Command Prompt:
 
-```text
-./.timekeeper/app/bin/tk service install
+```powershell
+.\install\install.bat
 ```
 
-This dispatches to the repo-relative installers:
+The installer builds the server and CLI, stages the dashboard, and uses Bend2Will's `obey` command to install the Windows service when a local Bend2Will checkout or `obey.exe` is available. In this workspace, the sibling `Bend2Will` repository is detected automatically. Elsewhere, set `TIMEKEEPER_BEND2WILL_ROOT` to that source checkout or `TIMEKEEPER_OBEY` to a trusted executable. The service install requests Administrator approval through UAC. NSSM remains a compatibility fallback when Bend2Will is unavailable; replacing an existing NSSM service requires the explicit `-MigrateFromNssm` option. The source changes do not alter the running service until an installer action is run and health-checked.
 
-- Windows: `install/add-service.bat` (bundled `scripts/service/nssm/win64/nssm.exe`)
-- Linux: `install/add-service.sh` (systemd user service via `scripts/service/service-manager.sh`)
-- Remove: `install/remove-service.bat` or `install/remove-service.sh`
+The CLI is `.\.timekeeper\app\bin\tk.exe`. The Windows installer builds the checked-out source directly; review the checkout before approving the elevated install. Friendly hostnames may still be unavailable if the proxy cannot bind its configured port. The canonical loopback address remains the fallback.
 
-These wrappers resolve their own repository path from the script location; no developer machine path is hardcoded. The implementation:
+## macOS
 
-- **Probes the default proxy port (127.0.0.1:80) at install time.**
-  On native Linux, if the port is in use, the install prompts for
-  one of the three documented options and persists the choice to
-  `INSTALLATION.env` so future re-installs remember it. On WSL the
-  probe is a no-op (Linux ss does not see Windows-side listeners);
-  the runtime bind inside timekeeper.exe is authoritative and
-  `tk doctor` reports the conflict honestly. On native Windows
-  (the .bat path) the probe is also a no-op today; the runtime
-  warning + `tk doctor` cover it.
-- Installs the service with delayed auto-start.
-- Sets the service's `AppParameters` (NSSM) or `ExecStart` (systemd)
-  to include `-proxy-addr <resolved-address>`, so the friendly-URL
-  proxy starts with the service.
-- Configures log rotation (10 MiB × 5), restart-on-failure with
-  a 5s delay, and stdout/stderr piped to `.timekeeper/log/`.
+The shell installer can build a macOS binary, but the service manager does not currently install a launchd service. An open support decision is recorded in the local TimeKeeper backlog; until it is resolved, the documented path is build-only. If you choose to build from source, use the shell installer with `--no-service`; the verified-checkout requirements above still apply. Start the resulting `.timekeeper/app/timekeeper` manually from the repository root and stop it in that terminal when finished. No launchd plist or automated macOS service setup is provided here.
 
-The three-option prompt (only on native Linux):
+## Verify and open TimeKeeper
+
+After a default install, the service should already be running. Check its health with the CLI for your platform:
 
 ```text
-[service] Port 80 on 127.0.0.1 is already in use.
-[service] This is the proxy address for the friendly URLs (timekeeper.local).
-[service] Choose one:
-[service]   1) Free port 80 on this host and re-run the install
-[service]   2) Use a different port (you will see timekeeper.local:<port> in the URL)
-[service]   3) Run without the friendly-URL proxy (only 127.0.0.1:1618 will work)
-[service] Choose [1/2/3] (default 2):
+Linux / WSL: ./.timekeeper/app/tk doctor
+Windows:     .\.timekeeper\app\bin\tk.exe doctor
 ```
 
-The chosen value is persisted to `INSTALLATION.env` as
-`TIMEKEEPER_PROXY_ADDR=<addr>` (option 2) or `TIMEKEEPER_PROXY_DISABLED=1`
-(option 3). Subsequent runs of `tk service install` honor the
-persisted choice.
-
-Override the prompt entirely with an environment variable:
+Open the dashboard using the canonical loopback address:
 
 ```text
-TIMEKEEPER_PROXY_ADDR=127.0.0.1:8080 ./.timekeeper/app/bin/tk service install
+Linux / WSL: ./.timekeeper/app/tk open --ip
+Windows:     .\.timekeeper\app\bin\tk.exe open --ip
 ```
 
-Verify the service is running:
+You can also browse directly to `http://127.0.0.1:1618/`. `tk open` uses the friendlier local hostname when it is available; `tk open --ip` avoids hosts-file and proxy setup. Check `tk hosts status` and `tk doctor` if a friendly URL does not work.
 
-```text
-./.timekeeper/app/bin/tk service status
+When `INSTALLATION.env` is present beside the CLI, `tk doctor` also reports the install target, source commit, and any saved proxy choice. If that metadata file is absent, its informational install check is skipped without failing the health check.
+
+For ordinary work, use the dashboard or the CLI. The CLI and dashboard use the same local service and SQLite data.
+
+## Installer behavior, in detail
+
+The commands above are the quick path. These notes explain what the platform scripts actually do, including the differences that matter when troubleshooting.
+
+### Linux / WSL shell installer
+
+`install/install.sh` is a small repository-relative entrypoint to the root `install.sh`. On a new install the shell installer:
+
+1. Verifies the canonical repository origin and requires `HEAD` to match `origin/main`.
+2. Rejects a dirty working tree when no previous `.timekeeper/app` install exists. With an existing app it can proceed, but still archives and builds the committed `HEAD`; local edits are not included.
+3. Uses `git archive` to stage that commit and runs Go with module downloading disabled. Build dependencies therefore need to be available locally.
+4. Builds the `timekeeper`, `tk`, and `guardian` binaries, stages the dashboard, and writes local launchers plus `INSTALLATION.env` under `.timekeeper/app/`.
+5. Refreshes the app directory while preserving its existing `state` directory. The SQLite database is stored outside the replaceable app directory at `.timekeeper/timekeeper.db`.
+6. Attempts to add the managed local host entries. If the hosts-file write is denied, the canonical API can still work; the friendly names will not.
+7. Installs and starts a systemd user service unless `--no-service` was selected.
+
+The installer does not add the CLI to `PATH`, fetch application source, or turn on a remote listener. The `--with-port` and `--without-proxy` choices are saved in `INSTALLATION.env` and are used on later Linux service installs.
+
+### Windows service installer
+
+`install/install.bat` delegates to the repository's `install.bat`, which invokes `scripts/service/install-windows.ps1` with build and elevation enabled. It compiles `timekeeper.exe` and `tk.exe` from the checked-out source, builds `obey.exe` from the local Bend2Will source when available, stages the dashboard, and prepares `.timekeeper/`. Bend2Will registers the TimeKeeper service as `LocalService`, with delayed automatic startup and SCM restart-on-failure. Windows setup requests UAC approval instead of silently skipping elevated work.
+
+The PowerShell installer looks for a sibling `Bend2Will` checkout by default. If it is elsewhere, set `TIMEKEEPER_BEND2WILL_ROOT` or pass `-Bend2WillRoot`; a trusted prebuilt binary can be supplied with `TIMEKEEPER_OBEY` or `-ObeyPath`. Preview the selected path and service settings without changing the service:
+
+```powershell
+.\scripts\service\install-windows.ps1 -Plan
 ```
 
-## 5. Open the dashboard
+An existing NSSM service is not silently replaced. First review the plan and confirm that the service belongs to this TimeKeeper checkout, then explicitly approve migration:
 
-The fastest path:
-
-```text
-./.timekeeper/app/bin/tk open
+```powershell
+.\install\install.bat -MigrateFromNssm
 ```
 
-This launches the default browser at `http://timekeeper.local/`.
-The browser does the rest. Bookmarks saved from there work across
-sessions.
+The installer checks that NSSM's configured application is this repository's `timekeeper.exe`, saves its settings, and only then replaces the service. If the Bend2Will service fails its ownership/health check, the installer attempts to restore the previous NSSM setup, replaced binaries, and the backed-up dashboard assets. During an existing-service migration, it leaves hosts-file entries unchanged unless `-UpdateHosts` is supplied and retains the legacy scheduled task by default; `-RetireLegacyLauncher` explicitly removes that task after health verification. Unknown service managers and services pointing at another executable are left untouched. The Windows service path does not perform the Linux installer's Git-origin/`origin/main` validation, so review the checkout before approving the build.
 
-Other entry points:
+The Bend2Will service runs as `LocalService`, uses delayed automatic startup, and asks the SCM to restart its supervisor after failure with a five-second delay. Bend2Will captures supervisor and child output in `.timekeeper/log/service.log`, rotates at 10 MiB, and retains one `.1` backup. `tk service logs` shows recent output. The running service is not changed by source edits or by `-Plan`; migration happens only when an install action is explicitly run.
 
-- `tk open --api` — opens `http://api.timekeeper.local/` (the API
-  surface, useful for inspecting JSON output in a browser).
-- `tk open --ip` — opens `http://127.0.0.1:1618/` (the canonical
-  address, the only one that always works regardless of hosts-file
-  state or port 80 availability).
+### Linux service, logs, and proxy choice
 
-## 6. Uninstall
+The Linux service is a systemd user unit under `~/.config/systemd/user/`. The installer enables user lingering when `loginctl` is available, then enables and starts the unit. The service manager writes logs to `/data/logs/` by default; if that directory is not writable, it falls back to `.timekeeper/log/` and prints a warning. `TIMEKEEPER_LOG_DIR` can select an explicitly provisioned log directory.
 
-```text
-./.timekeeper/app/bin/tk uninstall
-```
+On native Linux, the service manager probes the default loopback proxy port. If it is already in use, an interactive install offers three choices: free the port and retry, select another port, or disable the friendly proxy. The selected port/disabled state is persisted. The port probe cannot see Windows-side listeners from WSL, and the native Windows PowerShell installer does not use that Linux prompt. In those cases, the server's bind result and `tk doctor` are the authoritative checks. A proxy failure does not make the canonical `127.0.0.1:1618` listener remote or unavailable.
 
-This stops the OS service, removes the installed binaries, and
-calls `tk hosts remove` to strip the friendly-URL entries from
-the OS hosts file. The `.timekeeper/state/` and `.timekeeper/web/`
-directories are left in place; remove them manually if you want
-a fully clean uninstall.
+On Linux, a privileged port may also need `CAP_NET_BIND_SERVICE`. When the shell installer runs as root and `setcap` is available, it grants that capability to the TimeKeeper server binary so the service can bind the proxy port without running the full server as root. If it cannot set the capability, the installer prints a warning; use a non-privileged proxy port or follow the printed `setcap` instruction if the no-port URL is important.
 
-## What the installer does NOT do
+### What installation does not change
 
-- It does not download code from the network. The build is local.
-- It does not change your `PATH`.
-- It does not start the server automatically. `tk service install`
-  is the explicit step for that.
-- It does not silently retry the hosts-file write in the background.
-  If the install is not elevated, the user runs `tk hosts add`
-  again from an elevated shell.
+- It does not add `tk` to `PATH`; use the checkout-local CLI path.
+- It does not enable LAN or public access. The service remains loopback-only and unauthenticated.
+- It does not set up cloud sync or move the database out of `.timekeeper/`.
+- It does not make the optional friendly hostnames a requirement for the dashboard or API.
+- `--no-service` skips service installation only on the shell installer; it does not delete or reset existing Project data.
 
-## What to do if the install fails
-
-| Symptom | Likely cause | Fix |
+| Platform | Default installer result | Service behavior |
 | --- | --- | --- |
-| `Time Keeper requires Go to build locally` | Go is not on PATH and `TIMEKEEPER_GO` is unset | Install Go or `export TIMEKEEPER_GO=/path/to/go` |
-| `checkout origin must be git@github.com:JustSebNL/timekeeper.git` | Working in a fork or a non-canonical clone | `git remote set-url origin git@github.com:JustSebNL/timekeeper.git` |
-| `could not write friendly-URL hosts entries` | Not elevated | Re-run from an Administrator shell (Windows) or with `sudo` (Linux) |
-| `proxy listener could not bind 127.0.0.1:80` | Port 80 is already in use on the host | See [Friendly URLs — port 80 conflict](friendly-url.md#real-world-constraint-port-80-may-already-be-in-use) |
-| `timekeeper.local: connection refused` | Hosts entry missing or proxy not bound | `tk doctor` will tell you which one; `tk hosts add` for the former, `TIMEKEEPER_PROXY_ADDR` for the latter |
+| Linux | Verified-source build and staged local app | systemd user service installed and started |
+| WSL | Same shell build, if systemd user services are available | systemd user service; Windows-side port conflicts are detected at runtime |
+| Windows | Build from checked-out source and stage the dashboard; use Bend2Will when available, otherwise the NSSM compatibility fallback | Bend2Will or NSSM service is installed and health-checked after UAC approval; existing NSSM-to-Bend2Will migration requires `-MigrateFromNssm` |
+| macOS | Verified-source build-only path with `--no-service` | No automated launchd service installer |
 
-## Open TODOs for the installer
+## Manage the service
 
-These are the items the installer is *not* yet doing but should, in
-priority order. **Status as of the latest sync:**
+Use the platform's installed CLI path with these commands:
 
-1. **Detect port 80 conflict and present the three-option choice**
-   documented in `docs/friendly-url.md` ("Free port 80", "Pick a
-   different port", "Run without the proxy"). **Status: shipped on
-   native Linux only.** The probe uses `ss`/`netstat` and is reliable
-   on native Linux; on WSL2 it is a no-op (the Linux netstat does
-   not see Windows-side listeners); on the native Windows .bat path
-   it is also a no-op today. On the platforms where the probe works,
-   the prompt persists the choice to `INSTALLATION.env` so re-installs
-   remember. Follow-ups: (a) add a PowerShell-based probe in
-   `service-install.bat` for native Windows, (b) document a manual
-   "use this port" override that the WSL .sh can read from
-   `INSTALLATION.env` even when the probe is a no-op.
+```text
+tk service status
+tk service start
+tk service stop
+tk service restart
+tk service logs
+tk service uninstall
+```
 
-2. **Idempotent re-install of the OS service.** **Status: shipped.**
-   `tk service install` now compares the desired service parameters
-   (`AppParameters`, `AppDirectory`, `DisplayName`) against the live
-   NSSM values; on a match it skips the remove + restart cycle and
-   just ensures the service is running. On a mismatch (e.g. a new
-   `TIMEKEEPER_PROXY_ADDR`) it removes and reinstalls as before. The
-   live process is no longer interrupted on every refresh.
+The installer also writes service logs under `.timekeeper/` or the configured Linux log directory. `tk service uninstall` removes the OS service; it does not delete the database or the rest of `.timekeeper/`.
 
-3. **Verify NSSM is present on Windows before promising the service
-   install will work.** **Status: shipped.** `find_nssm` in
-   `scripts/service/service-manager.sh` now prints a structured
-   error that lists every location that was checked, the download
-   URL, and the three ways to fix it (place at the standard path,
-   set `TIMEKEEPER_NSSM`, or put on PATH).
+If host-file setup was skipped or failed, `tk hosts status` shows the current entries. `tk hosts add` and `tk hosts remove` change the operating-system hosts file and may need Administrator/root permission.
 
-4. **Add an `install.sh --with-port <addr>` flag.** **Status: shipped.**
-   `./install.sh --with-port=127.0.0.1:8080` sets
-   `TIMEKEEPER_PROXY_ADDR` and persists it; `./install.sh
-   --without-proxy` disables the proxy listener and persists
-   `TIMEKEEPER_PROXY_DISABLED=1`. The flags are documented in
-   `install.sh --help`. The persisted values are honoured by
-   `service-manager.sh` on the next `tk service install`.
+## Uninstall and keep your data
 
-5. **Document macOS** launchd install path in the README. **Status:
-   shipped.** A `macOS (manual launchd setup)` subsection of the
-   README walks through the four-step manual flow: build via
-   `install.sh`, drop a LaunchAgent plist, `launchctl load -w` and
-   `launchctl start`, then `launchctl unload` for removal. The
-   plist is provided in full.
+Run:
 
-6. **Test the Linux port-80 unprivileged path with `setcap`.** **Status:
-   shipped in `install.sh`.** When the user is root on Linux and
-   `setcap` is on PATH, the install grants `cap_net_bind_service=+ep`
-   to the timekeeper binary so the friendly-URL proxy can bind
-   127.0.0.1:80 without the whole service running as root. Non-root
-   users get a one-line instruction to run the same `setcap` command
-   themselves; missing `setcap` (libcap2-bin not installed) is
-   detected and reported.
+```text
+tk uninstall
+```
 
-7. **Verify the install path is part of `tk doctor`.** **Status:
-   shipped.** `tk doctor` now reads `INSTALLATION.env` next to the
-   binary and reports the install target, source commit (short hash),
-   and the persisted proxy choice. Catches the case where the
-   service is running an old build after a refresh.
+This removes the OS service and attempts to remove TimeKeeper's managed friendly-host entries. It **leaves `.timekeeper/` in place**, including the database, installed binaries, dashboard assets, configuration, and logs. Keep or back up that directory if you want the data. Only remove it yourself after confirming you no longer need its contents; deleting it removes your local project history.
 
-## What ships vs. what's experimental
+If the command could not edit the hosts file because it lacked permission, check `tk hosts status` and remove the entries from an elevated shell.
 
-| Surface | Status |
+## Troubleshooting
+
+| Symptom | What to check |
 | --- | --- |
-| `./install.sh` builds + stages the app | ships |
-| `tk hosts add` writes the friendly-URL entries | ships |
-| Install-time port-80 probe + 3-option prompt (native Linux) | ships |
-| `TIMEKEEPER_PROXY_ADDR` env override | ships |
-| Persisted `INSTALLATION.env` choice for re-installs | ships |
-| `./install.sh --with-port` / `--without-proxy` flags | ships |
-| `setcap` step in `install.sh` (Linux unprivileged port 80) | ships |
-| `tk service install` idempotent (no-op on matching params) | ships |
-| `find_nssm` actionable error with all searched paths | ships |
-| macOS launchd flow in README | ships |
-| `tk doctor` install-commit + target + proxy choice line | ships |
-| Install-time port-80 probe on WSL | not yet (TODO 1 follow-up) |
-| Install-time port-80 probe on native Windows (.bat) | not yet (TODO 1 follow-up) |
+| Go is missing or the build fails | Install Go and confirm `go version`. On Linux/WSL, also make sure required Go modules are already cached. |
+| Linux/WSL reports the wrong origin, revision, or a dirty checkout | The shell installer accepts a verified committed source revision, not arbitrary local edits. Check the remote and `HEAD`; do not expect uncommitted changes to be built. |
+| Windows service setup does not start | Approve the UAC request. If Bend2Will cannot be found, set `TIMEKEEPER_BEND2WILL_ROOT` to its source checkout or `TIMEKEEPER_OBEY` to a trusted `obey.exe`; NSSM remains the fallback when available. Existing NSSM migration requires `-MigrateFromNssm`. Then run `tk service status` and `tk service logs`. |
+| `127.0.0.1:1618` works but a friendly URL does not | Run `tk hosts status` and `tk doctor`. A missing hosts entry or unavailable proxy port affects the friendly name, not the canonical address. See [Friendly local URLs](friendly-url.md#if-the-friendly-url-does-not-open). |
+| Port 80 is already in use | Do not stop an unrelated service just to get a shorter URL. Use `tk open --ip`, or choose a supported proxy option for your platform in the install guide. |
+| The server is not healthy | Run `tk doctor`, then check service status and logs. Do not start a second server or database to work around an unhealthy install. |
+
+For API, security, and agent integration details, see the [documentation index](README.md).

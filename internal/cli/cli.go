@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +45,27 @@ func extractVerboseFlag(args []string) ([]string, logging.Mode) {
 	return out, mode
 }
 
+var jsonOutputEnabled bool
+
+func extractJSONFlag(args []string) ([]string, bool) {
+	jsonMode := false
+	out := args[:0:0]
+	for _, a := range args {
+		if a == "--json" {
+			jsonMode = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, jsonMode
+}
+
+func writeJSONResponse(out io.Writer, val any) {
+	encoder := json.NewEncoder(out)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(val)
+}
+
 // ensureCLILogger initialises a logger for CLI invocations. The CLI doesn't
 // normally write to a file (output is the user-visible stdout), but in debug
 // mode we capture every step + every HTTP exchange to a file too so a CLI
@@ -58,9 +80,26 @@ func ensureCLILogger(mode logging.Mode) {
 	}
 	logPath := os.Getenv("TIMEKEEPER_CLI_LOG")
 	if logPath == "" {
-		logPath = filepath.Join(".timekeeper", "log", "cli.log")
+		logPath = filepath.Join("/data/logs", "cli.log")
 	}
 	logging.Init(logging.Config{Path: logPath, Mode: mode, MaxSizeMiB: 5, MaxBackups: 3})
+}
+
+// parseDuration accepts standard Go duration strings ("30m", "2h") and bare
+// positive integers interpreted as seconds ("3600" -> 1h). This keeps CLI
+// estimates consistent across t new, sp new, and sp extend.
+func parseDuration(s string) (time.Duration, error) {
+	d, err := time.ParseDuration(s)
+	if err == nil && d > 0 {
+		return d, nil
+	}
+	// If standard parse fails with "missing unit", try bare integer (seconds).
+	if strings.Contains(err.Error(), "missing unit") {
+		if sec, perr := strconv.ParseInt(s, 10, 64); perr == nil && sec > 0 {
+			return time.Duration(sec) * time.Second, nil
+		}
+	}
+	return 0, err
 }
 
 // runCommand wraps a CLI subcommand so its start/duration/result are logged
@@ -127,11 +166,13 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 	// Pull -v/--verbose/--debug out of the front of args to flip log mode.
 	args, mode := extractVerboseFlag(args)
 	ensureCLILogger(mode)
+	args, jsonOutputEnabled = extractJSONFlag(args)
 
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		_, _ = fmt.Fprint(out, "Usage: tk [--url <api-base-url>] <command>\n\nCommands:\n  list                                        List projects\n  tree <project-id>                           Show an executable hierarchy\n  export <project-id>                         Print a portable Project snapshot as JSON\n  summary <project-id>                        Show a durable Sprint operational snapshot\n  usage <project-id>                          Show recorded agent token usage\n  usage record <project-id> <session-id> <agent-id> <model> <turn> <input> <output> [cache-write] [cache-read] [messages] [sprint-id]\n  supervise --project P --sprint SP --agent ID --model MODEL --state-dir DIR -- PROMPT\n                                              Run a bounded Codex CLI worker (supervise --help)\n  outcomes <project-id>                        Compare reviewed coding runs\n  outcomes record <project-id> <review.json>    Record evidence-linked review\n  pulse                                       Show local Sprint attention needing follow-up\n  agent progress <id> <lease> [sprint-id] [guardian-url]\n                                              Renew an agent material-progress lease and optionally register a numeric-loopback Guardian\n  agent nudges <id>                           List durable unacknowledged Guardian nudges\n  agent history <id>                          List durable Guardian delivery/recovery history\n  agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge and renew the lease\n  events <project-id>                         List immutable Project activity\n  note <project-id> <content>                 Record a Project note\n  notes <project-id>                          List Project notes\n  msg <project-id> add <body>                 Post project memory (use --reply-to M-1 for a reply)\n  msg <project-id> edit M-1 <body>            Edit a message and append a revision\n  msg <project-id> thread M-1                 Read a complete message thread\n  msg <project-id> revisions M-1              Read immutable message revisions\n  msg <project-id> search <query>             Search project memory\n  p new <name>                                Create a Project\n  p edit <project-id> <goal> <description>    Update Project context\n  p status <project-id> <status>              Set Project status\n  p alias <project-id> <alias>                Set Project alias\n  p unalias <project-id>                      Clear Project alias\n  aliases                                     List project aliases\n  c new <project-id> <name> [parent-category-id] Create a Category\n  c edit <category-id> <goal> <description>    Update Category context\n  c status <category-id> <status>              Set Category status\n  t edit <task-id> <goal> <description>        Update Task context\n  t new <project-id> <category-id> <name> <estimate>\n                                              Create a Task\n  t status <task-id> <status>                 Set Task status\n  st new <task-id> <name> <estimate>          Create a Subtask\n  st status <subtask-id> <status>              Set Subtask status\n  sp new <task|subtask> <owner-id> <name> <estimate> [buffer-percent]\n                                              Create a Sprint\n  sp <start|hold|resume|complete|cancel> <sprint-id> [reason] Transition a Sprint; hold/cancel require a reason\n  sp reason <sprint-id> <reason>                Update why an already-held Sprint is blocked\n  sp next <project-id>                         Atomically claim the oldest runnable Sprint\n  sp attempts <sprint-id>                      List immutable retrieval-attempt evidence\n  sp attempt <sprint-id> <reason>              Record a failed retrieval attempt (fourth makes TimedOut)\n  sp extend <sprint-id> <duration> <reason>   Record justified additional planned time\n  sp extensions <sprint-id>                   List immutable extension history\n  sp entries <sprint-id>                      List recorded work/hold intervals\n  llm new <name> <provider> <base-url> <model> [system-prompt]\n                                              Register a loopback LLM pipeline\n  plan <generate|apply> <project-id> <pipeline-id|draft-id>\n                                              Generate or apply a reviewed planning draft\n  plan list <project-id>                       List planning drafts\n  doctor                                      Check whether Time Keeper is reachable\n  api-help                                    List all available API routes\n  store status                                Show Store login state and installation id\n  store login <email> --password <password>   Authenticate against the Store (optional)\n  store logout                                Revoke this Store session\n  store catalogue                             List Store extensions\n  store claim <product-id>                    Claim a free extension\n  store install <product-id> [version]        Verify, download and install an extension\n  store list                                  Show this account's entitlements\n  service                                     Manage TimeKeeper OS service (install/uninstall/start/stop/status/logs)\n")
+		_, _ = fmt.Fprint(out, "Usage: tk [--url <api-base-url>] <command>\n\nCommands:\n  list                                        List projects\n  tree <project-id>                           Show an executable hierarchy\n  export <project-id>                         Print a portable Project snapshot as JSON\n  summary <project-id>                        Show a durable Sprint operational snapshot\n  usage <project-id>                          Show recorded agent token usage\n  usage record <project-id> <session-id> <agent-id> <model> <turn> <input> <output> [cache-write] [cache-read] [messages] [sprint-id]\n  usage ingest <project-id> <envelope.json>    Ingest a redaction-verified harness usage snapshot\n  supervise --project P --sprint SP --agent ID --model MODEL --state-dir DIR -- PROMPT\n                                              Run a bounded Codex CLI worker (supervise --help)\n  outcomes <project-id>                        Compare reviewed coding runs\n  outcomes record <project-id> <review.json>    Record evidence-linked review\n  pulse                                       Show local Sprint attention needing follow-up\n  agent identity                              Print the resolved agent/session identity\n  agent state [agent-id]                      Show one agent's derived work state\n  agent states                                List all derived agent work states\n  agent work <sprint-id> <lease>              Record active material work for this session\n  agent wait <duration> <reason>              Record an explicit waiting state\n  agent idle [reason]                         Mark this session idle without inventing progress\n  agent stop [reason]                         Stop this session's work tracking\n  agent progress <id> <lease> [sprint-id] [guardian-url]\n                                              Renew an agent material-progress lease and optionally register a numeric-loopback Guardian\n  agent nudges <id>                           List durable unacknowledged Guardian nudges\n  agent history <id>                          List durable Guardian delivery/recovery history\n  agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge and renew the lease\n  events <project-id>                         List immutable Project activity\n  note <project-id> <content>                 Record a Project note\n  notes <project-id>                          List Project notes\n  msg <project-id> add <body>                 Post project memory (use --reply-to M-1 for a reply)\n  msg <project-id> edit M-1 <body>            Edit a message and append a revision\n  msg <project-id> thread M-1                 Read a complete message thread\n  msg <project-id> revisions M-1              Read immutable message revisions\n  msg <project-id> search <query>             Search project memory\n  msg <project-id> list [--kind K] [--limit N] List project memory as JSON\n  msg <project-id> show M-1                   Read one full message body as JSON\n  msg <project-id> context M-1                Read anchor, thread, related and revisions\n  msg <project-id> seed --yes                 Write sample messages (refused without --yes)\n  handoff <project-id>                        Print an agent session handoff snapshot\n  p new <name>                                Create a Project\n  p edit <project-id> <goal> <description>    Update Project context\n  p status <project-id> <status>              Set Project status\n  p alias <project-id> <alias>                Set Project alias\n  p unalias <project-id>                      Clear Project alias\n  aliases                                     List project aliases\n  c new <project-id> <name> [parent-category-id] Create a Category\n  c edit <category-id> <goal> <description>    Update Category context\n  c status <category-id> <status>              Set Category status\n  t edit <task-id> <goal> <description>        Update Task context\n  t new <project-id> <category-id> <name> <estimate> [--no-autoclose]\n                                              Create a Task\n  t status <task-id> <status>                 Set Task status\n  st new <task-id> <name> <estimate>          Create a Subtask\n  st status <subtask-id> <status>              Set Subtask status\n  sp new <task|subtask> <owner-id> <name> <estimate> [buffer-percent]\n                                              Create a Sprint\n  sp <start|hold|resume|complete|cancel> <sprint-id> [reason] Transition a Sprint; hold/cancel require a reason\n  sp reason <sprint-id> <reason>                Update why an already-held Sprint is blocked\n  sp next <project-id>                         Atomically claim the oldest runnable Sprint\n  sp attempts <sprint-id>                      List immutable retrieval-attempt evidence\n  sp attempt <sprint-id> <reason>              Record a failed retrieval attempt (fourth makes TimedOut)\n  sp extend <sprint-id> <duration> <reason>   Record justified additional planned time\n  sp extensions <sprint-id>                   List immutable extension history\n  sp entries <sprint-id>                      List recorded work/hold intervals\n  llm new <name> <provider> <base-url> <model> [system-prompt]\n                                              Register a loopback LLM pipeline\n  plan <generate|apply> <project-id> <pipeline-id|draft-id>\n                                              Generate or apply a reviewed planning draft\n  plan list <project-id>                       List planning drafts\n  doctor                                      Check whether Time Keeper is reachable\n  api-help                                    List all available API routes\n  store status                                Show Store login state and installation id\n  store login <email> --password <password>   Authenticate against the Store (optional)\n  store logout                                Revoke this Store session\n  store catalogue                             List Store extensions\n  store claim <product-id>                    Claim a free extension\n  store install <product-id> [version]        Verify, download and install an extension\n  store list                                  Show this account's entitlements\n  service                                     Manage TimeKeeper OS service (install/uninstall/start/stop/status/logs)\n")
 		return 0
 	}
+	setActiveCommand(args)
 	switch args[0] {
 	case "plan":
 		return runCommand("plan", func() int { return plan(args[1:], out, errOut, baseURL) })
@@ -153,6 +194,8 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return exportProject(args[1:], out, errOut, baseURL)
 	case "summary":
 		return summary(args[1:], out, errOut, baseURL)
+	case "handoff":
+		return handoffCLI(args[1:], out, errOut, baseURL)
 	case "supervise":
 		return supervise(args[1:], out, errOut, baseURL)
 	case "outcomes":
@@ -204,9 +247,104 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 	case "store":
 		return runCommand("store", func() int { return storeCommand(args[1:], out, errOut, baseURL) })
 	default:
-		_, _ = fmt.Fprintf(errOut, "unknown command %q\nRun tk help for usage.\n", args[0])
+		_, _ = fmt.Fprintf(errOut, "unknown command %q\n", args[0])
+		if suggestion := suggestCommand(args[0]); suggestion != "" {
+			_, _ = fmt.Fprintf(errOut, "did you mean %q?\n", suggestion)
+		}
+		_, _ = fmt.Fprint(errOut, "Run tk help for usage.\n")
 		return 2
 	}
+}
+
+// topLevelCommands lists the verbs Run dispatches on. It is the single source
+// used to suggest a correction instead of only saying "unknown command".
+var topLevelCommands = []string{
+	"agent", "agents", "aliases", "api-help", "c", "doctor", "events", "export",
+	"guardian", "handoff", "hosts", "init", "list", "llm", "msg", "messages",
+	"note", "notes", "ntfy", "open", "outcomes", "p", "plan", "pulse", "service",
+	"sp", "st", "store", "summary", "supervise", "t", "tree", "uninstall",
+	"usage", "version",
+}
+
+// routedCommands maps words that belong to a subcommand onto the full route
+// that owns them, so `tk search q` points at `msg <project-id> search` instead
+// of dead-ending on "unknown command".
+var routedCommands = map[string]string{
+	"search": "msg <project-id> search",
+	"show":   "msg <project-id> show",
+	"seed":   "msg <project-id> seed --yes",
+	"ls":     "list",
+}
+
+// suggestCommand returns the closest known command to input, or "" when
+// nothing is close enough to be a useful suggestion.
+func suggestCommand(input string) string {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return ""
+	}
+	type candidate struct {
+		word      string
+		suggested string
+	}
+	options := make([]candidate, 0, len(topLevelCommands)+len(routedCommands))
+	for _, word := range topLevelCommands {
+		options = append(options, candidate{word: word, suggested: word})
+	}
+	routed := make([]string, 0, len(routedCommands))
+	for word := range routedCommands {
+		routed = append(routed, word)
+	}
+	sort.Strings(routed)
+	for _, word := range routed {
+		options = append(options, candidate{word: word, suggested: routedCommands[word]})
+	}
+	best := ""
+	bestDistance := 1 << 30
+	for _, option := range options {
+		distance := editDistance(lower, option.word)
+		if distance < bestDistance {
+			bestDistance = distance
+			best = option.suggested
+		}
+	}
+	// A third of the word is the most noise worth suggesting; beyond that the
+	// guess would be misleading rather than helpful.
+	if bestDistance > (len(lower)+2)/3 {
+		return ""
+	}
+	return best
+}
+
+// editDistance is the bounded Levenshtein distance between two ASCII-ish
+// command words.
+func editDistance(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if len(a) == 0 {
+		return len(b)
+	}
+	if len(b) == 0 {
+		return len(a)
+	}
+	previous := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		current := make([]int, len(b)+1)
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			current[j] = min(current[j-1]+1, min(previous[j]+1, previous[j-1]+cost))
+		}
+		previous = current
+	}
+	return previous[len(b)]
 }
 
 func plan(args []string, out, errOut io.Writer, baseURL string) int {
@@ -236,14 +374,14 @@ func plan(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 60 * time.Second}).Do(request)
+	response, err := newHTTPClient(60 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable: %v\n", err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "run planning request", response)
 		return 1
 	}
 	if args[0] == "apply" {
@@ -263,13 +401,13 @@ func plan(args []string, out, errOut io.Writer, baseURL string) int {
 }
 
 func listPlanningDrafts(projectID string, out, errOut io.Writer, baseURL string) int {
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/planning-drafts")
+	response, err := newHTTPClient(10 * time.Second).Get(strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/planning-drafts")
 	if err != nil {
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return 1
+		reportHTTPStatus(errOut, "list planning drafts", response)
 	}
 	var value struct {
 		Items []struct {
@@ -306,14 +444,14 @@ func llmPipeline(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable: %v\n", err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "register llm pipeline", response)
 		return 1
 	}
 	var pipeline struct {
@@ -335,14 +473,14 @@ func exportProject(args []string, out, errOut io.Writer, baseURL string) int {
 		return 2
 	}
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + args[0] + "/export"
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(url)
+	response, err := newHTTPClient(10 * time.Second).Get(url)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "export project", response)
 		return 1
 	}
 	var value any
@@ -365,14 +503,14 @@ func summary(args []string, out, errOut io.Writer, baseURL string) int {
 		return 2
 	}
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + args[0] + "/operational-summary"
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(url)
+	response, err := newHTTPClient(10 * time.Second).Get(url)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "read project summary", response)
 		return 1
 	}
 	var value struct {
@@ -396,6 +534,45 @@ func summary(args []string, out, errOut io.Writer, baseURL string) int {
 	return 0
 }
 
+func handoffCLI(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage: tk handoff <project-id>")
+		return 2
+	}
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + args[0] + "/handoff"
+	if !jsonOutputEnabled {
+		url += "?format=markdown"
+	}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "failed to create request: %v\n", err)
+		return 1
+	}
+	if !jsonOutputEnabled {
+		req.Header.Set("Accept", "text/markdown")
+	}
+	resp, err := newHTTPClient(10 * time.Second).Do(req)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		reportHTTPStatus(errOut, "read agent handoff snapshot", resp)
+		return 1
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "failed to read response: %v\n", err)
+		return 1
+	}
+	_, _ = out.Write(body)
+	if !strings.HasSuffix(string(body), "\n") {
+		_, _ = fmt.Fprintln(out)
+	}
+	return 0
+}
+
 func pulse(args []string, out, errOut io.Writer, baseURL string) int {
 	activeOnly := false
 	staleOnly := false
@@ -408,14 +585,14 @@ func pulse(args []string, out, errOut io.Writer, baseURL string) int {
 		}
 	}
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/pulse"
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(url)
+	response, err := newHTTPClient(10 * time.Second).Get(url)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "TimeKeeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "read sprint pulse", response)
 		return 1
 	}
 	var value struct {
@@ -486,14 +663,14 @@ func agentStatus(args []string, out, errOut io.Writer, baseURL string) int {
 		return 2
 	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/agents/" + url.PathEscape(args[0]) + "/progress"
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
+	response, err := newHTTPClient(10 * time.Second).Get(endpoint)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "TimeKeeper API unavailable at %s: %v\n", endpoint, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "read agent state", response)
 		return 1
 	}
 	var progress struct {
@@ -524,14 +701,14 @@ func agentSessions(args []string, out, errOut io.Writer, baseURL string) int {
 	// This is a known limitation; a dedicated /api/v1/agents/{id}/sessions
 	// endpoint would be the right long-term fix.
 	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/projects"
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
+	response, err := newHTTPClient(10 * time.Second).Get(endpoint)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "list agent sessions", response)
 		return 1
 	}
 	var projects struct {
@@ -546,7 +723,7 @@ func agentSessions(args []string, out, errOut io.Writer, baseURL string) int {
 	found := false
 	for _, p := range projects.Items {
 		usageEndpoint := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + p.ProjectID + "/usage-summary"
-		resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(usageEndpoint)
+		resp, err := newHTTPClient(10 * time.Second).Get(usageEndpoint)
 		if err != nil {
 			continue
 		}
@@ -556,13 +733,13 @@ func agentSessions(args []string, out, errOut io.Writer, baseURL string) int {
 		}
 		var summary struct {
 			Sessions []struct {
-				SessionID string `json:"session_id"`
-				AgentID   string `json:"agent_id"`
-				Model     string `json:"model"`
-				TurnSeq   int64  `json:"turn_seq"`
-				InputTokens int64 `json:"input_tokens"`
-				OutputTokens int64 `json:"output_tokens"`
-				Messages  int64  `json:"messages"`
+				SessionID      string `json:"session_id"`
+				AgentID        string `json:"agent_id"`
+				Model          string `json:"model"`
+				TurnSeq        int64  `json:"turn_seq"`
+				InputTokens    int64  `json:"input_tokens"`
+				OutputTokens   int64  `json:"output_tokens"`
+				Messages       int64  `json:"messages"`
 				LastActivityAt string `json:"last_activity_at"`
 			} `json:"sessions"`
 		}
@@ -598,15 +775,30 @@ func ntfyCommand(args []string, out, errOut io.Writer, baseURL string) int {
 		for i := 1; i < len(args); i++ {
 			switch args[i] {
 			case "--server":
-				if i+1 < len(args) { server = args[i+1]; i++ }
+				if i+1 < len(args) {
+					server = args[i+1]
+					i++
+				}
 			case "--topic":
-				if i+1 < len(args) { topic = args[i+1]; i++ }
+				if i+1 < len(args) {
+					topic = args[i+1]
+					i++
+				}
 			case "--token":
-				if i+1 < len(args) { token = args[i+1]; i++ }
+				if i+1 < len(args) {
+					token = args[i+1]
+					i++
+				}
 			case "--nudge":
-				if i+1 < len(args) { nudgeID, _ = strconv.ParseInt(args[i+1], 10, 64); i++ }
+				if i+1 < len(args) {
+					nudgeID, _ = strconv.ParseInt(args[i+1], 10, 64)
+					i++
+				}
 			case "--agent":
-				if i+1 < len(args) { agentID = args[i+1]; i++ }
+				if i+1 < len(args) {
+					agentID = args[i+1]
+					i++
+				}
 			}
 		}
 		if server == "" || topic == "" || agentID == "" {
@@ -654,6 +846,10 @@ func agentPulse(args []string, out, errOut io.Writer, baseURL string) int {
 		return 2
 	}
 	switch args[0] {
+	case "identity", "state", "states", "work", "wait", "idle", "stop":
+		return agentActivityCommand(args, out, errOut, baseURL)
+	case "claim", "release", "claims", "profile":
+		return faseCommand(args, out, errOut, baseURL)
 	case "status":
 		return agentStatus(args[1:], out, errOut, baseURL)
 	case "sessions":
@@ -685,14 +881,14 @@ func agentPulse(args []string, out, errOut io.Writer, baseURL string) int {
 			return 1
 		}
 		request.Header.Set("Content-Type", "application/json")
-		response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+		response, err := newHTTPClient(10 * time.Second).Do(request)
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
 			return 1
 		}
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusCreated {
-			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+			reportHTTPStatus(errOut, "record agent progress", response)
 			return 1
 		}
 		var progress model.AgentPulseProgress
@@ -712,14 +908,14 @@ func agentPulse(args []string, out, errOut io.Writer, baseURL string) int {
 			path += "/history"
 		}
 		endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/agents/" + url.PathEscape(args[1]) + path
-		response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
+		response, err := newHTTPClient(10 * time.Second).Get(endpoint)
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
 			return 1
 		}
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusOK {
-			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+			reportHTTPStatus(errOut, "list agent nudges", response)
 			return 1
 		}
 		var payload struct {
@@ -749,14 +945,14 @@ func agentPulse(args []string, out, errOut io.Writer, baseURL string) int {
 			return 1
 		}
 		request.Header.Set("Content-Type", "application/json")
-		response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+		response, err := newHTTPClient(10 * time.Second).Do(request)
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
 			return 1
 		}
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusOK {
-			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+			reportHTTPStatus(errOut, "acknowledge agent nudge", response)
 			return 1
 		}
 		var nudge model.PulseNudge
@@ -780,14 +976,14 @@ func agentsCommand(args []string, out, errOut io.Writer, baseURL string) int {
 	switch args[0] {
 	case "list":
 		endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/agents"
-		response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
+		response, err := newHTTPClient(10 * time.Second).Get(endpoint)
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
 			return 1
 		}
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusOK {
-			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+			reportHTTPStatus(errOut, "list agents", response)
 			return 1
 		}
 		var payload struct {
@@ -825,14 +1021,14 @@ func agentsCommand(args []string, out, errOut io.Writer, baseURL string) int {
 			return 1
 		}
 		request.Header.Set("Content-Type", "application/json")
-		response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+		response, err := newHTTPClient(10 * time.Second).Do(request)
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
 			return 1
 		}
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusCreated {
-			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+			reportHTTPStatus(errOut, "broadcast agent message", response)
 			return 1
 		}
 		var result struct {
@@ -937,7 +1133,7 @@ func guardianSelfNudge(args []string, out, errOut io.Writer, baseURL string) int
 		return 1
 	}
 	regReq.Header.Set("Content-Type", "application/json")
-	regResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(regReq)
+	regResp, err := newHTTPClient(10 * time.Second).Do(regReq)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "register agent: %v\n", err)
 		return 1
@@ -950,16 +1146,36 @@ func guardianSelfNudge(args []string, out, errOut io.Writer, baseURL string) int
 	_, _ = fmt.Fprintf(out, "registered agent %s with lease %s and guardian %s\n", agentID, lease, guardianURL)
 
 	// Launch the self-nudge receiver as a subprocess.
-	selfExe := os.Args[0]
-	// If we're running from tk.exe, the receiver is tk-guardian-self.exe.
-	// Try to find it next to the current executable.
-	selfDir := filepath.Dir(selfExe)
-	receiverExe := filepath.Join(selfDir, "tk-guardian-self.exe")
-	if _, err := os.Stat(receiverExe); err != nil {
+	// Resolve the actual executable path rather than os.Args[0]. On WSL,
+	// a Windows binary may be invoked as `tk` without its `.exe` suffix;
+	// os.Args[0] then points at a relative command name and loses the
+	// installed sibling receiver.
+	selfPath, err := os.Executable()
+	if err != nil || strings.TrimSpace(selfPath) == "" {
+		selfPath = os.Args[0]
+	}
+	if absolute, absErr := filepath.Abs(selfPath); absErr == nil {
+		selfPath = absolute
+	}
+	selfDir := filepath.Dir(selfPath)
+	receiverName := "tk-guardian-self.exe"
+	receiverCandidates := []string{
+		filepath.Join(selfDir, receiverName),
+		filepath.Join(filepath.Dir(os.Args[0]), receiverName),
+		filepath.Join(".timekeeper", "app", "bin", receiverName),
+	}
+	receiverExe := ""
+	for _, candidate := range receiverCandidates {
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			receiverExe = candidate
+			break
+		}
+	}
+	if receiverExe == "" {
 		// Fall back to running the receiver inline via the current binary.
 		// This requires the receiver to be built into tk.exe — for now,
 		// instruct the user to build it separately.
-		_, _ = fmt.Fprintf(errOut, "tk-guardian-self.exe not found next to tk.exe. Build it with: go build -o %s ./cmd/tk-guardian-self\n", receiverExe)
+		_, _ = fmt.Fprintf(errOut, "tk-guardian-self.exe not found beside the installed CLI. Build it with: go build -o %s ./cmd/tk-guardian-self\n", receiverCandidates[0])
 		return 1
 	}
 
@@ -1011,14 +1227,14 @@ func events(args []string, out, errOut io.Writer, baseURL string) int {
 	if since != "" {
 		eventsURL += "?since=" + url.QueryEscape(since)
 	}
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(eventsURL)
+	response, err := newHTTPClient(10 * time.Second).Get(eventsURL)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "TimeKeeper API unavailable at %s: %v\n", eventsURL, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "list project events", response)
 		return 1
 	}
 	var payload struct {
@@ -1050,14 +1266,14 @@ func notes(args []string, out, errOut io.Writer, baseURL string) int {
 		return 2
 	}
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + args[0] + "/notes"
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(url)
+	response, err := newHTTPClient(10 * time.Second).Get(url)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "list project notes", response)
 		return 1
 	}
 	var payload struct {
@@ -1095,14 +1311,14 @@ func note(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "record project note", response)
 		return 1
 	}
 	var note struct {
@@ -1135,14 +1351,14 @@ func sprintHoldReason(args []string, out, errOut io.Writer, baseURL string) int 
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "update sprint hold reason", response)
 		return 1
 	}
 	var sprint struct {
@@ -1187,14 +1403,14 @@ func sprintAction(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "transition sprint", response)
 		return 1
 	}
 	var sprint struct {
@@ -1216,14 +1432,14 @@ func sprintEntries(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintln(errOut, "usage: tk sp entries <sprint-id>")
 		return 2
 	}
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(strings.TrimRight(baseURL, "/") + "/api/v1/sprints/" + args[1] + "/time-entries")
+	response, err := newHTTPClient(10 * time.Second).Get(strings.TrimRight(baseURL, "/") + "/api/v1/sprints/" + args[1] + "/time-entries")
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable: %v\n", err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "list sprint entries", response)
 		return 1
 	}
 	var value struct {
@@ -1249,14 +1465,14 @@ func sprintExtensions(args []string, out, errOut io.Writer, baseURL string) int 
 		_, _ = fmt.Fprintln(errOut, "usage: tk sp extensions <sprint-id>")
 		return 2
 	}
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(strings.TrimRight(baseURL, "/") + "/api/v1/sprints/" + args[1] + "/extensions")
+	response, err := newHTTPClient(10 * time.Second).Get(strings.TrimRight(baseURL, "/") + "/api/v1/sprints/" + args[1] + "/extensions")
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable: %v\n", err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "list sprint extensions", response)
 		return 1
 	}
 	var value struct {
@@ -1281,7 +1497,7 @@ func sprintExtend(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintln(errOut, "usage: tk sp extend <sprint-id> <duration> <reason>")
 		return 2
 	}
-	duration, err := time.ParseDuration(args[2])
+	duration, err := parseDuration(args[2])
 	if err != nil || duration <= 0 {
 		_, _ = fmt.Fprintln(errOut, "extension duration must be positive, such as 10m")
 		return 2
@@ -1295,29 +1511,19 @@ func sprintExtend(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable: %v\n", err)
 		return 1
 	}
 	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		reportHTTPStatus(errOut, "record sprint extension", response)
+		return 1
+	}
 	responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if readErr != nil {
 		_, _ = fmt.Fprintf(errOut, "read Time Keeper API response: %v\n", readErr)
-		return 1
-	}
-	if response.StatusCode != http.StatusCreated {
-		var apiError struct {
-			Error struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(responseBody, &apiError) == nil && (apiError.Error.Code != "" || apiError.Error.Message != "") {
-			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s: %s: %s\n", response.Status, apiError.Error.Code, apiError.Error.Message)
-		} else {
-			_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
-		}
 		return 1
 	}
 	var extension struct {
@@ -1348,14 +1554,14 @@ func sprintAttempt(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "record retrieval attempt", response)
 		return 1
 	}
 	var attempt struct {
@@ -1379,14 +1585,14 @@ func sprintAttempts(args []string, out, errOut io.Writer, baseURL string) int {
 		return 2
 	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/sprints/" + url.PathEscape(args[1]) + "/retrieval-attempts"
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
+	response, err := newHTTPClient(10 * time.Second).Get(endpoint)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "list retrieval attempts", response)
 		return 1
 	}
 	var payload struct {
@@ -1415,7 +1621,7 @@ func sprintClaimNew(args []string, out, errOut io.Writer, baseURL string) int {
 		return 2
 	}
 	projectID, taskID, _, name := args[0], args[1], args[2], args[3]
-	estimate, err := time.ParseDuration(args[4])
+	estimate, err := parseDuration(args[4])
 	if err != nil || estimate <= 0 {
 		_, _ = fmt.Fprintln(errOut, "estimate must be a positive duration such as 30m or 2h")
 		return 2
@@ -1438,30 +1644,30 @@ func sprintClaimNew(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := newHTTPClient(10 * time.Second).Do(req)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "create sprint: %v\n", err)
 		return 1
 	}
-	resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
-		_, _ = fmt.Fprintf(errOut, "create sprint: %s\n", resp.Status)
+		reportHTTPStatus(errOut, "create sprint", resp)
 		return 1
 	}
+	resp.Body.Close()
 	// Now claim the next sprint for the project.
 	claimURL := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + url.PathEscape(projectID) + "/sprints/claim-next"
 	claimReq, err := http.NewRequest(http.MethodPost, claimURL, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return 1
 	}
-	claimResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(claimReq)
+	claimResp, err := newHTTPClient(10 * time.Second).Do(claimReq)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "claim sprint: %v\n", err)
 		return 1
 	}
 	defer claimResp.Body.Close()
 	if claimResp.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "claim sprint: %s\n", claimResp.Status)
+		reportHTTPStatus(errOut, "claim sprint", claimResp)
 		return 1
 	}
 	var sprint model.Sprint
@@ -1484,14 +1690,14 @@ func sprintNext(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "claim next sprint", response)
 		return 1
 	}
 	var sprint struct {
@@ -1539,7 +1745,7 @@ func sprint(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintln(errOut, "usage: tk sp new <task|subtask> <owner-id> <sprint-name> <estimate> [buffer-percent]")
 		return 2
 	}
-	estimate, err := time.ParseDuration(args[4])
+	estimate, err := parseDuration(args[4])
 	if err != nil || estimate <= 0 {
 		_, _ = fmt.Fprintln(errOut, "estimate must be a positive duration such as 30m or 2h")
 		return 2
@@ -1568,14 +1774,14 @@ func sprint(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "create sprint", response)
 		return 1
 	}
 	var sprint struct {
@@ -1600,7 +1806,7 @@ func subtask(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintln(errOut, "usage: tk st new <task-id> <subtask-name> <estimate>")
 		return 2
 	}
-	estimate, err := time.ParseDuration(args[3])
+	estimate, err := parseDuration(args[3])
 	if err != nil || estimate <= 0 {
 		_, _ = fmt.Fprintln(errOut, "estimate must be a positive duration such as 30m or 2h")
 		return 2
@@ -1617,14 +1823,14 @@ func subtask(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "create subtask", response)
 		return 1
 	}
 	var subtask struct {
@@ -1647,35 +1853,55 @@ func task(args []string, out, errOut io.Writer, baseURL string) int {
 	if len(args) == 3 && args[0] == "status" {
 		return taskStatus(args[1], args[2], out, errOut, baseURL)
 	}
-	if len(args) != 5 || args[0] != "new" || strings.TrimSpace(args[1]) == "" || strings.TrimSpace(args[2]) == "" || strings.TrimSpace(args[3]) == "" {
-		_, _ = fmt.Fprintln(errOut, "usage: tk t new <project-id> <category-id> <task-name> <estimate>")
+	if len(args) == 3 && args[0] == "batch" && strings.TrimSpace(args[1]) != "" && strings.TrimSpace(args[2]) != "" {
+		return taskBatch(args[1], args[2], out, errOut, baseURL)
+	}
+	noAutoClose := false
+	filtered := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--no-autoclose" {
+			noAutoClose = true
+		} else {
+			filtered = append(filtered, arg)
+		}
+	}
+	if len(filtered) != 5 || filtered[0] != "new" || strings.TrimSpace(filtered[1]) == "" || strings.TrimSpace(filtered[2]) == "" || strings.TrimSpace(filtered[3]) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage: tk t new <project-id> <category-id> <task-name> <estimate> [--no-autoclose]")
 		return 2
 	}
-	estimate, err := time.ParseDuration(args[4])
+	estimate, err := parseDuration(filtered[4])
 	if err != nil || estimate <= 0 {
 		_, _ = fmt.Fprintln(errOut, "estimate must be a positive duration such as 30m or 2h")
 		return 2
 	}
-	body, err := json.Marshal(map[string]any{"category_id": args[2], "name": args[3], "estimated_duration_seconds": int64(estimate.Seconds())})
+	payload := map[string]any{
+		"category_id":                filtered[2],
+		"name":                       filtered[3],
+		"estimated_duration_seconds": int64(estimate.Seconds()),
+	}
+	if noAutoClose {
+		payload["auto_close"] = false
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "encode task input: %v\n", err)
 		return 1
 	}
-	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + args[1] + "/tasks"
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + filtered[1] + "/tasks"
 	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "create task request: %v\n", err)
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "create task", response)
 		return 1
 	}
 	var task struct {
@@ -1687,7 +1913,62 @@ func task(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
 		return 1
 	}
+	if jsonOutputEnabled {
+		writeJSONResponse(out, task)
+		return 0
+	}
 	_, _ = fmt.Fprintf(out, "%s\t%s\t%s\n", task.TaskID, task.Name, task.ItemAddress)
+	return 0
+}
+
+func taskBatch(projectID, filePath string, out, errOut io.Writer, baseURL string) int {
+	var bodyBytes []byte
+	var err error
+	if filePath == "-" {
+		bodyBytes, err = io.ReadAll(os.Stdin)
+	} else {
+		bodyBytes, err = os.ReadFile(filePath)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "read tasks batch file: %v\n", err)
+		return 1
+	}
+
+	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/tasks/batch"
+	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "create task batch request: %v\n", err)
+		return 1
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := newHTTPClient(10 * time.Second).Do(request)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		reportHTTPStatus(errOut, "create tasks in batch", response)
+		return 1
+	}
+	var res struct {
+		Tasks []struct {
+			TaskID      string `json:"task_id"`
+			Name        string `json:"name"`
+			ItemAddress string `json:"item_address"`
+		} `json:"tasks"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&res); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
+		return 1
+	}
+	if jsonOutputEnabled {
+		writeJSONResponse(out, res)
+		return 0
+	}
+	for _, t := range res.Tasks {
+		_, _ = fmt.Fprintf(out, "%s\t%s\t%s\n", t.TaskID, t.Name, t.ItemAddress)
+	}
 	return 0
 }
 
@@ -1699,13 +1980,13 @@ func subtaskStatus(subtaskID, status string, out, errOut io.Writer, baseURL stri
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return 1
+		reportHTTPStatus(errOut, "set subtask status", response)
 	}
 	var subtask struct {
 		SubtaskID string `json:"subtask_id"`
@@ -1726,13 +2007,13 @@ func taskEdit(taskID, goal, description string, out, errOut io.Writer, baseURL s
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return 1
+		reportHTTPStatus(errOut, "update task context", response)
 	}
 	var task struct {
 		TaskID      string `json:"task_id"`
@@ -1754,13 +2035,13 @@ func taskStatus(taskID, status string, out, errOut io.Writer, baseURL string) in
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return 1
+		reportHTTPStatus(errOut, "set task status", response)
 	}
 	var task struct {
 		TaskID string `json:"task_id"`
@@ -1781,13 +2062,13 @@ func categoryEdit(categoryID, goal, description string, out, errOut io.Writer, b
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return 1
+		reportHTTPStatus(errOut, "update category context", response)
 	}
 	var category struct {
 		CategoryID string `json:"category_id"`
@@ -1808,14 +2089,14 @@ func categoryStatus(categoryID, status string, out, errOut io.Writer, baseURL st
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "set category status", response)
 		return 1
 	}
 	var category struct {
@@ -1857,14 +2138,14 @@ func category(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "create category", response)
 		return 1
 	}
 	var category struct {
@@ -1909,14 +2190,14 @@ func project(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "create project", response)
 		return 1
 	}
 	var project struct {
@@ -1944,14 +2225,14 @@ func projectStatus(projectID, status string, out, errOut io.Writer, baseURL stri
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "set project status", response)
 		return 1
 	}
 	var project struct {
@@ -1978,14 +2259,14 @@ func projectEdit(projectID, goal, description string, out, errOut io.Writer, bas
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "update project context", response)
 		return 1
 	}
 	var project struct {
@@ -2010,7 +2291,7 @@ func resolveProjectID(baseURL, value string) (string, error) {
 	if strings.HasPrefix(upper, "P-") || value == "pulse" {
 		return value, nil
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newHTTPClient(10 * time.Second)
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects"
 	response, err := client.Get(url)
 	if err != nil {
@@ -2018,7 +2299,7 @@ func resolveProjectID(baseURL, value string) (string, error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Time Keeper API returned %s", response.Status)
+		return "", fmt.Errorf("resolve project: %s", readHTTPErrorDetail(response))
 	}
 	var payload struct {
 		Items []struct {
@@ -2060,14 +2341,14 @@ func projectAlias(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "set project alias", response)
 		return 1
 	}
 	var project struct {
@@ -2103,14 +2384,14 @@ func projectUnalias(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "clear project alias", response)
 		return 1
 	}
 	_, _ = fmt.Fprintf(out, "%s	\n", resolvedID)
@@ -2119,7 +2400,7 @@ func projectUnalias(args []string, out, errOut io.Writer, baseURL string) int {
 
 func listAliases(out, errOut io.Writer, baseURL string) int {
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects"
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newHTTPClient(10 * time.Second)
 	response, err := client.Get(url)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
@@ -2127,7 +2408,7 @@ func listAliases(out, errOut io.Writer, baseURL string) int {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "list project aliases", response)
 		return 1
 	}
 	var payload struct {
@@ -2154,7 +2435,7 @@ func doctor(out, errOut io.Writer, baseURL string) int {
 			urls = append(urls, strings.TrimRight(u, "/")+"/health")
 		}
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newHTTPClient(5 * time.Second)
 	allOK := true
 	canonicalOK := false
 	for _, u := range urls {
@@ -2188,12 +2469,23 @@ func doctor(out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintf(out, "[skip] install info: %v\n", err)
 	}
 
-	// Config visibility: report optional subsystems that have routes but
-	// are unconfigured, so a fresh `tk doctor` tells the operator what to
-	// set up rather than leaving them guessing from 503s.
-	reportOptionalSubsystems(out, baseURL)
+	// Capability visibility: report optional subsystems that have routes but
+	// are unconfigured or unsupported, and say whether the client and server
+	// builds agree. An optional capability being unavailable must not read as
+	// a core failure.
+	unavailableCapabilities := reportCapabilities(out, baseURL)
 
 	if allOK {
+		if unavailableCapabilities > 0 {
+			noun := "capability is"
+			if unavailableCapabilities != 1 {
+				noun = "capabilities are"
+			}
+			_, _ = fmt.Fprintf(out, "\nTime Keeper is ready. Core is healthy; %d optional %s unavailable.\n",
+				unavailableCapabilities, noun)
+			_, _ = fmt.Fprintln(out, "Optional capabilities are not required for ordinary planning, sprint and memory work.")
+			return 0
+		}
 		_, _ = fmt.Fprintln(out, "\nTime Keeper is ready.")
 		return 0
 	}
@@ -2207,39 +2499,90 @@ func doctor(out, errOut io.Writer, baseURL string) int {
 	return 1
 }
 
-// reportOptionalSubsystems probes optional subsystems that have routes but
-// may be unconfigured. Each check prints one line with a "[skip]" or
-// "[hint]" prefix so the operator knows what to configure without having
-// to hit a 503 first.
-func reportOptionalSubsystems(out io.Writer, baseURL string) {
-	// Plugin store: GET /api/v1/plugins → 503 when unconfigured.
-	code, _ := probeStatusCode(baseURL + "/api/v1/plugins")
-	if code == http.StatusServiceUnavailable {
-		_, _ = fmt.Fprintln(out, "[hint] plugin store: not configured (set TIMEKEEPER_STORE_URL)")
-	}
+// capability describes one probed endpoint. Required capabilities gate
+// readiness; optional ones must never make a healthy core look unhealthy.
+type capability struct {
+	name     string
+	path     string
+	required bool
+	hint     string
+}
 
-	// History: GET /api/v1/history/status → 503 when unconfigured.
-	code, _ = probeStatusCode(baseURL + "/api/v1/history/status")
-	if code == http.StatusServiceUnavailable {
-		_, _ = fmt.Fprintln(out, "[hint] history: not configured (rebuild with NewWithHistory or set HISTORY_ROOT)")
-	}
+// optionalCapabilities are the subsystems that ship routes but may be
+// unconfigured or absent on a given server build. 503 means "present but not
+// configured"; 404 means "this build does not implement it". Those are
+// different states and must not be reported as the same readiness level.
+var optionalCapabilities = []capability{
+	{name: "plugin store", path: "/api/v1/plugins", hint: "set TIMEKEEPER_STORE_URL"},
+	{name: "history", path: "/api/v1/history/status", hint: "rebuild with NewWithHistory or set HISTORY_ROOT"},
+}
 
-	// Server version: always print so the operator knows what's running.
+// reportCapabilities probes optional subsystems and prints one classified line
+// each, followed by the client/server version and whether the pair is skewed.
+// It returns how many optional capabilities are unavailable.
+func reportCapabilities(out io.Writer, baseURL string) int {
+	unavailable := 0
+	for _, cap := range optionalCapabilities {
+		code, _ := probeStatusCode(baseURL + cap.path)
+		switch {
+		case code == http.StatusOK:
+			_, _ = fmt.Fprintf(out, "[ok] %s: optional, available\n", cap.name)
+		case code == http.StatusServiceUnavailable:
+			_, _ = fmt.Fprintf(out, "[hint] %s: optional, unconfigured (%s)\n", cap.name, cap.hint)
+			unavailable++
+		case code == http.StatusNotFound:
+			_, _ = fmt.Fprintf(out, "[hint] %s: optional, unsupported by this server build\n", cap.name)
+			unavailable++
+		case code == 0:
+			_, _ = fmt.Fprintf(out, "[hint] %s: optional, probe failed\n", cap.name)
+			unavailable++
+		default:
+			_, _ = fmt.Fprintf(out, "[hint] %s: optional, unexpected HTTP %d\n", cap.name, code)
+			unavailable++
+		}
+	}
+	reportVersions(out, baseURL)
+	return unavailable
+}
+
+// reportVersions prints client and server build identity side by side and says
+// explicitly whether a mismatch matters, because a skewed pair is the usual
+// cause of "the CLI rejects a flag the source supports".
+func reportVersions(out io.Writer, baseURL string) {
+	client := version.Get()
+	_, _ = fmt.Fprintf(out, "[info] client version: %s\n", version.String())
+
 	code, body := probeBody(baseURL + "/api/v1/version")
-	if code == http.StatusOK && body != "" {
-		var v struct {
-			Version string `json:"version"`
-			Commit  string `json:"commit"`
-		}
-		if json.Unmarshal([]byte(body), &v) == nil {
-			_, _ = fmt.Fprintf(out, "[info] server version: %s (%s)\n", v.Version, v.Commit)
-		}
+	if code != http.StatusOK || body == "" {
+		_, _ = fmt.Fprintln(out, "[info] server version: unknown (could not read /api/v1/version)")
+		return
 	}
+	var v struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+	}
+	if json.Unmarshal([]byte(body), &v) != nil {
+		_, _ = fmt.Fprintln(out, "[info] server version: unknown (unreadable response)")
+		return
+	}
+	_, _ = fmt.Fprintf(out, "[info] server version: %s (%s)\n", v.Version, v.Commit)
+
+	serverCommit := strings.TrimSpace(v.Commit)
+	clientCommit := strings.TrimSpace(client.Commit)
+	if serverCommit == "" || clientCommit == "" {
+		return
+	}
+	if strings.HasPrefix(serverCommit, clientCommit) || strings.HasPrefix(clientCommit, serverCommit) {
+		_, _ = fmt.Fprintln(out, "[info] version match: client and server are built from the same commit")
+		return
+	}
+	_, _ = fmt.Fprintln(out, "[hint] version skew: client and server are built from different commits")
+	_, _ = fmt.Fprintln(out, "       The server decides what the API accepts. Reinstall to realign the CLI with the running service.")
 }
 
 // probeStatusCode fetches a URL and returns the HTTP status code, or 0 on error.
 func probeStatusCode(url string) (int, string) {
-	resp, err := (&http.Client{Timeout: 2 * time.Second}).Get(url)
+	resp, err := newHTTPClient(2 * time.Second).Get(url)
 	if err != nil {
 		return 0, ""
 	}
@@ -2249,7 +2592,7 @@ func probeStatusCode(url string) (int, string) {
 
 // probeBody fetches a URL and returns the status code and body.
 func probeBody(url string) (int, string) {
-	resp, err := (&http.Client{Timeout: 2 * time.Second}).Get(url)
+	resp, err := newHTTPClient(2 * time.Second).Get(url)
 	if err != nil {
 		return 0, ""
 	}
@@ -2343,7 +2686,7 @@ func probeHealth(client *http.Client, u string) (bool, string, error) {
 // apiHelp fetches and displays all available API routes from the server.
 func apiHelp(out, errOut io.Writer, baseURL string) int {
 	url := strings.TrimRight(baseURL, "/") + "/api/help"
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newHTTPClient(10 * time.Second)
 	response, err := client.Get(url)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "API unreachable: %s (%v)\n", url, err)
@@ -2377,7 +2720,7 @@ func tree(args []string, out, errOut io.Writer, baseURL string) int {
 		return 2
 	}
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + args[0] + "/execution-tree"
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newHTTPClient(10 * time.Second)
 	response, err := client.Get(url)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
@@ -2385,13 +2728,17 @@ func tree(args []string, out, errOut io.Writer, baseURL string) int {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "read project tree", response)
 		return 1
 	}
 	var payload model.ExecutionTree
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
 		return 1
+	}
+	if jsonOutputEnabled {
+		writeJSONResponse(out, payload)
+		return 0
 	}
 	_, _ = fmt.Fprintf(out, "%s	%.1f%%	%s\n", payload.Project.ProjectID, payload.Project.CalculatedCompletionPct, payload.Project.ProjectName)
 	for _, category := range payload.Categories {
@@ -2422,7 +2769,7 @@ func writeCategoryTree(out io.Writer, category model.ExecutionCategory, depth in
 
 func list(out, errOut io.Writer, baseURL string) int {
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects"
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newHTTPClient(10 * time.Second)
 	response, err := client.Get(url)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
@@ -2430,7 +2777,7 @@ func list(out, errOut io.Writer, baseURL string) int {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "list projects", response)
 		return 1
 	}
 	var payload struct {
@@ -2445,6 +2792,10 @@ func list(out, errOut io.Writer, baseURL string) int {
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
 		return 1
+	}
+	if jsonOutputEnabled {
+		writeJSONResponse(out, payload)
+		return 0
 	}
 	for _, project := range payload.Items {
 		_, _ = fmt.Fprintf(out, "%s	%s	%.1f%%	%s	%s\n", project.ProjectID, project.Status, project.CalculatedCompletionPct, project.ProjectName, project.ItemAddress)

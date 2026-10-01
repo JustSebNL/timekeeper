@@ -4,13 +4,13 @@ Base URL: `http://127.0.0.1:1618/api/v1`
 
 Time Keeper is a local, SQLite-authoritative HTTP/JSON API. It accepts only explicit numeric loopback listeners (`127.0.0.1` or `::1`). It has no authentication and must not be exposed beyond the local user boundary.
 
-Every `POST`, `PUT`, `PATCH`, or `DELETE` mutation requires `Content-Type: application/json`. Unknown request fields and non-JSON media types are rejected. Health remains exactly:
+JSON mutations use `Content-Type: application/json`, and structured JSON handlers reject unknown fields. The bug-report endpoint also accepts bounded `text/markdown` input. Unsupported media types are rejected. Health remains exactly:
 
 ```json
 {"status":"ok"}
 ```
 
-## Implemented endpoints
+## Core project and Sprint endpoints
 
 ```text
 GET  /health
@@ -23,6 +23,7 @@ POST /api/v1/projects/{projectID}/status
 GET  /api/v1/projects/{projectID}/execution-tree
 GET  /api/v1/projects/{projectID}/operational-summary
 GET  /api/v1/projects/{projectID}/usage-summary
+GET  /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots
 POST /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots
 GET  /api/v1/projects/{projectID}/attention
 GET  /api/v1/projects/{projectID}/events
@@ -30,13 +31,14 @@ GET  /api/v1/projects/{projectID}/notes
 POST /api/v1/projects/{projectID}/notes
 GET  /api/v1/projects/{projectID}/messages
 POST /api/v1/projects/{projectID}/messages
+POST /api/v1/projects/{projectID}/messages/checkpoint
 GET  /api/v1/projects/{projectID}/messages/search
 GET  /api/v1/projects/{projectID}/messages/{messageID}
-GET  /api/v1/knowledge/{id}
-POST /api/v1/projects/{projectID}/messages/{messageID}/promote
 PATCH /api/v1/projects/{projectID}/messages/{messageID}
 GET  /api/v1/projects/{projectID}/messages/{messageID}/thread
+GET  /api/v1/projects/{projectID}/messages/{messageID}/context
 GET  /api/v1/projects/{projectID}/messages/{messageID}/revisions
+POST /api/v1/projects/{projectID}/messages/{messageID}/pin
 GET  /api/v1/projects/{projectID}/export
 GET  /api/v1/projects/{projectID}/categories
 POST /api/v1/projects/{projectID}/categories
@@ -75,6 +77,60 @@ POST /api/v1/projects/{projectID}/planning-drafts/{draftID}/apply
 ```
 
 All message routes accept either the canonical `P-{number}` Project ID or that Project's exact alias. The server resolves aliases before applying project scoping, so `/api/v1/projects/hsam/messages` and `/api/v1/projects/P-10000/messages` address the same board. The CLI applies the same resolution before issuing the request.
+
+## Additional implemented endpoints
+
+The local server also exposes the following service, agent, administrator, and optional integration routes. Optional providers can return a typed unavailable response when they are not configured.
+
+```text
+GET  /health
+GET  /api/help
+GET  /api/v1/version
+GET  /api/v1/connection-info
+
+POST /api/v1/agent-identities/resolve
+GET  /api/v1/agent-profiles/{identity}
+GET  /api/v1/agent-profiles/{identity}/view
+GET  /api/v1/agents/work-states
+GET  /api/v1/agents/{agentID}/work-state
+POST /api/v1/agents/{agentID}/activity
+GET  /api/v1/agents
+POST /api/v1/agents/broadcast
+GET  /api/v1/agents/{agentID}/progress
+POST /api/v1/agents/{agentID}/progress
+GET  /api/v1/agents/{agentID}/nudges
+GET  /api/v1/agents/{agentID}/nudges/history
+POST /api/v1/agents/{agentID}/nudges/{nudgeID}/ack
+
+GET  /api/v1/admin/me
+GET  /api/v1/admin/users
+PATCH /api/v1/admin/users/{userID}
+GET  /api/v1/admin/groups
+POST /api/v1/admin/groups
+PUT  /api/v1/admin/groups/{groupID}/members
+GET  /api/v1/admin/permissions
+GET  /api/v1/admin/audit
+
+POST /api/v1/bug-reports
+GET  /api/v1/projects/{projectID}/bug-reports
+POST /api/v1/bug-reports/{reportID}/status
+POST /api/v1/projects/{projectID}/alias
+GET  /api/v1/projects/{projectID}/coding-outcomes
+POST /api/v1/projects/{projectID}/coding-outcomes
+POST /api/v1/sprints/{sprintID}/supervised-launches
+
+GET  /api/v1/knowledge/status
+POST /api/v1/knowledge/search
+GET  /api/v1/knowledge/{id}
+POST /api/v1/projects/{projectID}/messages/{messageID}/promote
+GET  /api/v1/plugins
+GET  /api/v1/plugins/{pluginID}
+GET  /api/v1/plugins/{pluginID}/artifact
+```
+
+The administrator routes enforce local permission metadata, not authenticated identities. A caller-supplied `X-Agent-ID` is not proof of identity; see [Administrator and security groups](docs/administrator.md). FASE identity resolution is automatic in compatible CLI builds and is also attribution, not authentication; see [FASE identity](docs/fase-identity-design.md).
+
+File-history endpoints are listed in [File history and editor API](#file-history-and-editor-api); they require explicit `-history-root` configuration. The plugin and knowledge routes are optional local provider surfaces; see [extensions](docs/extensions.md) and [the Memory Galaxy boundary](#memory-galaxy-provider-boundary).
 
 ## Trail of Thought Board
 
@@ -131,7 +187,7 @@ tk msg P-10000 search queue Sprint
 
 `POST /api/v1/projects/{projectID}/sprints/claim-next` accepts `{}` and atomically starts the oldest Open Sprint whose Project, Category, Task, and optional Subtask are all Open. It returns the claimed Sprint with `status: "Active"`. It returns `409 no_runnable_sprint` when nothing is eligible. This is deliberate agent pickup, not an implicit scheduler.
 
-When a direct Task-owned Sprint completes and it was that Task's final direct Sprint (and the Task has no Subtasks), Time Keeper completes the parent Task and records the event. A Task with remaining queued Sprints remains Open.
+Completing a Task-owned Sprint closes its active interval and records the Sprint transition; it does not automatically complete the parent Task. The Task remains `Open` until it is explicitly closed with `POST /api/v1/tasks/{taskID}/status`. Time Keeper rejects manual Task completion while a non-terminal Sprint or Subtask remains.
 
 A Task or Subtask may own one to four Sprints. New Sprints require every owning Project, Category, Task, and optional Subtask to be `Open`; Time Keeper rejects a new child under a terminal or held parent rather than silently reopening parent work. A Task also cannot be manually marked `Completed` while it still owns a non-terminal Sprint or Subtask.
 
@@ -172,7 +228,9 @@ Content-Type: application/json
 
 Counters are cumulative for the session. `turn_seq` must increase. Repeating the same session/turn is an idempotent no-op and returns `duplicate: true` with a zero delta. A provider counter reset requires a new session identity. The response includes the latest cumulative `session` and the newly observed `delta`.
 
-`GET /api/v1/projects/{projectID}/usage-summary` returns the latest cumulative totals for every recorded agent session in the Project. Input, output, cache creation, cache read, context occupancy, and messages remain separate measurements. This first native slice reports no cost until a trusted local model-price source is configured; unknown pricing must never receive an invented fallback.
+`GET /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots` returns the accepted cumulative snapshots for that Project-owned session in chronological order. An optional non-negative `limit` bounds the returned `items`; an unknown session returns `404 session_not_found`. This readback surface is intended for integration verification and audit tooling, while `usage-summary` remains the dashboard aggregate.
+
+`GET /api/v1/projects/{projectID}/usage-summary` returns the latest cumulative totals for every recorded agent session in the Project. Input, output, cache creation, cache read, context occupancy, and messages remain separate measurements. Cost is a server-owned projection: configure `TIMEKEEPER_MODEL_PRICES_FILE` using the validated format in [`docs/model-pricing.md`](docs/model-pricing.md). Unknown models remain explicitly `cost.status: "unpriced"`; no fallback price is invented.
 
 Usage records are deliberately not Project activity events: they are telemetry projections with their own idempotent ledger. Integrations must redact credentials, prompt bodies, private transcript paths, and tool output before sending snapshots, and must disclose that only sessions which send snapshots are covered. Project export includes the same `usage_summary` projection.
 
@@ -380,10 +438,7 @@ the same key and cannot create a second mapping. Sensitive markers are rejected
 before promotion. A promotion without a configured provider returns a typed
 `503 provider_unavailable` response.
 
-The current slice provides the provider contract, client, API read surface, and
-explicit promotion path. The Obsidian plugin's production packaging/settings
-UX, richer Markdown metadata, and a live Obsidian process remain later
-implementation slices. See [the Memory Galaxy implementation specification](docs/TimeKeeper—Obsidian-Memory-Galaxy-Implementation.md) for the phase boundary.
+The provider contract/client, Knowledge read routes, redaction-gated Trail promotion, durable `knowledge_links`, dashboard promotion control, and plugin settings/package contract are implemented and fixture-tested in source. A live Obsidian process smoke and release artifact have not been verified; that work remains On Hold in the Obsidian project. Full Markdown repository semantics remains a separately tracked implementation gap. See [the Memory Galaxy implementation specification](docs/TimeKeeper—Obsidian-Memory-Galaxy-Implementation.md) for the current boundary. Do not describe the integration as fully available until live checks pass.
 
 ## Local LLM planning (review-only)
 
@@ -431,6 +486,7 @@ routes return `503 history_unavailable` and TimeKeeper does not gain implicit
 filesystem access.
 
 ```text
+GET  /api/v1/projects/{projectID}/files
 GET  /api/v1/files/{fileID}
 GET  /api/v1/files/{fileID}/versions
 GET  /api/v1/files/{fileID}/versions/{versionID}
@@ -440,7 +496,7 @@ GET  /api/v1/files/{fileID}/compare?from=FV-1&to=FV-2
 POST /api/v1/files/{fileID}/restore
 ```
 
-A caller can capture a meaningful change boundary without saving every keystroke:
+A caller can capture a meaningful change boundary without saving every keystroke. Each accepted boundary is stored as an immutable full-content version; the phase is retained at the start of its change summary:
 
 ```http
 POST /api/v1/files/F-10001/snapshots
@@ -449,8 +505,7 @@ Content-Type: application/json
 {"phase":"code_start","agent_id":"agent-7","session_id":"S-42","task_id":"T-10331","sprint_id":"SP-10332","change_summary":"Before editor change"}
 ```
 
-Use `phase: code_end` after the change and verification. The resulting versions
-retain the caller provenance and can be compared through the history endpoint.
+Use `phase: code_end` after the change and verification. Each changed snapshot is a full content-addressed blob linked to its previous version, so every step can be restored independently; these are snapshots, not delta patches. Unchanged content does not create a duplicate blob. Caller provenance remains on the version record.
 
 Restore requires the target version and the version the editor believes is
 current:
@@ -461,9 +516,7 @@ current:
 
 A stale expected version returns `409 file_version_conflict`. Restoring does
 not erase history; it writes a new version whose parent is the current version
-and whose content matches the selected historical version. The dashboard editor
-will use this contract through an editor adapter; CodeMirror 6 is the first
-planned adapter, with Monaco remaining a compatible future option.
+and whose content matches the selected historical version. The dashboard's Files tab currently uses a locally bundled CodeMirror 6 adapter (`web/vendor/codemirror-editor.js`) through `file-editor.js`. Monaco is not integrated. It saves a new immutable full snapshot after a short pause in editing, and **Save step now** creates an immediate checkpoint. Each distinct saved step remains selectable for comparison or restore. Edits made outside the dashboard editor are not watched continuously; agent integrations should use the snapshot API. If an outside edit is detected when the editor saves, TimeKeeper records that disk state as a version and returns `409 file_version_conflict` rather than overwriting it. File history remains limited to files exposed by the explicitly configured history root.
 
 ## Project export and SQLite backup
 

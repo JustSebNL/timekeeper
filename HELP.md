@@ -1,10 +1,12 @@
-# Time Keeper Help
+# TimeKeeper CLI and API help
 
 Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 
-## Implemented CLI
+New to TimeKeeper? Start with the [README](README.md) and [install guide](docs/install.md). The complete documentation index is [docs/README.md](docs/README.md).
 
-`tk` speaks only to the configured HTTP API. Use `tk --url <api-base-url> <command>` for an explicit endpoint (recommended when a Windows `tk.exe` is run from WSL), or set `TIMEKEEPER_URL` in the binary's native environment. The default is `http://127.0.0.1:1618`; `tk` does not maintain a second local model. Every create command prints public ID, name, and Item Address as tab-separated fields.
+The `tk` CLI talks to the configured TimeKeeper HTTP API; it does not keep a second local project database. Use `tk help` for the concise command list and `tk api-help` for the route list reported by a running server. The installer does not put `tk` on `PATH`; use `.timekeeper/app/tk` on Linux/WSL or `.timekeeper/app/bin/tk.exe` on Windows if needed.
+
+## Common project and Sprint commands
 
 ```text
 tk doctor
@@ -14,48 +16,67 @@ tk export <project-id> > project-export.json
 tk summary <project-id>
 tk usage <project-id>
 tk usage record <project-id> <session-id> <agent-id> <model> <turn> <input> <output> [cache-write] [cache-read] [messages] [sprint-id]
+tk usage ingest <project-id> <envelope.json>
 tk pulse
-tk agent progress <agent-id> <lease> [sprint-id] [guardian-url]
-tk agent nudges <agent-id>
-tk agent history <agent-id>
-tk agent ack <agent-id> <nudge-id>
 tk events <project-id>
 tk note <project-id> <content>
 tk notes <project-id>
-tk msg <project-id> add [--kind <k>] [--reply-to M-1] <body>
-tk msg <project-id> edit M-1 <body>
+tk msg <project-id> add [--kind <kind>] [--reply-to M-1] <body>
 tk msg <project-id> checkpoint --entry kind|body|tags [--entry kind|body|tags]
-tk msg <project-id> pin M-1
-tk msg <project-id> unpin M-1
-tk msg <project-id> thread M-1
-tk msg <project-id> context M-1 [--related-limit <n>]
-tk msg <project-id> revisions M-1
-tk msg <project-id> search <query>
 
-tk p  new <project-name>
-tk p  edit <project-id> <goal> <description>
-tk p  status <project-id> <Open|On Hold|Completed|Cancelled>
-tk c  new <project-id> <category-name> [parent-category-id]
-tk c  edit <category-id> <goal> <description>
-tk c  status <category-id> <Open|On Hold|Completed|Cancelled>
-tk t  new <project-id> <category-id> <task-name> <estimate>
-tk t  edit <task-id> <goal> <description>
-tk t  status <task-id> <Open|On Hold|Completed|Cancelled>
+tk p new <project-name>
+tk p edit <project-id> <goal> <description>
+tk p status <project-id> <Open|On Hold|Completed|Cancelled>
+tk c new <project-id> <category-name> [parent-category-id]
+tk c edit <category-id> <goal> <description>
+tk c status <category-id> <Open|On Hold|Completed|Cancelled>
+tk t new <project-id> <category-id> <task-name> <estimate>
+tk t edit <task-id> <goal> <description>
+tk t status <task-id> <Open|On Hold|Completed|Cancelled>
 tk st new <task-id> <subtask-name> <estimate>
 tk st status <subtask-id> <Open|On Hold|Completed|Cancelled>
 tk sp new <task|subtask> <owner-id> <sprint-name> <estimate> [buffer-percent]
-tk sp next <project-id> # atomically claim the next runnable Sprint
+tk sp next <project-id>
 tk sp <start|hold|resume|complete> <sprint-id>
 tk sp extend <sprint-id> <duration> <reason>
 tk sp extensions <sprint-id>
 tk sp entries <sprint-id>
 
-# Optional local planning; pipeline endpoints must be numeric loopback HTTP.
+# Optional local planning; configured model endpoints must be numeric loopback HTTP.
 tk llm new <name> <ollama|openai-compatible> <base-url> <model> [system-prompt]
 tk plan generate <project-id> <pipeline-id>
 tk plan list <project-id>
 tk plan apply <project-id> <draft-id>
 ```
+
+Other implemented command groups include agent identity/activity, Guardian wake, bounded Codex supervision, reviewed coding outcomes, the optional Store client, host-file management, service management, browser opening, aliases, notifications, version, and API help. Common agent/runtime forms are:
+
+```text
+tk agent identity
+tk agent state [agent-id]
+tk agent states
+tk agent work <sprint-id> <lease>
+tk agent wait <duration> <reason>
+tk agent idle [reason]
+tk agent stop [reason]
+tk agent progress <id> <lease> [sprint-id] [guardian-url]
+tk agent nudges <id>
+tk agent history <id>
+tk agent ack <id> <nudge-id>
+tk agents list
+tk agents broadcast
+
+tk guardian wake --agent <id> --project <project-id> --adapter <trusted-executable> [--poll]
+tk init --agent <id> [--project <project-id>] [--lease <duration>]
+tk supervise --project P-ID --sprint SP-ID --agent ID --model MODEL --state-dir DIR -- PROMPT
+
+tk open [--ip|--api]
+tk hosts <add|remove|status>
+tk service <install|uninstall|start|stop|restart|status|logs>
+tk api-help
+```
+
+`tk init` is optional receiver/lease setup, not required for ordinary Project tracking. `guardian wake` needs an explicit adapter or a trusted, explicitly configured hook. Run `tk help` for the commands available in the installed CLI; options can vary by build.
 
 Examples:
 
@@ -71,49 +92,39 @@ tk sp extend SP-10004 10m "Migration uncovered an additional compatibility case.
 tk tree P-10000
 ```
 
-Estimates and durations use Go duration syntax, for example `90m`, `2h`, or `1h30m`. Buffer percentage is a whole number from 0 through 100. Parent IDs are explicit; Time Keeper does not retain implicit CLI context, so it cannot quietly operate on the wrong Project after a restart.
+Estimates and durations use Go duration syntax, for example `90m`, `2h`, or `1h30m`. Buffer percentage is a whole number from 0 through 100. Parent IDs are explicit; the CLI does not retain implicit Project context.
 
-`tk doctor` performs a non-mutating `/health` readiness check against the configured endpoint and reports a recovery hint when the API is unavailable.
+`tk doctor` checks readiness, the configured API address, and optional local URLs. When install metadata is available beside the CLI, it also reports the source commit/target and proxy choice. Missing install metadata is informational and does not fail the health check. The `/health` request itself is read-only. Identity-aware CLI builds may also resolve a FASE identity at startup; that is attribution metadata, not authentication or a user login.
 
-## Dashboard entrypoint
+## Dashboard
 
-The canonical browser dashboard is served at `http://127.0.0.1:1618/` from `index.html`. In a source checkout the document is `web/index.html`; the narrow local bootstrap serves the copied document from `.timekeeper/web/index.html`. The dashboard loads the vendored Bootstrap `5.3.8` stylesheet first and Time Keeper's custom stylesheet second. It exposes live project metrics, Pulse/Guardian status, and Recent Activity from immutable Project events. `web/timekeeper.html` is only a compatibility redirect and is not the primary UI document.
+The dashboard is served at `http://127.0.0.1:1618/` by the local TimeKeeper service. It and the CLI use the same local SQLite-backed service. Friendly hostnames may also work when their hosts-file entries and proxy listener are available; see [Friendly local URLs](docs/friendly-url.md).
 
-The server performs one lightweight loopback `GET /health` keep-alive every five minutes by default. It does not write to SQLite, prevent Windows or WSL sleep, or replace OS service recovery. Pass `-keep-alive-interval 0` to disable it. `scripts/service/kick-server.sh` and `scripts/service/kick-server.bat` are failure-only recovery hooks: they stay silent when `/health` is healthy and restart the service or launcher only after a failed health check.
+The server's five-minute loopback health keep-alive does not write to SQLite, prevent Windows or WSL sleep, or replace OS service recovery. `scripts/service/kick-server.sh` and `.bat` are failure-only recovery hooks; they act only after a failed health check.
 
-`tk pulse` prints every Active Sprint whose recorded and current active time has exceeded its estimate, buffer, and approved extensions. It is a read-only local attention check: it does not create reminder records, start a timer, send a notification, or contact another service. `clear\tnext=60s` means there is no such Sprint at this instant.
+`tk pulse` prints Active Sprints whose recorded/current active time exceeds estimate, buffer, and approved extensions. It is read-only: it does not create reminder records, start a timer, send a notification, or contact another service. An empty attention list means no Active Sprint is currently over its recorded plan.
 
 ## Pulse Guardian
 
-`GET /api/v1/pulse` is still the read-only local list of over-plan Active Sprints. It cannot wake a hung agent; it only answers a request that reaches it.
+Pulse Guardian evaluates explicitly registered progress leases and can deliver a versioned attention signal to a registered numeric-loopback callback. It does not by itself know how to resume a particular coding-agent runtime, and TimeKeeper does not kill or restart arbitrary processes. A trusted agent-side adapter owns runtime recovery and must meet the acknowledgement contract. See [Agent wake adapter protocol](docs/agent-wake-adapter-protocol.md) and [Execution safeguards](docs/execution-safeguards.md).
 
-For an actual out-of-band attention path, Time Keeper runs a Guardian by default every 5 minutes. Override the cadence with `-pulse-guardian-interval`, and have the agent renew a material-progress lease:
+## SQLite backup and Project export
 
-```text
-timekeeper -pulse-guardian-interval 1s
-
-tk agent progress agent:worker-7 45s SP-10004 http://127.0.0.1:19090/pulse
-tk agent nudges agent:worker-7
-tk agent history agent:worker-7
-tk agent ack agent:worker-7 41
-```
-
-The registered callback must be a plain numeric-loopback HTTP URL. After a lease has expired, Time Keeper sends one versioned `recover_attention` signal to that independent local Guardian and records whether it explicitly accepted it. The Guardian returns `X-Timekeeper-Pulse-Accepted: v1` after accepting the signal, performs its own deliberate local recovery, and the owning agent acknowledges the nudge. A failed callback remains pending for a later retry; a confirmed callback is not spammed while acknowledgement is pending. Time Keeper itself never kills, restarts, or executes a watched process.
-
-Time Keeper validates serving configuration before opening the database: the dashboard path must be a readable file and `-addr` must use an explicit numeric loopback host (`127.0.0.1` or `::1`). It refuses names, wildcard, and remote interfaces.
-
-## SQLite backup
-
-Create an overwrite-safe, self-contained SQLite snapshot and exit. The destination must not already exist:
+Create an overwrite-safe SQLite snapshot with the server backup mode; the destination must not already exist:
 
 ```text
 timekeeper -db timekeeper.db -backup-to timekeeper-backup.db
 ```
 
-For a portable Project-only JSON export, use `tk export <project-id> > project-export.json`.
+For a portable Project-only JSON export, use `tk export <project-id> > project-export.json`. Project export is not a complete database recovery snapshot. SQLite backups are unencrypted; store both exports and backups accordingly.
 
-## Availability boundary
+## Current boundaries
 
-Only commands listed in **Implemented CLI** are available. Time Keeper does not currently implement automatic pickup/context recovery, direct process control, Decisions/Edits/Bugs records, task adoption, metrics, external model providers, remote server operation, or a downloadable release installer. Pulse Guardian is limited to explicit material-progress leases and independently-owned numeric-loopback attention callbacks; it is not a general scheduler or process supervisor. A narrow verified-checkout bootstrap is documented in `README.md`.
+- Core project tracking runs locally and does not require a cloud account. The server accepts only explicit numeric-loopback listeners and has no network authentication; do not expose it beyond the local user boundary.
+- Project, Task, Sprint, notes, messages, events, usage snapshots, local planning drafts, and the alpha bug-report API are available through the CLI/API. Usage is recorded only for sessions that submit snapshots; model cost remains unpriced unless a trusted local price catalogue is configured.
+- The `supervise` command owns and bounds processes it launches; it does not attach to arbitrary PIDs or prove that a successful process exit produced correct work. Review and verify before completing a Sprint.
+- Local planning supports configured loopback model endpoints. Jev/TypeSafe routing is a separate design and is not enabled by its planning documents.
+- Store commands require a separately configured Store. The checked-in default URL is a reserved placeholder; the client does not provide a public live catalogue here. A downloaded package is staged and is not executed by Core.
+- There is no hosted remote-server mode, cloud sync, authenticated multi-user deployment, or downloadable TimeKeeper application package in this repository.
 
-See `API.md`, `README.md`, `AGENT_INTEGRATION.md`, and `THREAT_REVIEW.md` for the authoritative current contract.
+For endpoint details, request/response schemas, and security boundaries, see [API.md](API.md), [Agent/API integration](AGENT_INTEGRATION.md), and [THREAT_REVIEW.md](THREAT_REVIEW.md).

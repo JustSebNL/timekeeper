@@ -12,6 +12,8 @@ type UsageSnapshotInput struct {
 	AgentID             string    `json:"agent_id"`
 	Model               string    `json:"model"`
 	SprintID            string    `json:"sprint_id"`
+	Source              string    `json:"source,omitempty"`
+	Coverage            string    `json:"coverage,omitempty"`
 	TurnSeq             int64     `json:"turn_seq"`
 	InputTokens         int64     `json:"input_tokens"`
 	OutputTokens        int64     `json:"output_tokens"`
@@ -32,6 +34,16 @@ type UsageDelta struct {
 	Messages            int64 `json:"messages"`
 }
 
+// UsageCost is a server-side pricing projection. Unpriced is an explicit
+// state: the model payload never supplies or overrides a price.
+type UsageCost struct {
+	Status       string `json:"status"`
+	Currency     string `json:"currency,omitempty"`
+	AmountMicros int64  `json:"amount_micros,omitempty"`
+	Source       string `json:"source,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
 // UsageSession is the latest authoritative cumulative state for one agent
 // session inside one Project. Token counters are intentionally separate from
 // context-window occupancy; the latter is not a token usage split.
@@ -41,6 +53,8 @@ type UsageSession struct {
 	SprintID            string    `json:"sprint_id,omitempty"`
 	AgentID             string    `json:"agent_id"`
 	Model               string    `json:"model,omitempty"`
+	Source              string    `json:"source"`
+	Coverage            string    `json:"coverage"`
 	TurnSeq             int64     `json:"turn_seq"`
 	InputTokens         int64     `json:"input_tokens"`
 	OutputTokens        int64     `json:"output_tokens"`
@@ -49,6 +63,7 @@ type UsageSession struct {
 	ContextUsed         *int64    `json:"context_used,omitempty"`
 	ContextSize         *int64    `json:"context_size,omitempty"`
 	Messages            int64     `json:"messages"`
+	Cost                UsageCost `json:"cost"`
 	LastActivityAt      time.Time `json:"last_activity_at"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
@@ -63,15 +78,16 @@ type UsageSnapshotResult struct {
 }
 
 // UsageTotals aggregates the latest cumulative state across a Project's agent
-// sessions. Cost is deliberately absent until a trusted local price source is
-// defined; unknown pricing must never be guessed.
+// sessions. Cost is always explicit: it is priced only from the server-owned
+// catalogue and otherwise reports an unpriced reason.
 type UsageTotals struct {
-	InputTokens         int64 `json:"input_tokens"`
-	OutputTokens        int64 `json:"output_tokens"`
-	CacheCreationTokens int64 `json:"cache_creation_tokens"`
-	CacheReadTokens     int64 `json:"cache_read_tokens"`
-	Messages            int64 `json:"messages"`
-	SessionCount        int64 `json:"session_count"`
+	InputTokens         int64     `json:"input_tokens"`
+	OutputTokens        int64     `json:"output_tokens"`
+	CacheCreationTokens int64     `json:"cache_creation_tokens"`
+	CacheReadTokens     int64     `json:"cache_read_tokens"`
+	Messages            int64     `json:"messages"`
+	SessionCount        int64     `json:"session_count"`
+	Cost                UsageCost `json:"cost"`
 }
 
 // UsageDay aggregates newly observed token deltas by the local calendar day.
@@ -95,15 +111,15 @@ type ProjectUsageSummary struct {
 
 // UsageSnapshot represents a single cumulative usage reading for a session.
 type UsageSnapshot struct {
-	SnapshotID        int64  `json:"snapshot_id"`
-	UsageID           int64  `json:"usage_id"`
-	TurnSeq           int64  `json:"turn_seq"`
-	InputTokens       int64  `json:"input_tokens"`
-	OutputTokens      int64  `json:"output_tokens"`
-	CacheCreationTokens int64  `json:"cache_creation_tokens"`
-	CacheReadTokens   int64  `json:"cache_read_tokens"`
-	ContextUsed       *int64   `json:"context_used,omitempty"`
-	ContextSize       *int64   `json:"context_size,omitempty"`
-	Messages          int64   `json:"messages"`
-	CreatedAt         time.Time `json:"created_at"`
+	SnapshotID          int64     `json:"snapshot_id"`
+	UsageID             int64     `json:"usage_id"`
+	TurnSeq             int64     `json:"turn_seq"`
+	InputTokens         int64     `json:"input_tokens"`
+	OutputTokens        int64     `json:"output_tokens"`
+	CacheCreationTokens int64     `json:"cache_creation_tokens"`
+	CacheReadTokens     int64     `json:"cache_read_tokens"`
+	ContextUsed         *int64    `json:"context_used,omitempty"`
+	ContextSize         *int64    `json:"context_size,omitempty"`
+	Messages            int64     `json:"messages"`
+	CreatedAt           time.Time `json:"created_at"`
 }

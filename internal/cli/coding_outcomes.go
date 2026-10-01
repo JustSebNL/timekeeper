@@ -43,7 +43,7 @@ func outcomes(args []string, out, errOut io.Writer, base string) int {
 		return 1
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := newHTTPClient(10 * time.Second).Do(req)
 	if err != nil {
 		fmt.Fprintln(errOut, err)
 		return 1

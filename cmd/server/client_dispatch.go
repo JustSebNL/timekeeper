@@ -21,5 +21,5 @@ func dispatchClient(args []string, environmentURL string, out, errOut io.Writer)
 		fmt.Fprintln(errOut, err)
 		return true, 2
 	}
-	return true, cli.Run(resolved, out, errOut, baseURL)
+	return true, cli.RunTracked(resolved, out, errOut, baseURL)
 }

@@ -28,28 +28,38 @@ import (
 //
 // Output is JSON for `list` / `search` / `show` so it composes with the
 // rest of the CLI; `add` prints the created record as a one-liner.
+func printMessagesHelp(out io.Writer) {
+	fmt.Fprintln(out, "usage: tk msg <project-id-or-alias> <add|list|search|show|edit|checkpoint|pin|unpin|thread|context|revisions|seed> ...")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Subcommands:")
+	fmt.Fprintln(out, "  add [--kind note|decision|observation|link|lesson|question|answer] [--author <id>] [--tags <t>] [--parent <id>] [--link <url>] <body...>")
+	fmt.Fprintln(out, "  list [--kind <kind>] [--limit <n>]")
+	fmt.Fprintln(out, "  search <query>")
+	fmt.Fprintln(out, "  show <message-id>")
+	fmt.Fprintln(out, "  edit <message-id> [--kind <kind>] [--body <text>] [--add-tags <t>] [--remove-tags <t>]")
+	fmt.Fprintln(out, "  thread <message-id>")
+	fmt.Fprintln(out, "  context <message-id>")
+	fmt.Fprintln(out, "  revisions <message-id>")
+	fmt.Fprintln(out, "  checkpoint --author <id> --entry kind|body|tags [--entry ...]")
+	fmt.Fprintln(out, "  pin <message-id>")
+	fmt.Fprintln(out, "  unpin <message-id>")
+	fmt.Fprintln(out, "  seed [--author <id>] [--dry-run] [--yes]")
+}
+
 func messages(args []string, out, errOut io.Writer, baseURL string) int {
-	if len(args) < 2 {
+	if len(args) == 0 {
 		fmt.Fprintln(errOut, "usage: tk msg <project-id-or-alias> <add|list|search|show|edit|checkpoint|pin|unpin|thread|context|revisions|seed> ...")
 		return 2
 	}
-	if args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(out, "usage: tk msg <project-id-or-alias> <add|list|search|show|edit|checkpoint|pin|unpin|thread|context|revisions|seed> ...")
-		fmt.Fprintln(out, "")
-		fmt.Fprintln(out, "Subcommands:")
-		fmt.Fprintln(out, "  add [--kind note|decision|observation|link|lesson|question|answer] [--author <id>] [--tags <t>] [--parent <id>] [--link <url>] <body...>")
-		fmt.Fprintln(out, "  list [--kind <kind>] [--limit <n>]")
-		fmt.Fprintln(out, "  search <query>")
-		fmt.Fprintln(out, "  show <message-id>")
-		fmt.Fprintln(out, "  edit <message-id> [--kind <kind>] [--body <text>] [--add-tags <t>] [--remove-tags <t>]")
-		fmt.Fprintln(out, "  thread <message-id>")
-		fmt.Fprintln(out, "  context <message-id>")
-		fmt.Fprintln(out, "  revisions <message-id>")
-		fmt.Fprintln(out, "  checkpoint --author <id> --entry kind|body|tags [--entry ...]")
-		fmt.Fprintln(out, "  pin <message-id>")
-		fmt.Fprintln(out, "  unpin <message-id>")
-		fmt.Fprintln(out, "  seed <parent-id> --count <n>")
+	// Help must work before project resolution. `tk msg --help` is a
+	// top-level command request, not a project id named --help.
+	if args[0] == "--help" || args[0] == "-h" || (len(args) > 1 && (args[1] == "--help" || args[1] == "-h")) {
+		printMessagesHelp(out)
 		return 0
+	}
+	if len(args) < 2 {
+		fmt.Fprintln(errOut, "usage: tk msg <project-id-or-alias> <add|list|search|show|edit|checkpoint|pin|unpin|thread|context|revisions|seed> ...")
+		return 2
 	}
 	projectID, err := resolveProjectID(baseURL, args[0])
 	if err != nil {
@@ -82,7 +92,7 @@ func messages(args []string, out, errOut io.Writer, baseURL string) int {
 	case "seed":
 		return msgSeed(projectID, args[2:], out, errOut, baseURL)
 	default:
-		fmt.Fprintf(errOut, "unknown msg subcommand %q (use add|list|search|show|edit|thread|context|revisions|seed)\n", args[1])
+		fmt.Fprintf(errOut, "unknown msg subcommand %q (use add|list|search|show|edit|checkpoint|pin|unpin|thread|context|revisions|seed)\n", args[1])
 		return 2
 	}
 }
@@ -181,14 +191,14 @@ func msgAdd(projectID string, args []string, out, errOut io.Writer, baseURL stri
 	if author != "" {
 		req.Header.Set("X-Agent-ID", author)
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := newHTTPClient(10 * time.Second).Do(req)
 	if err != nil {
 		fmt.Fprintf(errOut, "post message: %v\n", err)
 		return 1
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
-		fmt.Fprintf(errOut, "create message: %s\n", resp.Status)
+		reportHTTPStatus(errOut, "create message", resp)
 		return 1
 	}
 	var created model.ProjectMessage
@@ -240,7 +250,7 @@ func msgList(projectID string, args []string, out, errOut io.Writer, baseURL str
 		return 1
 	}
 	if !strings.HasPrefix(status, "200") {
-		fmt.Fprintf(errOut, "list messages: HTTP %s\n", status)
+		fmt.Fprintf(errOut, "list messages: %s\n", formatAPIError(status, []byte(body), ""))
 		return 1
 	}
 	io.WriteString(out, body)
@@ -285,7 +295,7 @@ func msgSearch(projectID string, args []string, out, errOut io.Writer, baseURL s
 		return 1
 	}
 	if !strings.HasPrefix(status, "200") {
-		fmt.Fprintf(errOut, "search messages: HTTP %s\n", status)
+		fmt.Fprintf(errOut, "search messages: %s\n", formatAPIError(status, []byte(body), ""))
 		return 1
 	}
 	io.WriteString(out, body)
@@ -300,6 +310,8 @@ func msgSearch(projectID string, args []string, out, errOut io.Writer, baseURL s
 // something to do.
 func msgSeed(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
 	author := "xatia"
+	confirmed := false
+	dryRun := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--author":
@@ -309,8 +321,16 @@ func msgSeed(projectID string, args []string, out, errOut io.Writer, baseURL str
 			}
 			i++
 			author = args[i]
+		case "--yes":
+			confirmed = true
+		case "--dry-run":
+			dryRun = true
 		case "--help", "-h":
-			fmt.Fprintln(out, "usage: tk msg <project> seed [--author <a>]")
+			fmt.Fprintln(out, "seed usage: tk msg <project> seed [--author <a>] [--dry-run] [--yes]")
+			fmt.Fprintln(out, "")
+			fmt.Fprintln(out, "  --dry-run  Print the sample messages that would be written, then exit.")
+			fmt.Fprintln(out, "  --yes      Confirm the write. Seeding posts real messages to a real")
+			fmt.Fprintln(out, "             project and cannot be undone, so it is refused by default.")
 			return 0
 		default:
 			fmt.Fprintf(errOut, "unknown flag %q\n", args[i])
@@ -331,6 +351,21 @@ func msgSeed(projectID string, args []string, out, errOut io.Writer, baseURL str
 		{model.MessageKindQuestion, "Should the message board expose a project picker on the dashboard, or always show the most recent project by default?", "ux", ""},
 		{model.MessageKindAnswer, "Default to the most recent project; expose a project picker as a follow-up once users have multi-project workflows that demand it.", "ux", ""},
 	}
+	// Seeding writes real, immutable messages into a real project and there is
+	// no delete subcommand, so the default must be to show and refuse rather
+	// than to write.
+	if !confirmed || dryRun {
+		fmt.Fprintf(out, "seed would write %d messages on %s (author: %s):\n", len(seeds), projectID, author)
+		for i, s := range seeds {
+			fmt.Fprintf(out, "  %d. %-12s [%s] %s\n", i+1, s.kind, s.tags, truncate(s.body, 96))
+		}
+		if !confirmed {
+			fmt.Fprintln(out, "refusing to write: re-run with --yes to seed this project")
+			return 2
+		}
+		fmt.Fprintln(out, "dry run only: no messages were written")
+		return 0
+	}
 	postURL := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/messages"
 	created := 0
 	for _, s := range seeds {
@@ -345,16 +380,16 @@ func msgSeed(projectID string, args []string, out, errOut io.Writer, baseURL str
 		if author != "" {
 			req.Header.Set("X-Agent-ID", author)
 		}
-		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		resp, err := newHTTPClient(10 * time.Second).Do(req)
 		if err != nil {
 			fmt.Fprintf(errOut, "post seed message: %v\n", err)
 			return 1
 		}
-		resp.Body.Close()
 		if resp.StatusCode != http.StatusCreated {
-			fmt.Fprintf(errOut, "seed message returned %s\n", resp.Status)
+			reportHTTPStatus(errOut, "seed message", resp)
 			return 1
 		}
+		resp.Body.Close()
 		created++
 	}
 	fmt.Fprintf(out, "Seeded %d messages on %s (author: %s)\n", created, projectID, author)
@@ -401,7 +436,7 @@ func msgEdit(projectID string, args []string, out, errOut io.Writer, baseURL str
 	}
 	currentBody, status, err := getJSON(messageEndpoint(baseURL, projectID, id))
 	if err != nil || !strings.HasPrefix(status, "200") {
-		fmt.Fprintf(errOut, "read message: %s\n", statusOrError(status, err))
+		fmt.Fprintf(errOut, "read message: %s\n", statusOrErrorBody(status, currentBody, err))
 		return 1
 	}
 	var current model.ProjectMessage
@@ -433,14 +468,14 @@ func msgEdit(projectID string, args []string, out, errOut io.Writer, baseURL str
 		return 1
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := newHTTPClient(10 * time.Second).Do(req)
 	if err != nil {
 		fmt.Fprintf(errOut, "edit message: %v\n", err)
 		return 1
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(errOut, "edit message: %s\n", resp.Status)
+		reportHTTPStatus(errOut, "edit message", resp)
 		return 1
 	}
 	var edited model.ProjectMessage
@@ -473,14 +508,14 @@ func msgPin(projectID string, args []string, pinned bool, out, errOut io.Writer,
 		return 1
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := newHTTPClient(10 * time.Second).Do(req)
 	if err != nil {
 		fmt.Fprintf(errOut, "change message pin: %v\n", err)
 		return 1
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(errOut, "change message pin: %s\n", resp.Status)
+		reportHTTPStatus(errOut, "change message pin", resp)
 		return 1
 	}
 	var message model.ProjectMessage
@@ -546,14 +581,14 @@ func msgCheckpoint(projectID string, args []string, out, errOut io.Writer, baseU
 	if author != "" {
 		req.Header.Set("X-Agent-ID", author)
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := newHTTPClient(10 * time.Second).Do(req)
 	if err != nil {
 		fmt.Fprintf(errOut, "post checkpoint: %v\n", err)
 		return 1
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
-		fmt.Fprintf(errOut, "post checkpoint: %s\n", resp.Status)
+		reportHTTPStatus(errOut, "post checkpoint", resp)
 		return 1
 	}
 	var checkpoint model.ProjectMessageCheckpoint
@@ -610,7 +645,7 @@ func msgContext(projectID string, args []string, out, errOut io.Writer, baseURL 
 	}
 	body, status, err := getJSON(endpoint)
 	if err != nil || !strings.HasPrefix(status, "200") {
-		fmt.Fprintf(errOut, "read message context: %s\n", statusOrError(status, err))
+		fmt.Fprintf(errOut, "read message context: %s\n", statusOrErrorBody(status, body, err))
 		return 1
 	}
 	io.WriteString(out, body)
@@ -638,7 +673,7 @@ func msgReadCollection(projectID string, args []string, out, errOut io.Writer, b
 	}
 	body, status, err := getJSON(messageEndpoint(baseURL, projectID, id) + "/" + collection)
 	if err != nil || !strings.HasPrefix(status, "200") {
-		fmt.Fprintf(errOut, "read message %s: %s\n", collection, statusOrError(status, err))
+		fmt.Fprintf(errOut, "read message %s: %s\n", collection, statusOrErrorBody(status, body, err))
 		return 1
 	}
 	io.WriteString(out, body)
@@ -669,6 +704,16 @@ func statusOrError(status string, err error) string {
 	return status
 }
 
+func statusOrErrorBody(status, body string, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if !strings.HasPrefix(status, "2") && body != "" {
+		return formatAPIError(status, []byte(body), "")
+	}
+	return status
+}
+
 func msgShow(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(errOut, "usage: tk msg <project> show M-1")
@@ -681,7 +726,7 @@ func msgShow(projectID string, args []string, out, errOut io.Writer, baseURL str
 	}
 	body, status, err := getJSON(messageEndpoint(baseURL, projectID, id))
 	if err != nil || !strings.HasPrefix(status, "200") {
-		fmt.Fprintf(errOut, "show message: %s\n", statusOrError(status, err))
+		fmt.Fprintf(errOut, "show message: %s\n", statusOrErrorBody(status, body, err))
 		return 1
 	}
 	io.WriteString(out, body)
@@ -692,7 +737,7 @@ func msgShow(projectID string, args []string, out, errOut io.Writer, baseURL str
 // getJSON is a small wrapper used by the msg subcommands to fetch JSON
 // from the API and return the body + status string.
 func getJSON(url string) (string, string, error) {
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Get(url)
+	resp, err := newHTTPClient(10 * time.Second).Get(url)
 	if err != nil {
 		return "", "", err
 	}

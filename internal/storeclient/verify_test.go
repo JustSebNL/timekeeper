@@ -103,6 +103,36 @@ func TestParsePublicKeyRefusesAPrivateKey(t *testing.T) {
 	}
 }
 
+func TestReadAndVerifyPackageReturnsStableBytesForExtraction(t *testing.T) {
+	_, priv, pemText := testKeyPair(t)
+	entries := validEntries()
+	entries = append(entries, entry{name: "./checksums.json", content: checksumsFor(entries)})
+	archive := buildTkp(t, entries)
+	data, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatalf("read archive fixture: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	sha := fmt.Sprintf("%x", sum[:])
+	sig := ed25519.Sign(priv, []byte(CanonicalString(sha)))
+
+	verified, err := ReadAndVerifyPackage(archive, sha, base64.StdEncoding.EncodeToString(sig), pemText)
+	if err != nil {
+		t.Fatalf("read and verify: %v", err)
+	}
+	if err := os.WriteFile(archive, []byte("replacement after verification"), 0o644); err != nil {
+		t.Fatalf("replace archive: %v", err)
+	}
+
+	manifest, err := ExtractPackageBytes(verified, filepath.Join(t.TempDir(), "out"))
+	if err != nil {
+		t.Fatalf("extract verified bytes: %v", err)
+	}
+	if manifest.ID != "extension.test" || manifest.Version != "1.0.0" {
+		t.Fatalf("unexpected manifest from verified bytes: %+v", manifest)
+	}
+}
+
 func TestCanonicalStringMatchesTheStoreFormat(t *testing.T) {
 	got := CanonicalString("abc123")
 	want := "timekeeper-package/v1:abc123"

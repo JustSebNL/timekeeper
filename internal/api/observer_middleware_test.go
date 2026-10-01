@@ -60,6 +60,7 @@ func waitForEvent(t *testing.T, f *fakeObserver) []recordedEvent {
 		if got := f.snapshot(); len(got) > 0 {
 			return got
 		}
+		time.Sleep(time.Millisecond)
 	}
 	return nil
 }

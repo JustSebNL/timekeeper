@@ -81,7 +81,7 @@ func TestRunHelpListsImplementedExtensionAndPlanningCommands(t *testing.T) {
 	if code := cli.Run([]string{"help"}, &out, &errOut, "http://127.0.0.1:1618"); code != 0 {
 		t.Fatalf("code=%d", code)
 	}
-	for _, command := range []string{"Usage: tk [--url <api-base-url>] <command>", "sp extend <sprint-id> <duration> <reason>", "sp extensions <sprint-id>", "sp entries <sprint-id>", "sp next <project-id>", "sp attempt <sprint-id> <reason>", "sp attempts <sprint-id>", "p edit <project-id> <goal> <description>", "t edit <task-id> <goal> <description>", "p status <project-id>", "c status <category-id>", "t status <task-id>", "st status <subtask-id>", "llm new", "plan <generate|apply>"} {
+	for _, command := range []string{"Usage: tk [--url <api-base-url>] <command>", "agent identity", "agent state [agent-id]", "agent states", "agent work <sprint-id> <lease>", "agent wait <duration> <reason>", "agent idle [reason]", "agent stop [reason]", "sp extend <sprint-id> <duration> <reason>", "sp extensions <sprint-id>", "sp entries <sprint-id>", "sp next <project-id>", "sp attempt <sprint-id> <reason>", "sp attempts <sprint-id>", "p edit <project-id> <goal> <description>", "t edit <task-id> <goal> <description>", "p status <project-id>", "c status <category-id>", "t status <task-id>", "st status <subtask-id>", "llm new", "plan <generate|apply>"} {
 		if !strings.Contains(out.String(), command) {
 			t.Fatalf("help missing %q: %s", command, out.String())
 		}

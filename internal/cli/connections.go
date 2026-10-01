@@ -2,7 +2,6 @@ package cli
 
 import (
 	"encoding/json"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -10,7 +9,7 @@ import (
 
 func connectionURLs(base string) []string {
 	fallback := []string{"http://timekeeper.local/", "http://api.timekeeper.local/"}
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := newHTTPClient(2 * time.Second)
 	resp, err := client.Get(strings.TrimRight(base, "/") + "/api/v1/connection-info")
 	if err != nil {
 		return fallback

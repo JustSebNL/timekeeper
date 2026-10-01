@@ -1,12 +1,14 @@
 # Jev / TypeSafe integration with TimeKeeper
 
-> Status: Design exploration — not implemented.
+> Status: Conceptual background; implementation details live in
+> [`jev-category-sprint-decision-protocol.md`](jev-category-sprint-decision-protocol.md).
 >
 > Source reference: https://docs.typesafe.ai/introduction
 >
-> This document theorises how Jev could simplify TimeKeeper usage for agents.
-> It is deliberately separate from the low-level API contract and does not
-> claim that the proposed CLI, adapter, or API routes exist yet.
+> This document preserves the original architectural exploration. The linked
+> protocol is the implementation-facing source for using Jev to decide
+> Categories and Sprint destinations. Neither document claims the live Jev
+> integration is enabled until the protocol's gates and verification pass.
 
 ## Goal
 
@@ -17,7 +19,7 @@ Task, Sprint, and follow-up policy.
 The intended agent interaction is short:
 
 ```bash
-tk log --project Suck-It-Up "Fix crash diagnostics upload"
+tk log --project Example-Project "Fix crash diagnostics upload"
 ```
 
 When the project is already bound to the current session:
@@ -98,7 +100,7 @@ Names must resolve to exactly one project. If they do not, the adapter asks for
 clarification instead of guessing.
 
 ```text
-Suck-It-Up -> P-10000
+Example-Project -> P-10000
 ```
 
 The resolved ID is retained as the authority for all subsequent reads and
@@ -130,7 +132,7 @@ A conceptual request could contain questions like these:
   "state": {
     "project": {
       "id": "P-10000",
-      "name": "Suck-It-Up"
+      "name": "Example-Project"
     },
     "intent": "Fix crash diagnostics upload",
     "categories": [

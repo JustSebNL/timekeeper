@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/JustSebNL/timekeeper/internal/model"
+	"github.com/JustSebNL/timekeeper/internal/pricing"
 )
 
 // RecordUsageSnapshot accepts cumulative counters for one agent turn. A
@@ -23,6 +24,14 @@ func (s *Store) RecordUsageSnapshot(ctx context.Context, projectID string, input
 	input.AgentID = strings.TrimSpace(input.AgentID)
 	input.Model = strings.TrimSpace(input.Model)
 	input.SprintID = strings.TrimSpace(input.SprintID)
+	input.Source = strings.TrimSpace(input.Source)
+	input.Coverage = strings.TrimSpace(input.Coverage)
+	if input.Source == "" {
+		input.Source = "manual"
+	}
+	if input.Coverage == "" {
+		input.Coverage = "explicit_snapshot"
+	}
 	if projectID == "" {
 		return model.UsageSnapshotResult{}, errors.New("project_id is required")
 	}
@@ -36,6 +45,9 @@ func (s *Store) RecordUsageSnapshot(ctx context.Context, projectID string, input
 		return model.UsageSnapshotResult{}, errors.New("turn_seq must be non-negative")
 	}
 	if err := validateUsageCounters(input); err != nil {
+		return model.UsageSnapshotResult{}, err
+	}
+	if err := validateUsageMetadata(input); err != nil {
 		return model.UsageSnapshotResult{}, err
 	}
 	capturedAt := input.CapturedAt
@@ -75,6 +87,7 @@ func (s *Store) RecordUsageSnapshot(ctx context.Context, projectID string, input
 		if err != nil {
 			return model.UsageSnapshotResult{}, err
 		}
+		result.Session = s.priceUsageSession(result.Session)
 		if err := tx.Commit(); err != nil {
 			return model.UsageSnapshotResult{}, fmt.Errorf("commit first usage snapshot: %w", err)
 		}
@@ -89,6 +102,12 @@ func (s *Store) RecordUsageSnapshot(ctx context.Context, projectID string, input
 	if input.SprintID != "" && row.sprintID.Valid && row.sprintID.String != input.SprintID {
 		return model.UsageSnapshotResult{}, errors.New("sprint_id cannot change within a usage session")
 	}
+	if row.source != input.Source {
+		return model.UsageSnapshotResult{}, errors.New("source cannot change within a usage session; start a new session for another source")
+	}
+	if row.coverage != input.Coverage {
+		return model.UsageSnapshotResult{}, errors.New("coverage cannot change within a usage session")
+	}
 
 	var snapshotID int64
 	if err := tx.QueryRowContext(ctx, "SELECT snapshot_id FROM agent_usage_snapshots WHERE usage_id = ? AND turn_seq = ?", row.usageID, input.TurnSeq).Scan(&snapshotID); err == nil {
@@ -96,6 +115,7 @@ func (s *Store) RecordUsageSnapshot(ctx context.Context, projectID string, input
 		if err != nil {
 			return model.UsageSnapshotResult{}, err
 		}
+		session = s.priceUsageSession(session)
 		if err := tx.Commit(); err != nil {
 			return model.UsageSnapshotResult{}, fmt.Errorf("commit duplicate usage snapshot: %w", err)
 		}
@@ -140,6 +160,7 @@ func (s *Store) RecordUsageSnapshot(ctx context.Context, projectID string, input
 	if err != nil {
 		return model.UsageSnapshotResult{}, err
 	}
+	session = s.priceUsageSession(session)
 	if err := tx.Commit(); err != nil {
 		return model.UsageSnapshotResult{}, fmt.Errorf("commit usage snapshot: %w", err)
 	}
@@ -147,8 +168,7 @@ func (s *Store) RecordUsageSnapshot(ctx context.Context, projectID string, input
 }
 
 // ProjectUsageSummary returns the latest cumulative usage for each agent session
-// in a Project. It is read-only and intentionally does not calculate cost until
-// TimeKeeper has a trusted local price source.
+// in a Project. Cost is projected only from the server-owned price catalogue.
 func (s *Store) ProjectUsageSummary(ctx context.Context, projectID string) (model.ProjectUsageSummary, error) {
 	var exists int
 	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM projects WHERE project_id = ?", projectID).Scan(&exists); err != nil {
@@ -157,7 +177,7 @@ func (s *Store) ProjectUsageSummary(ctx context.Context, projectID string) (mode
 		}
 		return model.ProjectUsageSummary{}, fmt.Errorf("validate usage summary project: %w", err)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT usage_id, session_id, project_id, sprint_id, agent_id, model,
+	rows, err := s.db.QueryContext(ctx, `SELECT usage_id, session_id, project_id, sprint_id, agent_id, model, source, coverage,
 		turn_seq, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 		context_used, context_size, messages, last_activity_at, created_at, updated_at
 		FROM agent_usage_sessions WHERE project_id = ? ORDER BY updated_at DESC, usage_id DESC`, projectID)
@@ -166,13 +186,15 @@ func (s *Store) ProjectUsageSummary(ctx context.Context, projectID string) (mode
 	}
 	defer rows.Close()
 
-	summary := model.ProjectUsageSummary{ProjectID: projectID, Sessions: make([]model.UsageSession, 0)}
+	summary := model.ProjectUsageSummary{ProjectID: projectID, Sessions: make([]model.UsageSession, 0), Totals: model.UsageTotals{
+		Cost: model.UsageCost{Status: "unpriced", Reason: "no recorded usage sessions"},
+	}}
 	for rows.Next() {
 		row, err := scanUsageSession(rows)
 		if err != nil {
 			return model.ProjectUsageSummary{}, err
 		}
-		session := row.toModel()
+		session := s.priceUsageSession(row.toModel())
 		summary.Sessions = append(summary.Sessions, session)
 		summary.Totals.InputTokens += session.InputTokens
 		summary.Totals.OutputTokens += session.OutputTokens
@@ -180,6 +202,7 @@ func (s *Store) ProjectUsageSummary(ctx context.Context, projectID string) (mode
 		summary.Totals.CacheReadTokens += session.CacheReadTokens
 		summary.Totals.Messages += session.Messages
 		summary.Totals.SessionCount++
+		summary.Totals.Cost = combineUsageCosts(summary.Totals.Cost, session.Cost)
 	}
 	if err := rows.Err(); err != nil {
 		return model.ProjectUsageSummary{}, fmt.Errorf("read project usage rows: %w", err)
@@ -190,6 +213,36 @@ func (s *Store) ProjectUsageSummary(ctx context.Context, projectID string) (mode
 	}
 	summary.Days = days
 	return summary, nil
+}
+
+func (s *Store) priceUsageSession(session model.UsageSession) model.UsageSession {
+	session.Cost = usageCostFromEstimate(s.pricing.Estimate(session.Model, session.InputTokens, session.OutputTokens, session.CacheCreationTokens, session.CacheReadTokens))
+	return session
+}
+
+func usageCostFromEstimate(estimate pricing.Estimate) model.UsageCost {
+	return model.UsageCost{
+		Status: estimate.Status, Currency: estimate.Currency, AmountMicros: estimate.AmountMicros,
+		Source: estimate.Source, Reason: estimate.Reason,
+	}
+}
+
+func combineUsageCosts(current, next model.UsageCost) model.UsageCost {
+	if current.Status == "unpriced" && current.Reason == "no recorded usage sessions" {
+		return next
+	}
+	if current.Status != "priced" || next.Status != "priced" {
+		return model.UsageCost{Status: "unpriced", Reason: "one or more usage sessions have no trusted price"}
+	}
+	if current.Currency != next.Currency || current.Currency == "" {
+		return model.UsageCost{Status: "unpriced", Reason: "usage sessions do not share one trusted pricing currency"}
+	}
+	if next.AmountMicros > 0 && current.AmountMicros > int64(^uint64(0)>>1)-next.AmountMicros {
+		return model.UsageCost{Status: "unpriced", Reason: "priced usage exceeds the supported amount range"}
+	}
+	return model.UsageCost{
+		Status: "priced", Currency: current.Currency, AmountMicros: current.AmountMicros + next.AmountMicros, Source: current.Source,
+	}
 }
 
 func (s *Store) projectUsageDays(ctx context.Context, projectID string) ([]model.UsageDay, error) {
@@ -250,20 +303,20 @@ func (s *Store) projectUsageDays(ctx context.Context, projectID string) ([]model
 
 type usageSessionRow struct {
 	usageID, turnSeq, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, messages int64
-	projectID, sessionID, agentID, model                                                        string
+	projectID, sessionID, agentID, model, source, coverage                                      string
 	sprintID, contextUsed, contextSize                                                          sql.NullString
 	lastActivityAt, createdAt, updatedAt                                                        string
 }
 
 func readUsageSession(ctx context.Context, tx *sql.Tx, projectID, agentID, sessionID string) (usageSessionRow, error) {
-	return scanUsageSession(tx.QueryRowContext(ctx, `SELECT usage_id, session_id, project_id, sprint_id, agent_id, model,
+	return scanUsageSession(tx.QueryRowContext(ctx, `SELECT usage_id, session_id, project_id, sprint_id, agent_id, model, source, coverage,
 		turn_seq, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 		context_used, context_size, messages, last_activity_at, created_at, updated_at
 		FROM agent_usage_sessions WHERE project_id = ? AND agent_id = ? AND session_id = ?`, projectID, agentID, sessionID))
 }
 
 func usageSessionFromRow(ctx context.Context, tx *sql.Tx, usageID int64) (model.UsageSession, error) {
-	row, err := scanUsageSession(tx.QueryRowContext(ctx, `SELECT usage_id, session_id, project_id, sprint_id, agent_id, model,
+	row, err := scanUsageSession(tx.QueryRowContext(ctx, `SELECT usage_id, session_id, project_id, sprint_id, agent_id, model, source, coverage,
 		turn_seq, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 		context_used, context_size, messages, last_activity_at, created_at, updated_at
 		FROM agent_usage_sessions WHERE usage_id = ?`, usageID))
@@ -275,7 +328,7 @@ func usageSessionFromRow(ctx context.Context, tx *sql.Tx, usageID int64) (model.
 
 func scanUsageSession(scanner interface{ Scan(...any) error }) (usageSessionRow, error) {
 	var row usageSessionRow
-	if err := scanner.Scan(&row.usageID, &row.sessionID, &row.projectID, &row.sprintID, &row.agentID, &row.model,
+	if err := scanner.Scan(&row.usageID, &row.sessionID, &row.projectID, &row.sprintID, &row.agentID, &row.model, &row.source, &row.coverage,
 		&row.turnSeq, &row.inputTokens, &row.outputTokens, &row.cacheCreationTokens, &row.cacheReadTokens,
 		&row.contextUsed, &row.contextSize, &row.messages, &row.lastActivityAt, &row.createdAt, &row.updatedAt); err != nil {
 		return usageSessionRow{}, err
@@ -286,6 +339,7 @@ func scanUsageSession(scanner interface{ Scan(...any) error }) (usageSessionRow,
 func (row usageSessionRow) toModel() model.UsageSession {
 	return model.UsageSession{
 		SessionID: row.sessionID, ProjectID: row.projectID, SprintID: row.sprintID.String, AgentID: row.agentID, Model: row.model,
+		Source: row.source, Coverage: row.coverage,
 		TurnSeq: row.turnSeq, InputTokens: row.inputTokens, OutputTokens: row.outputTokens,
 		CacheCreationTokens: row.cacheCreationTokens, CacheReadTokens: row.cacheReadTokens,
 		ContextUsed: parseOptionalInt(row.contextUsed), ContextSize: parseOptionalInt(row.contextSize), Messages: row.messages,
@@ -295,10 +349,10 @@ func (row usageSessionRow) toModel() model.UsageSession {
 
 func createUsageSession(ctx context.Context, tx *sql.Tx, projectID string, input model.UsageSnapshotInput, capturedAt time.Time) (model.UsageSnapshotResult, error) {
 	result, err := tx.ExecContext(ctx, `INSERT INTO agent_usage_sessions (
-		project_id, session_id, agent_id, model, sprint_id, turn_seq, input_tokens, output_tokens,
+		project_id, session_id, agent_id, model, source, coverage, sprint_id, turn_seq, input_tokens, output_tokens,
 		cache_creation_tokens, cache_read_tokens, context_used, context_size, messages,
-		last_activity_at, created_at, updated_at) VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		projectID, input.SessionID, input.AgentID, input.Model, input.SprintID, input.TurnSeq, input.InputTokens, input.OutputTokens,
+		last_activity_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		projectID, input.SessionID, input.AgentID, input.Model, input.Source, input.Coverage, input.SprintID, input.TurnSeq, input.InputTokens, input.OutputTokens,
 		input.CacheCreationTokens, input.CacheReadTokens, optionalInt(input.ContextUsed), optionalInt(input.ContextSize), input.Messages,
 		stamp(capturedAt), stamp(capturedAt), stamp(capturedAt))
 	if err != nil {
@@ -344,6 +398,24 @@ func validateUsageCounters(input model.UsageSnapshotInput) error {
 	}
 	if input.ContextUsed != nil && input.ContextSize != nil && *input.ContextUsed > *input.ContextSize {
 		return errors.New("context_used cannot exceed context_size")
+	}
+	return nil
+}
+
+func validateUsageMetadata(input model.UsageSnapshotInput) error {
+	for name, value := range map[string]string{"source": input.Source, "coverage": input.Coverage} {
+		if value == "" || len(value) > 64 {
+			return fmt.Errorf("%s must be between 1 and 64 characters", name)
+		}
+		for _, r := range value {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+				return fmt.Errorf("%s contains unsupported characters", name)
+			}
+		}
+	}
+	allowedCoverage := map[string]bool{"explicit_snapshot": true, "partial_session": true, "complete_session": true, "unknown": true}
+	if !allowedCoverage[input.Coverage] {
+		return errors.New("coverage must be explicit_snapshot, partial_session, complete_session, or unknown")
 	}
 	return nil
 }

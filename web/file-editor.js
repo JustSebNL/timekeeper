@@ -20,6 +20,11 @@
   let file = null;
   let versions = [];
   let editor = null;
+  let savedContent = '';
+  let autoSaveTimer = null;
+  let queuedSaves = 0;
+  let saveQueue = Promise.resolve();
+  const autoSaveDelay = 600;
 
   function api(path, options) {
     return fetch('/api/v1' + path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, options || {})).then(async response => {
@@ -44,16 +49,18 @@
     host.replaceChildren();
     fallback.hidden = true;
     if (window.TimeKeeperCodeMirror && typeof window.TimeKeeperCodeMirror.mount === 'function') {
-      editor = window.TimeKeeperCodeMirror.mount(host, { value: content, language: languageFor(file.current_path) });
+      editor = window.TimeKeeperCodeMirror.mount(host, { value: content, language: languageFor(file.current_path), onChange: handleEditorChange });
       return;
     }
     fallback.hidden = false;
     fallback.value = content;
+    const onInput = () => handleEditorChange(fallback.value);
+    fallback.addEventListener('input', onInput);
     editor = {
       getValue: () => fallback.value,
       setValue: value => { fallback.value = value; },
       focus: () => fallback.focus(),
-      destroy: () => {}
+      destroy: () => fallback.removeEventListener('input', onInput)
     };
   }
 
@@ -76,9 +83,91 @@
     }
   }
 
+  function updateSaveButton() {
+    saveButton.disabled = !file || !editor || (editor.getValue() === savedContent && queuedSaves === 0);
+  }
+
+  function updateFileMeta() {
+    if (!file) return;
+    meta.className = 'file-history-meta';
+    meta.textContent = `${file.file_id} · ${file.current_path} · current ${file.current_version_id} · ${versions.length} version${versions.length === 1 ? '' : 's'}`;
+  }
+
+  function scheduleAutoSave(content) {
+    if (autoSaveTimer !== null) clearTimeout(autoSaveTimer);
+    autoSaveTimer = setTimeout(() => {
+      autoSaveTimer = null;
+      queueHistoryStep(content).catch(() => {});
+    }, autoSaveDelay);
+  }
+
+  function handleEditorChange(content) {
+    if (!file || !editor) return;
+    const snapshot = String(content);
+    if (snapshot === savedContent && queuedSaves === 0) {
+      if (autoSaveTimer !== null) clearTimeout(autoSaveTimer);
+      autoSaveTimer = null;
+      updateSaveButton();
+      setFeedback('All edits are saved.');
+      return;
+    }
+    updateSaveButton();
+    setFeedback('Saving this edit as a history step after a short pause…');
+    scheduleAutoSave(snapshot);
+  }
+
+  function finishHistoryStep(success) {
+    queuedSaves = Math.max(0, queuedSaves - 1);
+    updateSaveButton();
+    if (success && editor && file && editor.getValue() !== savedContent && autoSaveTimer === null && queuedSaves === 0) {
+      scheduleAutoSave(editor.getValue());
+    }
+  }
+
+  function queueHistoryStep(content) {
+    const snapshot = String(content);
+    queuedSaves += 1;
+    updateSaveButton();
+    const operation = saveQueue.then(async () => {
+      if (!file || snapshot === savedContent) return null;
+      const targetFileId = fileId;
+      const result = await api(`/files/${encodeURIComponent(targetFileId)}/versions`, {
+        method: 'POST',
+        body: JSON.stringify({ content: snapshot, expected_current_version_id: file.current_version_id })
+      });
+      if (fileId !== targetFileId) throw new Error('File selection changed while saving; reload history before continuing.');
+      file = result.file;
+      savedContent = snapshot;
+      const existing = versions.findIndex(version => version.version_id === result.version.version_id);
+      if (existing < 0) versions.push(result.version);
+      else versions[existing] = result.version;
+      versions.sort((left, right) => left.version_number - right.version_number);
+      setVersionOptions();
+      updateFileMeta();
+      setFeedback(`Saved V${result.version.version_number}. Every saved step remains available in history.`);
+      return result;
+    });
+    saveQueue = operation.then(
+      () => finishHistoryStep(true),
+      error => {
+        setFeedback(error.message, true);
+        finishHistoryStep(false);
+      }
+    );
+    return operation;
+  }
+
   async function loadFile() {
-    fileId = fileIdInput.value.trim();
-    if (!fileId) return;
+    const requestedFileId = fileIdInput.value.trim();
+    if (!requestedFileId) return;
+    if (file && editor) {
+      if (autoSaveTimer !== null) clearTimeout(autoSaveTimer);
+      autoSaveTimer = null;
+      const saved = await saveFile();
+      if (!saved && !window.confirm('The latest edit could not be saved. Load the selected file and discard the current editor text?')) return;
+      await saveQueue;
+    }
+    fileId = requestedFileId;
     setFeedback('Loading file history…');
     try {
       file = await api(`/files/${encodeURIComponent(fileId)}`);
@@ -87,15 +176,15 @@
       const current = versions.find(version => version.version_id === file.current_version_id) || versions[versions.length - 1];
       if (!current) throw new Error('No versions exist for this file.');
       const content = await api(`/files/${encodeURIComponent(fileId)}/versions/${encodeURIComponent(current.version_id)}`);
-      mountEditor(content.content || '');
-      meta.className = 'file-history-meta';
-      meta.textContent = `${file.file_id} · ${file.current_path} · current ${current.version_id} · ${versions.length} version${versions.length === 1 ? '' : 's'}`;
-      status.textContent = 'History connected';
-      saveButton.disabled = false;
+      savedContent = content.content || '';
+      mountEditor(savedContent);
+      updateFileMeta();
+      status.textContent = 'History connected · Auto-save on';
       restoreButton.disabled = false;
       compareButton.disabled = versions.length < 2;
       setVersionOptions();
-      setFeedback('Loaded. Saves create a new immutable version.');
+      updateSaveButton();
+      setFeedback('Loaded. Each edit is saved as a restorable history step after a short pause.');
     } catch (error) {
       status.textContent = 'History unavailable';
       setFeedback(error.message, true);
@@ -103,34 +192,37 @@
   }
 
   async function saveFile() {
-    if (!file || !editor) return;
-    saveButton.disabled = true;
+    if (!file || !editor) return false;
+    if (autoSaveTimer !== null) clearTimeout(autoSaveTimer);
+    autoSaveTimer = null;
+    const content = editor.getValue();
+    if (content === savedContent && queuedSaves === 0) {
+      updateSaveButton();
+      return true;
+    }
     try {
-      const result = await api(`/files/${encodeURIComponent(fileId)}/versions`, {
-        method: 'POST',
-        body: JSON.stringify({ content: editor.getValue(), expected_current_version_id: file.current_version_id })
-      });
-      file = result.file;
-      await loadFile();
-      setFeedback(`Saved ${result.version.version_id} without rewriting history.`);
-    } catch (error) {
-      setFeedback(error.message, true);
-      saveButton.disabled = false;
+      await queueHistoryStep(content);
+      await saveQueue;
+      return editor.getValue() === savedContent;
+    } catch {
+      return false;
     }
   }
 
   async function restoreFile() {
     if (!file || !versionSelect.value) return;
-    const selected = versionSelect.selectedOptions[0]?.textContent || versionSelect.value;
-    if (!window.confirm(`Restore ${selected} as a new version? Previous versions remain preserved.`)) return;
+    const versionId = versionSelect.value;
+    const selected = versionSelect.selectedOptions[0]?.textContent || versionId;
+    if (!window.confirm(`Restore ${selected} as a new version? Previous steps remain preserved.`)) return;
+    if (!(await saveFile())) return;
     restoreButton.disabled = true;
     try {
       await api(`/files/${encodeURIComponent(fileId)}/restore`, {
         method: 'POST',
-        body: JSON.stringify({ version_id: versionSelect.value, expected_current_version_id: file.current_version_id })
+        body: JSON.stringify({ version_id: versionId, expected_current_version_id: file.current_version_id })
       });
       await loadFile();
-      setFeedback('Restored as a new version.');
+      setFeedback(`Restored ${versionId} as a new version; all earlier steps remain in history.`);
     } catch (error) {
       setFeedback(error.message, true);
       restoreButton.disabled = false;
@@ -148,8 +240,14 @@
     }
   }
 
-  loadForm?.addEventListener('submit', event => { event.preventDefault(); loadFile(); });
+  loadForm?.addEventListener('submit', event => { event.preventDefault(); return loadFile(); });
   saveButton?.addEventListener('click', saveFile);
   restoreButton?.addEventListener('click', restoreFile);
   compareButton?.addEventListener('click', compareFiles);
+  window.addEventListener('beforeunload', event => {
+    if (editor && (editor.getValue() !== savedContent || queuedSaves > 0 || autoSaveTimer !== null)) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  });
 })();

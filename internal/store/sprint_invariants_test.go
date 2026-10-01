@@ -55,6 +55,79 @@ func TestTaskCannotCompleteWhileItOwnsNonTerminalSprint(t *testing.T) {
 	}
 }
 
+func TestTaskCannotCompleteWhileItOwnsHeldSprint(t *testing.T) {
+	database, ctx, _, _, task := newSprintInvariantFixture(t)
+	sprint, err := database.CreateSprint(ctx, task.TaskID, model.CreateSprintInput{Name: "Held work", EstimatedDurationSeconds: 60})
+	if err != nil {
+		t.Fatalf("create sprint: %v", err)
+	}
+	if _, err := database.TransitionSprint(ctx, sprint.SprintID, "hold", "waiting for input"); err != nil {
+		t.Fatalf("hold sprint: %v", err)
+	}
+	if _, err := database.UpdateTaskStatus(ctx, task.TaskID, model.UpdateTaskStatusInput{Status: "Completed"}); err == nil {
+		t.Fatal("task with an On Hold Sprint must not complete")
+	}
+}
+
+func TestTaskCannotCompleteWhileItOwnsOpenSubtask(t *testing.T) {
+	database, ctx, _, _, task := newSprintInvariantFixture(t)
+	if _, err := database.CreateSubtask(ctx, task.TaskID, model.CreateSubtaskInput{Name: "Open child"}); err != nil {
+		t.Fatalf("create subtask: %v", err)
+	}
+	if _, err := database.UpdateTaskStatus(ctx, task.TaskID, model.UpdateTaskStatusInput{Status: "Completed"}); err == nil {
+		t.Fatal("task with an Open Subtask must not complete")
+	}
+}
+
+func TestTaskCanCompleteWhenOnlyTerminalChildWorkRemains(t *testing.T) {
+	t.Run("cancelled Sprint", func(t *testing.T) {
+		database, ctx, _, _, task := newSprintInvariantFixture(t)
+		if _, err := database.CreateSprint(ctx, task.TaskID, model.CreateSprintInput{Name: "Cancelled", EstimatedDurationSeconds: 60}); err != nil {
+			t.Fatalf("create sprint: %v", err)
+		}
+		sprints, err := database.ListSprints(ctx, task.TaskID)
+		if err != nil || len(sprints) != 1 {
+			t.Fatalf("list sprints: %#v, err=%v", sprints, err)
+		}
+		if _, err := database.TransitionSprint(ctx, sprints[0].SprintID, "cancel", "scope removed"); err != nil {
+			t.Fatalf("cancel sprint: %v", err)
+		}
+		if _, err := database.UpdateTaskStatus(ctx, task.TaskID, model.UpdateTaskStatusInput{Status: "Completed"}); err != nil {
+			t.Fatalf("complete task with cancelled Sprint: %v", err)
+		}
+	})
+
+	t.Run("timed out Sprint", func(t *testing.T) {
+		database, ctx, _, _, task := newSprintInvariantFixture(t)
+		sprint, err := database.CreateSprint(ctx, task.TaskID, model.CreateSprintInput{Name: "Timed out", EstimatedDurationSeconds: 60})
+		if err != nil {
+			t.Fatalf("create sprint: %v", err)
+		}
+		for attempt := 1; attempt <= 4; attempt++ {
+			if _, err := database.RecordSprintRetrievalAttempt(ctx, sprint.SprintID, fmt.Sprintf("attempt %d failed", attempt)); err != nil {
+				t.Fatalf("record attempt %d: %v", attempt, err)
+			}
+		}
+		if _, err := database.UpdateTaskStatus(ctx, task.TaskID, model.UpdateTaskStatusInput{Status: "Completed"}); err != nil {
+			t.Fatalf("complete task with TimedOut Sprint: %v", err)
+		}
+	})
+
+	t.Run("cancelled Subtask", func(t *testing.T) {
+		database, ctx, _, _, task := newSprintInvariantFixture(t)
+		subtask, err := database.CreateSubtask(ctx, task.TaskID, model.CreateSubtaskInput{Name: "Cancelled child"})
+		if err != nil {
+			t.Fatalf("create subtask: %v", err)
+		}
+		if _, err := database.UpdateSubtaskStatus(ctx, subtask.SubtaskID, model.UpdateSubtaskStatusInput{Status: "Cancelled"}); err != nil {
+			t.Fatalf("cancel subtask: %v", err)
+		}
+		if _, err := database.UpdateTaskStatus(ctx, task.TaskID, model.UpdateTaskStatusInput{Status: "Completed"}); err != nil {
+			t.Fatalf("complete task with cancelled Subtask: %v", err)
+		}
+	})
+}
+
 func TestOpenSprintCanWaitWithoutStartingTheWorkClock(t *testing.T) {
 	database, ctx, _, _, task := newSprintInvariantFixture(t)
 	sprint, err := database.CreateSprint(ctx, task.TaskID, model.CreateSprintInput{Name: "Wait for consent", EstimatedDurationSeconds: 60})

@@ -11,3 +11,7 @@ test('editor bundle declares common language packages and lint support', () => {
   assert.match(source, /javascript\(\{ typescript: true/);
   assert.match(source, /linter\(/);
 });
+
+test('CodeMirror forwards document changes to the file-history callback', () => {
+  assert.match(source, /if \(update\.docChanged\) options\.onChange\(update\.state\.doc\.toString\(\)\)/);
+});

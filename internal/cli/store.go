@@ -38,6 +38,57 @@ func storeStateDir() string {
 	return filepath.Join(home, ".timekeeper")
 }
 
+// ensureStoreDirectory creates a directory tree without accepting symlinked
+// components. Store state is local and may be user-controlled; following a
+// symlink here would let an install write the downloaded package outside the
+// configured state directory.
+func ensureStoreDirectory(dir string) error {
+	dir = filepath.Clean(dir)
+	parent := filepath.Dir(dir)
+	if parent != dir {
+		if err := ensureStoreDirectory(parent); err != nil {
+			return err
+		}
+	}
+
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			info, statErr := os.Lstat(dir)
+			if statErr != nil {
+				return fmt.Errorf("create Store directory %s: %w", dir, err)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("Store directory %s is a symlink", dir)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("Store path %s is not a directory", dir)
+			}
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect Store directory %s: %w", dir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("Store directory %s is a symlink", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("Store path %s is not a directory", dir)
+	}
+	return nil
+}
+
+// createStoreArchive creates a new staging file without following or
+// replacing an existing path. The archive path is derived from Store data, so
+// O_EXCL is the important boundary: a pre-existing symlink must not turn an
+// install into an arbitrary local-file overwrite.
+func createStoreArchive(path string) (*os.File, error) {
+	// O_EXCL makes creation atomic and refuses an existing symlink on the
+	// supported platforms, so the path is never opened for replacement.
+	return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+}
+
 // storeRepoRoot walks up from the working directory for the repository
 // markers, matching the rest of the CLI's path resolution.
 func storeRepoRoot() string {
@@ -73,8 +124,8 @@ func newStoreClient(baseURL string) (*storeclient.Client, error) {
 // storeCommand dispatches the `tk store` group. Named storeCommand
 // because the cli package already imports internal/store as `store`.
 func storeCommand(args []string, out, errOut io.Writer, baseURL string) int {
-	if len(args) == 0 {
-		return storeHelp(errOut)
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		return storeHelp(out)
 	}
 	switch args[0] {
 	case "status":
@@ -380,6 +431,16 @@ func storeInstall(args []string, out, errOut io.Writer, baseURL string) int {
 	if len(args) == 2 {
 		version = strings.TrimSpace(args[1])
 	}
+	if err := validateStorePathComponent(productID, "product id"); err != nil {
+		_, _ = fmt.Fprintf(errOut, "install failed: %v\n", err)
+		return 2
+	}
+	if version != "" {
+		if err := validateStorePathComponent(version, "version"); err != nil {
+			_, _ = fmt.Fprintf(errOut, "install failed: %v\n", err)
+			return 2
+		}
+	}
 
 	client, err := newStoreClient(baseURL)
 	if err != nil {
@@ -390,6 +451,22 @@ func storeInstall(args []string, out, errOut io.Writer, baseURL string) int {
 	result, err := client.Install(productID, version)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "install failed: %v\n", err)
+		return 1
+	}
+	if err := validateStorePathComponent(result.ProductID, "Store product id"); err != nil {
+		_, _ = fmt.Fprintf(errOut, "install failed: %v\n", err)
+		return 1
+	}
+	if err := validateStorePathComponent(result.Version, "Store version"); err != nil {
+		_, _ = fmt.Fprintf(errOut, "install failed: %v\n", err)
+		return 1
+	}
+	if result.ProductID != productID {
+		_, _ = fmt.Fprintf(errOut, "install failed: Store returned product %q for request %q\n", result.ProductID, productID)
+		return 1
+	}
+	if version != "" && result.Version != version {
+		_, _ = fmt.Fprintf(errOut, "install failed: Store returned version %q for request %q\n", result.Version, version)
 		return 1
 	}
 
@@ -407,12 +484,12 @@ func storeInstall(args []string, out, errOut io.Writer, baseURL string) int {
 	defer body.Close()
 
 	staging := filepath.Join(storeStateDir(), "extensions", ".staging")
-	if err := os.MkdirAll(staging, 0o755); err != nil {
+	if err := ensureStoreDirectory(staging); err != nil {
 		_, _ = fmt.Fprintf(errOut, "create staging dir: %v\n", err)
 		return 1
 	}
 	archivePath := filepath.Join(staging, result.ProductID+"-"+result.Version+".tkp")
-	f, err := os.OpenFile(archivePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	f, err := createStoreArchive(archivePath)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "write package: %v\n", err)
 		return 1
@@ -433,19 +510,33 @@ func storeInstall(args []string, out, errOut io.Writer, baseURL string) int {
 		signature = headers.Signature
 	}
 
-	// Verify before anything is unpacked. A bad signature leaves
-	// nothing behind but the rejected archive.
-	if err := storeclient.VerifyPackage(archivePath, sha, signature, key.PublicKey); err != nil {
+	// Read and verify once; extraction must consume these exact bytes.
+	packageBytes, err := storeclient.ReadAndVerifyPackage(archivePath, sha, signature, key.PublicKey)
+	if err != nil {
 		_ = os.Remove(archivePath)
 		_, _ = fmt.Fprintf(errOut, "package rejected: %v\n", err)
 		return 1
 	}
 
 	dest := filepath.Join(storeStateDir(), "extensions", result.ProductID)
-	manifest, err := storeclient.ExtractPackage(archivePath, dest)
+	if _, err := os.Lstat(dest); err == nil {
+		_, _ = fmt.Fprintf(errOut, "install failed: extension %s is already staged; refusing in-place replacement\n", result.ProductID)
+		return 1
+	} else if !os.IsNotExist(err) {
+		_, _ = fmt.Fprintf(errOut, "install failed: inspect destination: %v\n", err)
+		return 1
+	}
+	manifest, err := storeclient.ExtractPackageBytes(packageBytes, dest)
 	if err != nil {
 		_ = os.Remove(archivePath)
+		_ = os.RemoveAll(dest)
 		_, _ = fmt.Fprintf(errOut, "extract failed: %v\n", err)
+		return 1
+	}
+	if manifest.ID != result.ProductID || manifest.Version != result.Version {
+		_ = os.Remove(archivePath)
+		_ = os.RemoveAll(dest)
+		_, _ = fmt.Fprintf(errOut, "package rejected: manifest %s@%s does not match Store result %s@%s\n", manifest.ID, manifest.Version, result.ProductID, result.Version)
 		return 1
 	}
 	_ = os.Remove(archivePath)
@@ -457,6 +548,26 @@ func storeInstall(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintln(out, "TimeKeeper Core grants these; the package cannot widen them itself.")
 	}
 	return 0
+}
+
+func validateStorePathComponent(value, field string) error {
+	if value == "" {
+		return fmt.Errorf("%s must not be empty", field)
+	}
+	if len(value) > 128 {
+		return fmt.Errorf("%s is too long", field)
+	}
+	if value == "." || value == ".." || strings.Contains(value, "..") {
+		return fmt.Errorf("%s contains a path traversal sequence", field)
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return fmt.Errorf("%s contains unsupported path character %q", field, r)
+	}
+	return nil
 }
 
 func writeJSON(out io.Writer, value interface{}) int {

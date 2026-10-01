@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/JustSebNL/timekeeper/internal/api"
 	"github.com/JustSebNL/timekeeper/internal/model"
@@ -139,5 +141,138 @@ func TestSprintLifecycleRecordsWorkAndHoldTimeEntries(t *testing.T) {
 	}
 	if len(payload.Items) != 1 || payload.Items[0].SprintID != sprint.SprintID || payload.Items[0].Status != "Completed" {
 		t.Fatalf("unexpected sprints: %#v", payload.Items)
+	}
+}
+
+func TestReopenedCompletedTaskCanHoldFollowUpSprint(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	project, err := database.CreateProject(ctx, model.CreateProjectInput{Name: "Reopened task"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	category, err := database.CreateCategory(ctx, project.ProjectID, model.CreateCategoryInput{Name: "Delivery"})
+	if err != nil {
+		t.Fatalf("create category: %v", err)
+	}
+	task, err := database.CreateTask(ctx, project.ProjectID, model.CreateTaskInput{CategoryID: category.CategoryID, Name: "Follow-up work"})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	first, err := database.CreateSprint(ctx, task.TaskID, model.CreateSprintInput{Name: "Initial work", EstimatedDurationSeconds: 60})
+	if err != nil {
+		t.Fatalf("create initial sprint: %v", err)
+	}
+
+	fingerprint := strings.Repeat("a", 64)
+	identity, err := database.ResolveFASEIdentityAt(ctx, model.FASEIdentityInput{Fingerprint: fingerprint, Runtime: "test", IdentityScope: "runtime-session"}, time.Now())
+	if err != nil {
+		t.Fatalf("resolve FASE identity: %v", err)
+	}
+	call := func(identity model.FASEIdentity, fingerprint, method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Agent-ID", identity.AgentID)
+		request.Header.Set("X-Agent-Session-ID", model.FASEActivitySession(fingerprint))
+		request.Header.Set("X-Agent-Runtime", "test")
+		response := httptest.NewRecorder()
+		api.New(database).ServeHTTP(response, request)
+		return response
+	}
+
+	for _, action := range []string{"start", "complete"} {
+		response := call(identity, fingerprint, http.MethodPost, "/api/v1/sprints/"+first.SprintID+"/"+action, `{}`)
+		if response.Code != http.StatusOK {
+			t.Fatalf("initial Sprint %s: status=%d body=%s", action, response.Code, response.Body.String())
+		}
+	}
+	for _, status := range []string{"Completed", "Open"} {
+		response := call(identity, fingerprint, http.MethodPost, "/api/v1/tasks/"+task.TaskID+"/status", `{"status":"`+status+`"}`)
+		if response.Code != http.StatusOK {
+			t.Fatalf("task status %s: status=%d body=%s", status, response.Code, response.Body.String())
+		}
+	}
+
+	created := call(identity, fingerprint, http.MethodPost, "/api/v1/tasks/"+task.TaskID+"/sprints", `{"name":"Follow-up","estimated_duration_seconds":60}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create follow-up Sprint: status=%d body=%s", created.Code, created.Body.String())
+	}
+	var followUp model.Sprint
+	if err := json.NewDecoder(created.Body).Decode(&followUp); err != nil {
+		t.Fatalf("decode follow-up Sprint: %v", err)
+	}
+	for _, action := range []string{"start", "hold"} {
+		body := `{}`
+		if action == "hold" {
+			body = `{"reason":"follow-up handoff"}`
+		}
+		response := call(identity, fingerprint, http.MethodPost, "/api/v1/sprints/"+followUp.SprintID+"/"+action, body)
+		if response.Code != http.StatusOK {
+			t.Fatalf("follow-up Sprint %s: status=%d body=%s", action, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestCompletingFinalSubtaskSprintLeavesParentStatusesExplicit(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	project, err := database.CreateProject(ctx, model.CreateProjectInput{Name: "Subtask completion"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	category, err := database.CreateCategory(ctx, project.ProjectID, model.CreateCategoryInput{Name: "Delivery"})
+	if err != nil {
+		t.Fatalf("create category: %v", err)
+	}
+	task, err := database.CreateTask(ctx, project.ProjectID, model.CreateTaskInput{CategoryID: category.CategoryID, Name: "Explicit parent status"})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	subtask, err := database.CreateSubtask(ctx, task.TaskID, model.CreateSubtaskInput{Name: "Bounded child work"})
+	if err != nil {
+		t.Fatalf("create subtask: %v", err)
+	}
+	sprint, err := database.CreateSubtaskSprint(ctx, subtask.SubtaskID, model.CreateSprintInput{Name: "Child execution", EstimatedDurationSeconds: 60})
+	if err != nil {
+		t.Fatalf("create subtask Sprint: %v", err)
+	}
+	fingerprint := strings.Repeat("f", 64)
+	identity, err := database.ResolveFASEIdentityAt(ctx, model.FASEIdentityInput{Fingerprint: fingerprint, Runtime: "test", IdentityScope: "runtime-session"}, time.Now())
+	if err != nil {
+		t.Fatalf("resolve FASE identity: %v", err)
+	}
+	handler := api.New(database)
+	call := func(action string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/sprints/"+sprint.SprintID+"/"+action, bytes.NewBufferString(`{}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Agent-ID", identity.AgentID)
+		request.Header.Set("X-Agent-Session-ID", model.FASEActivitySession(fingerprint))
+		request.Header.Set("X-Agent-Runtime", "test")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	for _, action := range []string{"start", "complete"} {
+		response := call(action)
+		if response.Code != http.StatusOK {
+			t.Fatalf("Sprint %s: status=%d body=%s", action, response.Code, response.Body.String())
+		}
+	}
+	updatedTask, err := database.GetTask(ctx, task.TaskID)
+	if err != nil || updatedTask.Status != "Open" {
+		t.Fatalf("Task status = %q, err=%v; want Open", updatedTask.Status, err)
+	}
+	subtasks, err := database.ListSubtasks(ctx, task.TaskID)
+	if err != nil || len(subtasks) != 1 || subtasks[0].SubtaskID != subtask.SubtaskID || subtasks[0].Status != "Open" {
+		t.Fatalf("Subtasks = %#v, err=%v; want the explicit Open Subtask", subtasks, err)
 	}
 }

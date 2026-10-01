@@ -13,6 +13,19 @@ import (
 	"github.com/JustSebNL/timekeeper/internal/cli"
 )
 
+func TestMessageCLIHelpDoesNotResolveAProject(t *testing.T) {
+	var out, errOut strings.Builder
+	if code := cli.Run([]string{"msg", "--help"}, &out, &errOut, "http://127.0.0.1:1"); code != 0 {
+		t.Fatalf("help code=%d err=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "Subcommands:") || !strings.Contains(out.String(), "show <message-id>") {
+		t.Fatalf("help output=%q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("help wrote stderr=%q", errOut.String())
+	}
+}
+
 func TestMessageCLIUsesCompactReferencesForReplyEditAndThread(t *testing.T) {
 	var requests []struct{ method, path, body string }
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

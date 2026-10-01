@@ -5,7 +5,6 @@
 *.test
 
 # Runtime state and local artifacts
-.timekeeper/
 *.db
 *.db-shm
 *.db-wal
@@ -31,6 +30,9 @@ dev/private-scratch-probe.txt
 .timekeeper/*.lock
 .timekeeper/.last_update
 .timekeeper/.install.*
+# Per-rollout runtime dirs (server logs + pid from deploy/rollback runs).
+.timekeeper/rollout-*/
+/tmp/
 /timekeeper-linux*
 /tk-linux*
 NUL

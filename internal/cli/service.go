@@ -12,8 +12,9 @@ import (
 )
 
 // serviceManager installs, removes, starts, stops, and queries the OS service
-// that runs TimeKeeper. It delegates to .timekeeper/scripts/service/service-install.{bat,sh},
-// which handle Windows (NSSM) and Linux (systemd) specifics with local logging.
+// that runs TimeKeeper. It delegates to the Windows PowerShell installer or the
+// Linux service-manager script; Windows prefers Bend2Will and retains NSSM for
+// guarded legacy migration.
 func serviceManager(args []string, out, errOut io.Writer, baseURL string) int {
 	exe, err := os.Executable()
 	if err != nil {
@@ -67,10 +68,10 @@ func serviceManager(args []string, out, errOut io.Writer, baseURL string) int {
 }
 
 // findServiceScript locates service-manager.sh. It checks, in order:
-//   1. TIMEKEEPER_SERVICE_SCRIPT (explicit override)
-//   2. Alongside the installed binary: .timekeeper/app/scripts/service/service-manager.sh
-//   3. Repo-root relative: scripts/service/service-manager.sh
-//   4. Working directory: scripts/service/service-manager.sh
+//  1. TIMEKEEPER_SERVICE_SCRIPT (explicit override)
+//  2. Alongside the installed binary: .timekeeper/app/scripts/service/service-manager.sh
+//  3. Repo-root relative: scripts/service/service-manager.sh
+//  4. Working directory: scripts/service/service-manager.sh
 func findServiceScript() string {
 	if explicit := os.Getenv("TIMEKEEPER_SERVICE_SCRIPT"); explicit != "" {
 		if _, err := os.Stat(explicit); err == nil {

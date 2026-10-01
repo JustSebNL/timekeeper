@@ -15,5 +15,5 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	os.Exit(cli.Run(args, os.Stdout, os.Stderr, baseURL))
+	os.Exit(cli.RunTracked(args, os.Stdout, os.Stderr, baseURL))
 }

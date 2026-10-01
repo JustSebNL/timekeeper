@@ -42,7 +42,11 @@ type TickResult struct {
 // callbacks stay durable and are retried by a later tick.
 // If ntfyConfig is non-nil, also publishes a wake message via ntfy for each
 // pending nudge (the agent-side ntfy client runs `tk guardian wake`).
-func Tick(ctx context.Context, database *store.Store, at time.Time, ntfyConfig *NtfyConfig) (TickResult, error) {
+func Tick(ctx context.Context, database *store.Store, at time.Time, configs ...*NtfyConfig) (TickResult, error) {
+	var ntfyConfig *NtfyConfig
+	if len(configs) > 0 {
+		ntfyConfig = configs[0]
+	}
 	if database == nil {
 		return TickResult{}, errors.New("Pulse Guardian store is required")
 	}
@@ -59,8 +63,8 @@ func Tick(ctx context.Context, database *store.Store, at time.Time, ntfyConfig *
 	if ntfyConfig != nil && ntfyConfig.ServerURL != "" && ntfyConfig.Topic != "" {
 		publisher, err := ntfy.NewPublisher(ntfy.Config{
 			ServerURL: ntfyConfig.ServerURL,
-			Topic:      ntfyConfig.Topic,
-			Token:      ntfyConfig.Token,
+			Topic:     ntfyConfig.Topic,
+			Token:     ntfyConfig.Token,
 		})
 		if err == nil {
 			for _, nudge := range created {
@@ -150,9 +154,10 @@ func Run(ctx context.Context, database *store.Store, interval time.Duration, ntf
 
 func deliver(ctx context.Context, guardianURL string, nudge model.PulseNudge) error {
 	signal := model.PulseGuardianSignal{
-		Format: "timekeeper-pulse-guardian/v1",
-		Action: "recover_attention",
-		Nudge:  nudge,
+		Format:   "timekeeper-pulse-guardian/v1",
+		Action:   "recover_attention",
+		Reminder: "You're idling — please continue remaining work.",
+		Nudge:    nudge,
 	}
 	body, err := json.Marshal(signal)
 	if err != nil {

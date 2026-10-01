@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -21,22 +22,39 @@ import (
 	"github.com/JustSebNL/timekeeper/internal/lifecycle"
 	"github.com/JustSebNL/timekeeper/internal/model"
 	"github.com/JustSebNL/timekeeper/internal/planning"
+	"github.com/JustSebNL/timekeeper/internal/pricing"
 	"github.com/JustSebNL/timekeeper/internal/semantic"
 	_ "modernc.org/sqlite"
 )
 
 // Store owns Time Keeper's authoritative SQLite connection.
 type Store struct {
-	db *sql.DB
+	fase    faseRegistry
+	db      *sql.DB
+	pricing pricing.Catalog
 }
 
 // Open opens a SQLite database, enables required safety settings, and applies migrations.
 func Open(path string) (*Store, error) {
+	catalog, err := pricing.LoadFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return OpenWithPricing(path, catalog)
+}
+
+// OpenWithPricing opens a database with an explicit server-owned model price catalogue.
+// Usage payloads cannot alter this catalogue.
+func OpenWithPricing(path string, catalog pricing.Catalog) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, pricing: catalog}
+	if err := s.initPragmas(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -46,6 +64,22 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+func (s *Store) initPragmas(ctx context.Context) error {
+	pragmas := []string{
+		"PRAGMA journal_mode = WAL;",
+		"PRAGMA busy_timeout = 5000;",
+		"PRAGMA synchronous = NORMAL;",
+		"PRAGMA cache_size = -64000;",
+		"PRAGMA foreign_keys = ON;",
+	}
+	for _, p := range pragmas {
+		if _, err := s.db.ExecContext(ctx, p); err != nil {
+			return fmt.Errorf("execute SQLite pragma %q: %w", p, err)
+		}
+	}
+	return nil
 }
 
 func secureLocalDatabaseFile(path string) error {
@@ -156,6 +190,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			estimated_duration_seconds INTEGER NOT NULL DEFAULT 0 CHECK (estimated_duration_seconds >= 0),
 			reported_completion_pct REAL NOT NULL DEFAULT 0 CHECK (reported_completion_pct BETWEEN 0 AND 100),
 			calculated_completion_pct REAL NOT NULL DEFAULT 0 CHECK (calculated_completion_pct BETWEEN 0 AND 100),
+			auto_close INTEGER NOT NULL DEFAULT 1 CHECK (auto_close IN (0, 1)),
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(category_id, task_name)
@@ -391,6 +426,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			session_id TEXT NOT NULL CHECK (length(session_id) BETWEEN 1 AND 256),
 			agent_id TEXT NOT NULL CHECK (length(agent_id) BETWEEN 1 AND 256),
 			model TEXT NOT NULL DEFAULT '' CHECK (length(model) <= 256),
+			source TEXT NOT NULL DEFAULT 'manual' CHECK (length(source) BETWEEN 1 AND 64),
+			coverage TEXT NOT NULL DEFAULT 'explicit_snapshot' CHECK (length(coverage) BETWEEN 1 AND 64),
 			sprint_id TEXT REFERENCES sprints(sprint_id) ON DELETE RESTRICT,
 			turn_seq INTEGER NOT NULL CHECK (turn_seq >= 0),
 			input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
@@ -477,6 +514,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migrate database: %w", err)
 		}
 	}
+	if err := s.migrateAdmin(ctx); err != nil {
+		return err
+	}
 	if err := s.migrateSupervisedLaunches(ctx); err != nil {
 		return err
 	}
@@ -510,6 +550,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.backfillProjectMessageRevisions(ctx); err != nil {
 		return fmt.Errorf("backfill project message revisions: %w", err)
 	}
+	if err := s.ensureColumn(ctx, "tasks", "auto_close", "INTEGER NOT NULL DEFAULT 1 CHECK (auto_close IN (0, 1))"); err != nil {
+		return fmt.Errorf("migrate task auto_close: %w", err)
+	}
 	if err := s.ensureColumn(ctx, "categories", "parent_category_id", "TEXT REFERENCES categories(category_id) ON DELETE RESTRICT"); err != nil {
 		return fmt.Errorf("migrate category parent ownership: %w", err)
 	}
@@ -524,6 +567,18 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	if err := s.ensureColumn(ctx, "agent_pulse_progress", "guardian_url", "TEXT NOT NULL DEFAULT '' CHECK (length(guardian_url) <= 2048)"); err != nil {
 		return fmt.Errorf("migrate agent Pulse Guardian URL: %w", err)
+	}
+	if err := s.migrateAgentWorkState(ctx); err != nil {
+		return fmt.Errorf("migrate agent work states: %w", err)
+	}
+	if err := s.migrateFASE(ctx); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "agent_usage_sessions", "source", "TEXT NOT NULL DEFAULT 'manual' CHECK (length(source) BETWEEN 1 AND 64)"); err != nil {
+		return fmt.Errorf("migrate usage source: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "agent_usage_sessions", "coverage", "TEXT NOT NULL DEFAULT 'explicit_snapshot' CHECK (length(coverage) BETWEEN 1 AND 64)"); err != nil {
+		return fmt.Errorf("migrate usage coverage: %w", err)
 	}
 	if err := s.ensureColumn(ctx, "pulse_nudges", "delivery_attempts", "INTEGER NOT NULL DEFAULT 0 CHECK (delivery_attempts >= 0)"); err != nil {
 		return fmt.Errorf("migrate Pulse nudge delivery attempts: %w", err)
@@ -542,6 +597,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	if err := s.migratePulseEvents(ctx); err != nil {
 		return fmt.Errorf("migrate Pulse events table: %w", err)
+	}
+	if err := s.migrateSupersededNudges(ctx); err != nil {
+		return fmt.Errorf("migrate superseded nudges: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS sprints_subtask_updated_idx ON sprints(subtask_id, updated_at DESC)"); err != nil {
 		return fmt.Errorf("migrate sprints subtask index: %w", err)
@@ -943,7 +1001,7 @@ func (s *Store) UpdateProjectMetadata(ctx context.Context, projectID string, inp
 	goal := strings.TrimSpace(input.Goal)
 	description := strings.TrimSpace(input.Description)
 	if len(goal) > 1000 || len(description) > 10000 {
-		return model.Project{}, errors.New("project goal must be at most 1000 characters and description at most 10000 characters")
+		return model.Project{}, fmt.Errorf("%w: project goal must be at most 1000 characters and description at most 10000 characters", ErrValidation)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1332,7 +1390,7 @@ func (s *Store) ListProjectEventsLimit(ctx context.Context, projectID string, li
 		}
 		return nil, fmt.Errorf("read event project: %w", err)
 	}
-	query := `SELECT event_id, project_id, entity_type, entity_id, event_type, message, created_at
+	query := `SELECT event_id, project_id, entity_type, entity_id, event_type, message, created_at, actor_json
 		FROM project_events WHERE project_id = ? ORDER BY created_at DESC, event_id DESC`
 	args := []any{projectID}
 	if limit > 0 {
@@ -1348,11 +1406,17 @@ func (s *Store) ListProjectEventsLimit(ctx context.Context, projectID string, li
 	for rows.Next() {
 		var event model.ProjectEvent
 		var createdAt string
-		if err := rows.Scan(&event.EventID, &event.ProjectID, &event.EntityType, &event.EntityID, &event.EventType, &event.Message, &createdAt); err != nil {
+		var actorJSON string
+		if err := rows.Scan(&event.EventID, &event.ProjectID, &event.EntityType, &event.EntityID, &event.EventType, &event.Message, &createdAt, &actorJSON); err != nil {
 			return nil, fmt.Errorf("scan project event: %w", err)
 		}
 		if event.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
 			return nil, fmt.Errorf("parse project event created_at: %w", err)
+		}
+		if actorJSON != "" {
+			if err := json.Unmarshal([]byte(actorJSON), &event.Actor); err != nil {
+				return nil, err
+			}
 		}
 		events = append(events, event)
 	}
@@ -1362,9 +1426,64 @@ func (s *Store) ListProjectEventsLimit(ctx context.Context, projectID string, li
 	return events, nil
 }
 
+// ListEventsAfterID returns events recorded after afterEventID in ascending order.
+// If projectID is non-empty, events are scoped to that project.
+func (s *Store) ListEventsAfterID(ctx context.Context, projectID string, afterEventID int64, limit int) ([]model.ProjectEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var query string
+	var args []any
+	if projectID != "" {
+		query = `SELECT event_id, project_id, entity_type, entity_id, event_type, message, created_at, actor_json
+			FROM project_events WHERE project_id = ? AND event_id > ? ORDER BY event_id ASC LIMIT ?`
+		args = []any{projectID, afterEventID, limit}
+	} else {
+		query = `SELECT event_id, project_id, entity_type, entity_id, event_type, message, created_at, actor_json
+			FROM project_events WHERE event_id > ? ORDER BY event_id ASC LIMIT ?`
+		args = []any{afterEventID, limit}
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list events after id: %w", err)
+	}
+	defer rows.Close()
+
+	events := make([]model.ProjectEvent, 0)
+	for rows.Next() {
+		var event model.ProjectEvent
+		var createdAt string
+		var actorJSON string
+		if err := rows.Scan(&event.EventID, &event.ProjectID, &event.EntityType, &event.EntityID, &event.EventType, &event.Message, &createdAt, &actorJSON); err != nil {
+			return nil, fmt.Errorf("scan event: %w", err)
+		}
+		if event.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+			return nil, fmt.Errorf("parse event created_at: %w", err)
+		}
+		if actorJSON != "" {
+			_ = json.Unmarshal([]byte(actorJSON), &event.Actor)
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
 func recordProjectEvent(ctx context.Context, tx *sql.Tx, projectID, entityType, entityID, eventType, message string, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO project_events (project_id, entity_type, entity_id, event_type, message, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, projectID, entityType, entityID, eventType, message, stamp(now))
+	actorJSON := ""
+	if actor, ok := model.FASEActorFromContext(ctx); ok {
+		actor.FASEID = faseAlias(actor.AgentKey, now)
+		if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO fase_aliases(fase_id,agent_key,year,month,first_used_at) VALUES(?,?,?,?,?)", actor.FASEID, actor.AgentKey, now.UTC().Year(), int(now.UTC().Month()), stamp(now)); err != nil {
+			return err
+		}
+		raw, err := json.Marshal(actor)
+		if err != nil {
+			return err
+		}
+		actorJSON = string(raw)
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO project_events (project_id, entity_type, entity_id, event_type, message, created_at, actor_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, projectID, entityType, entityID, eventType, message, stamp(now), actorJSON)
 	return err
 }
 
@@ -2406,6 +2525,40 @@ var ErrNotFound = errors.New("tracked item not found")
 // misclassifying a domain validation failure as an internal storage failure.
 var ErrValidation = errors.New("validation failed")
 
+// sqliteResultCode is implemented by SQLite driver errors that expose their
+// primary result code. Matching it structurally keeps the domain layer free of
+// a direct driver dependency.
+type sqliteResultCode interface {
+	Code() int
+}
+
+// SQLite result codes that mean "another writer held the lock", not "this
+// request was wrong". These are stable across SQLite versions.
+const (
+	sqliteBusyCode   = 5
+	sqliteLockedCode = 6
+)
+
+// IsBusyError reports whether err is transient write contention rather than a
+// request failure. Callers must not surface it as a conflict: retrying later
+// succeeds, whereas the same request against the same state always fails.
+func IsBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var coded sqliteResultCode
+	if errors.As(err, &coded) {
+		switch coded.Code() {
+		case sqliteBusyCode, sqliteLockedCode:
+			return true
+		}
+	}
+	// Some driver paths surface the code only in text.
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "sqlite_busy") || strings.Contains(message, "sqlite_locked") ||
+		strings.Contains(message, "database is locked") || strings.Contains(message, "database table is locked")
+}
+
 // CreateCategory persists a project-owned category with a global ID and scoped address.
 func (s *Store) CreateCategory(ctx context.Context, projectID string, input model.CreateCategoryInput) (model.Category, error) {
 	input.Name = strings.TrimSpace(input.Name)
@@ -2486,7 +2639,7 @@ func (s *Store) UpdateCategoryMetadata(ctx context.Context, categoryID string, i
 	goal := strings.TrimSpace(input.Goal)
 	description := strings.TrimSpace(input.Description)
 	if len(goal) > 1000 || len(description) > 10000 {
-		return model.Category{}, errors.New("category goal must be at most 1000 characters and description at most 10000 characters")
+		return model.Category{}, fmt.Errorf("%w: category goal must be at most 1000 characters and description at most 10000 characters", ErrValidation)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2578,14 +2731,61 @@ func (s *Store) ListCategories(ctx context.Context, projectID string) ([]model.C
 	return categories, nil
 }
 
+func ensureDefaultCategory(ctx context.Context, tx *sql.Tx, projectID string) (string, error) {
+	var categoryAddress string
+	err := tx.QueryRowContext(ctx, "SELECT item_address FROM categories WHERE category_id = 'C-00000' AND project_id = ?", projectID).Scan(&categoryAddress)
+	if err == nil {
+		return categoryAddress, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("check default category: %w", err)
+	}
+
+	var projectAddress string
+	if err := tx.QueryRowContext(ctx, "SELECT item_address FROM projects WHERE project_id = ?", projectID).Scan(&projectAddress); err != nil {
+		return "", fmt.Errorf("read project address for default category: %w", err)
+	}
+
+	now := time.Now().UTC().Round(0)
+	defaultAddress := projectAddress + ".00000"
+	_, err = tx.ExecContext(ctx, `INSERT INTO categories (
+		category_id, project_id, item_address, category_name, category_description, category_goal, status, priority, progress_pct, created_at, updated_at
+	) VALUES ('C-00000', ?, ?, 'General', 'Default project category', 'General tasks', 'Open', 'Normal', 0, ?, ?)
+	ON CONFLICT(category_id) DO NOTHING`,
+		projectID, defaultAddress, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if err != nil {
+		return "", fmt.Errorf("insert default category C-00000: %w", err)
+	}
+	return defaultAddress, nil
+}
+
+func resolveCategoryID(ctx context.Context, tx *sql.Tx, projectID, inputCategory string) (string, string, error) {
+	inputCategory = strings.TrimSpace(inputCategory)
+	if inputCategory == "" || strings.EqualFold(inputCategory, "C-00000") || strings.EqualFold(inputCategory, "default") || strings.EqualFold(inputCategory, "uncategorized") || strings.EqualFold(inputCategory, "general") {
+		addr, err := ensureDefaultCategory(ctx, tx, projectID)
+		return "C-00000", addr, err
+	}
+
+	var catID, catAddress string
+	err := tx.QueryRowContext(ctx, "SELECT category_id, item_address FROM categories WHERE category_id = ? AND project_id = ?", inputCategory, projectID).Scan(&catID, &catAddress)
+	if err == nil {
+		return catID, catAddress, nil
+	}
+
+	err = tx.QueryRowContext(ctx, "SELECT category_id, item_address FROM categories WHERE category_name = ? COLLATE NOCASE AND project_id = ?", inputCategory, projectID).Scan(&catID, &catAddress)
+	if err == nil {
+		return catID, catAddress, nil
+	}
+
+	addr, err := ensureDefaultCategory(ctx, tx, projectID)
+	return "C-00000", addr, err
+}
+
 // CreateTask persists a category-owned task with a global ID and hierarchical address.
 func (s *Store) CreateTask(ctx context.Context, projectID string, input model.CreateTaskInput) (model.Task, error) {
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
 		return model.Task{}, errors.New("task name is required")
-	}
-	if input.CategoryID == "" {
-		return model.Task{}, errors.New("category_id is required")
 	}
 	if input.EstimatedDurationSeconds < 0 {
 		return model.Task{}, errors.New("estimated_duration_seconds must not be negative")
@@ -2599,16 +2799,19 @@ func (s *Store) CreateTask(ctx context.Context, projectID string, input model.Cr
 		return model.Task{}, fmt.Errorf("begin task creation: %w", err)
 	}
 	defer tx.Rollback()
-	var categoryAddress string
-	if err := tx.QueryRowContext(ctx, "SELECT item_address FROM categories WHERE category_id = ? AND project_id = ?", input.CategoryID, projectID).Scan(&categoryAddress); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return model.Task{}, fmt.Errorf("%w: category %s", ErrNotFound, input.CategoryID)
-		}
-		return model.Task{}, fmt.Errorf("read task category: %w", err)
+	resolvedCatID, categoryAddress, err := resolveCategoryID(ctx, tx, projectID, input.CategoryID)
+	if err != nil {
+		return model.Task{}, fmt.Errorf("resolve category: %w", err)
 	}
+	input.CategoryID = resolvedCatID
+
 	number, err := allocateItemNumber(ctx, tx)
 	if err != nil {
 		return model.Task{}, err
+	}
+	autoCloseInt := 1
+	if input.AutoClose != nil && !*input.AutoClose {
+		autoCloseInt = 0
 	}
 	now := time.Now().UTC().Round(0)
 	task := model.Task{
@@ -2622,17 +2825,18 @@ func (s *Store) CreateTask(ctx context.Context, projectID string, input model.Cr
 		Status:                   "Open",
 		Priority:                 input.Priority,
 		EstimatedDurationSeconds: input.EstimatedDurationSeconds,
+		AutoClose:                autoCloseInt != 0,
 		CreatedAt:                now,
 		UpdatedAt:                now,
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO tasks (
 		task_id, project_id, category_id, item_address, task_name, task_description, task_goal,
 		status, priority, estimated_duration_seconds, reported_completion_pct,
-		calculated_completion_pct, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		calculated_completion_pct, auto_close, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.TaskID, task.ProjectID, task.CategoryID, task.ItemAddress, task.Name, task.Description,
 		task.Goal, task.Status, task.Priority, task.EstimatedDurationSeconds, task.ReportedCompletionPct,
-		task.CalculatedCompletionPct, task.CreatedAt.Format(time.RFC3339Nano), task.UpdatedAt.Format(time.RFC3339Nano))
+		task.CalculatedCompletionPct, autoCloseInt, task.CreatedAt.Format(time.RFC3339Nano), task.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return model.Task{}, fmt.Errorf("insert task: %w", err)
 	}
@@ -2640,6 +2844,98 @@ func (s *Store) CreateTask(ctx context.Context, projectID string, input model.Cr
 		return model.Task{}, fmt.Errorf("commit task creation: %w", err)
 	}
 	return task, nil
+}
+
+// CreateTasksBatch persists multiple tasks within one database transaction.
+func (s *Store) CreateTasksBatch(ctx context.Context, projectID string, inputs []model.CreateTaskInput) ([]model.Task, error) {
+	if len(inputs) == 0 {
+		return []model.Task{}, nil
+	}
+	if len(inputs) > 100 {
+		return nil, fmt.Errorf("%w: maximum 100 tasks per batch", ErrValidation)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin task batch creation: %w", err)
+	}
+	defer tx.Rollback()
+
+	categoryCache := make(map[string]struct {
+		id   string
+		addr string
+	})
+	now := time.Now().UTC().Round(0)
+	createdTasks := make([]model.Task, 0, len(inputs))
+
+	for i, input := range inputs {
+		input.Name = strings.TrimSpace(input.Name)
+		if input.Name == "" {
+			return nil, fmt.Errorf("%w: task %d: task name is required", ErrValidation, i+1)
+		}
+		if input.EstimatedDurationSeconds < 0 {
+			return nil, fmt.Errorf("%w: task %d: estimated_duration_seconds must not be negative", ErrValidation, i+1)
+		}
+		if input.Priority == "" {
+			input.Priority = "Normal"
+		}
+
+		catInfo, ok := categoryCache[input.CategoryID]
+		if !ok {
+			cID, cAddr, err := resolveCategoryID(ctx, tx, projectID, input.CategoryID)
+			if err != nil {
+				return nil, fmt.Errorf("task %d: resolve category: %w", i+1, err)
+			}
+			catInfo = struct {
+				id   string
+				addr string
+			}{id: cID, addr: cAddr}
+			categoryCache[input.CategoryID] = catInfo
+		}
+		input.CategoryID = catInfo.id
+		categoryAddress := catInfo.addr
+
+		number, err := allocateItemNumber(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		autoCloseInt := 1
+		if input.AutoClose != nil && !*input.AutoClose {
+			autoCloseInt = 0
+		}
+		task := model.Task{
+			TaskID:                   fmt.Sprintf("T-%d", number),
+			ProjectID:                projectID,
+			CategoryID:               input.CategoryID,
+			ItemAddress:              categoryAddress + "." + fmt.Sprintf("%d", number),
+			Name:                     input.Name,
+			Description:              strings.TrimSpace(input.Description),
+			Goal:                     strings.TrimSpace(input.Goal),
+			Status:                   "Open",
+			Priority:                 input.Priority,
+			EstimatedDurationSeconds: input.EstimatedDurationSeconds,
+			AutoClose:                autoCloseInt != 0,
+			CreatedAt:                now,
+			UpdatedAt:                now,
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO tasks (
+			task_id, project_id, category_id, item_address, task_name, task_description, task_goal,
+			status, priority, estimated_duration_seconds, reported_completion_pct,
+			calculated_completion_pct, auto_close, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			task.TaskID, task.ProjectID, task.CategoryID, task.ItemAddress, task.Name, task.Description,
+			task.Goal, task.Status, task.Priority, task.EstimatedDurationSeconds, task.ReportedCompletionPct,
+			task.CalculatedCompletionPct, autoCloseInt, task.CreatedAt.Format(time.RFC3339Nano), task.UpdatedAt.Format(time.RFC3339Nano))
+		if err != nil {
+			return nil, fmt.Errorf("insert task %d: %w", i+1, err)
+		}
+		createdTasks = append(createdTasks, task)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit task batch creation: %w", err)
+	}
+	return createdTasks, nil
 }
 
 // ListTasks returns a project's tasks in creation order.
@@ -2653,7 +2949,7 @@ func (s *Store) ListTasks(ctx context.Context, projectID string) ([]model.Task, 
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT task_id, project_id, category_id, item_address, task_name,
 		task_description, task_goal, status, priority, estimated_duration_seconds,
-		reported_completion_pct, calculated_completion_pct, created_at, updated_at
+		reported_completion_pct, calculated_completion_pct, auto_close, created_at, updated_at
 		FROM tasks WHERE project_id = ? ORDER BY created_at, task_id`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
@@ -2678,7 +2974,7 @@ func (s *Store) UpdateTaskMetadata(ctx context.Context, taskID string, input mod
 	goal := strings.TrimSpace(input.Goal)
 	description := strings.TrimSpace(input.Description)
 	if len(goal) > 1000 || len(description) > 10000 {
-		return model.Task{}, errors.New("task goal must be at most 1000 characters and description at most 10000 characters")
+		return model.Task{}, fmt.Errorf("%w: task goal must be at most 1000 characters and description at most 10000 characters", ErrValidation)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2704,7 +3000,7 @@ func (s *Store) UpdateTaskMetadata(ctx context.Context, taskID string, input mod
 	if err := tx.Commit(); err != nil {
 		return model.Task{}, err
 	}
-	return scanTask(s.db.QueryRowContext(ctx, `SELECT task_id, project_id, category_id, item_address, task_name, task_description, task_goal, status, priority, estimated_duration_seconds, reported_completion_pct, calculated_completion_pct, created_at, updated_at FROM tasks WHERE task_id = ?`, taskID))
+	return scanTask(s.db.QueryRowContext(ctx, `SELECT task_id, project_id, category_id, item_address, task_name, task_description, task_goal, status, priority, estimated_duration_seconds, reported_completion_pct, calculated_completion_pct, auto_close, created_at, updated_at FROM tasks WHERE task_id = ?`, taskID))
 }
 
 // UpdateTaskStatus persists a Task workflow state and immutable Project history.
@@ -2718,6 +3014,12 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, taskID string, input model
 		return model.Task{}, err
 	}
 	defer tx.Rollback()
+	if err := lockFASEWrite(ctx, tx); err != nil {
+		return model.Task{}, err
+	}
+	if err := checkFASEClaim(ctx, tx, taskID); err != nil {
+		return model.Task{}, err
+	}
 	var projectID, previous string
 	if err := tx.QueryRowContext(ctx, "SELECT project_id, status FROM tasks WHERE task_id = ?", taskID).Scan(&projectID, &previous); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -2727,10 +3029,10 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, taskID string, input model
 	}
 	if status == "Completed" {
 		var pendingSprints, pendingSubtasks int
-		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM sprints WHERE task_id = ? AND status != 'Completed'", taskID).Scan(&pendingSprints); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM sprints WHERE task_id = ? AND status NOT IN ('Completed', 'Cancelled', 'TimedOut')", taskID).Scan(&pendingSprints); err != nil {
 			return model.Task{}, fmt.Errorf("check task sprint completion: %w", err)
 		}
-		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM subtasks WHERE task_id = ? AND status != 'Completed'", taskID).Scan(&pendingSubtasks); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM subtasks WHERE task_id = ? AND status NOT IN ('Completed', 'Cancelled')", taskID).Scan(&pendingSubtasks); err != nil {
 			return model.Task{}, fmt.Errorf("check task subtask completion: %w", err)
 		}
 		if pendingSprints != 0 || pendingSubtasks != 0 {
@@ -2749,17 +3051,19 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, taskID string, input model
 	if err := tx.Commit(); err != nil {
 		return model.Task{}, err
 	}
-	return scanTask(s.db.QueryRowContext(ctx, `SELECT task_id, project_id, category_id, item_address, task_name, task_description, task_goal, status, priority, estimated_duration_seconds, reported_completion_pct, calculated_completion_pct, created_at, updated_at FROM tasks WHERE task_id = ?`, taskID))
+	return scanTask(s.db.QueryRowContext(ctx, `SELECT task_id, project_id, category_id, item_address, task_name, task_description, task_goal, status, priority, estimated_duration_seconds, reported_completion_pct, calculated_completion_pct, auto_close, created_at, updated_at FROM tasks WHERE task_id = ?`, taskID))
 }
 
 func scanTask(scanner interface{ Scan(...any) error }) (model.Task, error) {
 	var task model.Task
+	var autoCloseInt int
 	var createdAt, updatedAt string
 	if err := scanner.Scan(&task.TaskID, &task.ProjectID, &task.CategoryID, &task.ItemAddress, &task.Name,
 		&task.Description, &task.Goal, &task.Status, &task.Priority, &task.EstimatedDurationSeconds,
-		&task.ReportedCompletionPct, &task.CalculatedCompletionPct, &createdAt, &updatedAt); err != nil {
+		&task.ReportedCompletionPct, &task.CalculatedCompletionPct, &autoCloseInt, &createdAt, &updatedAt); err != nil {
 		return model.Task{}, fmt.Errorf("scan task: %w", err)
 	}
+	task.AutoClose = (autoCloseInt != 0)
 	var err error
 	task.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {
@@ -2866,6 +3170,22 @@ func (s *Store) ListSubtasks(ctx context.Context, taskID string) ([]model.Subtas
 	return subtasks, nil
 }
 
+// GetSubtask reads one Subtask so a caller can recover its current goal and
+// description without exporting the whole Project.
+func (s *Store) GetSubtask(ctx context.Context, subtaskID string) (model.Subtask, error) {
+	subtask, err := scanSubtask(s.db.QueryRowContext(ctx, `SELECT subtask_id, project_id, category_id, task_id, item_address,
+		subtask_name, subtask_description, subtask_goal, status, priority, estimated_duration_seconds,
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at
+		FROM subtasks WHERE subtask_id = ?`, subtaskID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.Subtask{}, fmt.Errorf("%w: subtask %s", ErrNotFound, subtaskID)
+		}
+		return model.Subtask{}, fmt.Errorf("read subtask: %w", err)
+	}
+	return subtask, nil
+}
+
 // UpdateSubtaskStatus persists a Subtask workflow state and immutable Project history.
 func (s *Store) UpdateSubtaskStatus(ctx context.Context, subtaskID string, input model.UpdateSubtaskStatusInput) (model.Subtask, error) {
 	status := strings.TrimSpace(input.Status)
@@ -2891,6 +3211,26 @@ func (s *Store) UpdateSubtaskStatus(ctx context.Context, subtaskID string, input
 	if previous != status {
 		if err := recordProjectEvent(ctx, tx, projectID, "subtask", subtaskID, "subtask_status_changed", fmt.Sprintf("Subtask status changed from %s to %s.", previous, status), now); err != nil {
 			return model.Subtask{}, err
+		}
+	}
+	if status == "Completed" || status == "Cancelled" {
+		var parentTaskID string
+		if err := tx.QueryRowContext(ctx, "SELECT task_id FROM subtasks WHERE subtask_id = ?", subtaskID).Scan(&parentTaskID); err == nil && parentTaskID != "" {
+			var autoClose int
+			var taskStatus string
+			if err := tx.QueryRowContext(ctx, "SELECT auto_close, status FROM tasks WHERE task_id = ?", parentTaskID).Scan(&autoClose, &taskStatus); err == nil {
+				if autoClose != 0 && (taskStatus == "Open" || taskStatus == "On Hold") {
+					var remainingSprints int
+					_ = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM sprints WHERE task_id = ? AND status NOT IN ('Completed', 'Cancelled', 'TimedOut')", parentTaskID).Scan(&remainingSprints)
+					var remainingSubtasks int
+					_ = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM subtasks WHERE task_id = ? AND status NOT IN ('Completed', 'Cancelled')", parentTaskID).Scan(&remainingSubtasks)
+					if remainingSprints == 0 && remainingSubtasks == 0 {
+						if _, err := tx.ExecContext(ctx, "UPDATE tasks SET status = 'Completed', updated_at = ? WHERE task_id = ?", now.Format(time.RFC3339Nano), parentTaskID); err == nil {
+							_ = recordProjectEvent(ctx, tx, projectID, "task", parentTaskID, "task_status_changed", fmt.Sprintf("Task status changed from %s to Completed.", taskStatus), now)
+						}
+					}
+				}
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -3105,7 +3445,14 @@ var ErrNoRunnableSprint = errors.New("no runnable sprint")
 
 // GetTask returns one Task by its durable ID.
 func (s *Store) GetTask(ctx context.Context, taskID string) (model.Task, error) {
-	return scanTask(s.db.QueryRowContext(ctx, `SELECT task_id, project_id, category_id, item_address, task_name, task_description, task_goal, status, priority, estimated_duration_seconds, reported_completion_pct, calculated_completion_pct, created_at, updated_at FROM tasks WHERE task_id = ?`, taskID))
+	task, err := scanTask(s.db.QueryRowContext(ctx, `SELECT task_id, project_id, category_id, item_address, task_name, task_description, task_goal, status, priority, estimated_duration_seconds, reported_completion_pct, calculated_completion_pct, auto_close, created_at, updated_at FROM tasks WHERE task_id = ?`, taskID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.Task{}, fmt.Errorf("%w: task %s", ErrNotFound, taskID)
+		}
+		return model.Task{}, fmt.Errorf("read task: %w", err)
+	}
+	return task, nil
 }
 
 // ClaimNextSprint atomically starts the oldest Open Sprint that belongs to an Open Project, Category, Task, and optional Subtask.
@@ -3116,6 +3463,9 @@ func (s *Store) ClaimNextSprint(ctx context.Context, projectID string) (model.Sp
 		return model.Sprint{}, fmt.Errorf("begin claim next sprint: %w", err)
 	}
 	defer tx.Rollback()
+	if err := lockFASEWrite(ctx, tx); err != nil {
+		return model.Sprint{}, err
+	}
 	var sprintID string
 	err = tx.QueryRowContext(ctx, `SELECT s.sprint_id FROM sprints s
 		JOIN projects p ON p.project_id = s.project_id
@@ -3132,6 +3482,13 @@ func (s *Store) ClaimNextSprint(ctx context.Context, projectID string) (model.Sp
 		return model.Sprint{}, fmt.Errorf("select next sprint: %w", err)
 	}
 	now := time.Now().UTC().Round(0)
+	before, err := loadSprintState(ctx, tx, sprintID)
+	if err != nil {
+		return model.Sprint{}, err
+	}
+	if err := claimFASESprint(ctx, tx, before.Sprint, now); err != nil {
+		return model.Sprint{}, err
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE sprints SET status = 'Active', started_at = COALESCE(started_at, ?), active_started_at = ?, updated_at = ? WHERE sprint_id = ? AND status = 'Open'`, stamp(now), stamp(now), stamp(now), sprintID)
 	if err != nil {
 		return model.Sprint{}, fmt.Errorf("claim next sprint: %w", err)
@@ -3159,11 +3516,25 @@ func (s *Store) TransitionSprint(ctx context.Context, sprintID, action, reason s
 		return model.Sprint{}, fmt.Errorf("begin sprint transition: %w", err)
 	}
 	defer tx.Rollback()
+	if err := lockFASEWrite(ctx, tx); err != nil {
+		return model.Sprint{}, err
+	}
 	state, err := loadSprintState(ctx, tx, sprintID)
 	if err != nil {
 		return model.Sprint{}, err
 	}
 	now := time.Now().UTC().Round(0)
+	if err := checkFASEClaim(ctx, tx, state.Sprint.TaskID); err != nil {
+		return model.Sprint{}, err
+	}
+	if err := checkFASEClaim(ctx, tx, sprintID); err != nil {
+		return model.Sprint{}, err
+	}
+	if action == "start" || action == "resume" {
+		if err := claimFASESprint(ctx, tx, state.Sprint, now); err != nil {
+			return model.Sprint{}, err
+		}
+	}
 	reason = strings.TrimSpace(reason)
 	if len(reason) > 10000 {
 		return model.Sprint{}, errors.New("sprint transition reason must be at most 10000 characters")
@@ -3244,9 +3615,23 @@ func (s *Store) TransitionSprint(ctx context.Context, sprintID, action, reason s
 	if err != nil {
 		return model.Sprint{}, fmt.Errorf("update sprint transition: %w", err)
 	}
-	// Task completion is explicit. Agents close tasks via tk t status.
-	// Auto-completing a task when its final sprint completes silently
-	// corrupts the plan for design-only sprints (see dev-ops evaluation).
+	if rule.To == "Completed" {
+		var autoClose int
+		var taskStatus string
+		if err := tx.QueryRowContext(ctx, "SELECT auto_close, status FROM tasks WHERE task_id = ?", state.Sprint.TaskID).Scan(&autoClose, &taskStatus); err == nil {
+			if autoClose != 0 && (taskStatus == "Open" || taskStatus == "On Hold") {
+				var remainingSprints int
+				_ = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM sprints WHERE task_id = ? AND status NOT IN ('Completed', 'Cancelled', 'TimedOut')", state.Sprint.TaskID).Scan(&remainingSprints)
+				var remainingSubtasks int
+				_ = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM subtasks WHERE task_id = ? AND status NOT IN ('Completed', 'Cancelled')", state.Sprint.TaskID).Scan(&remainingSubtasks)
+				if remainingSprints == 0 && remainingSubtasks == 0 {
+					if _, err := tx.ExecContext(ctx, "UPDATE tasks SET status = 'Completed', updated_at = ? WHERE task_id = ?", stamp(now), state.Sprint.TaskID); err == nil {
+						_ = recordProjectEvent(ctx, tx, state.Sprint.ProjectID, "task", state.Sprint.TaskID, "task_status_changed", fmt.Sprintf("Task status changed from %s to Completed.", taskStatus), now)
+					}
+				}
+			}
+		}
+	}
 	updated, err := loadSprintState(ctx, tx, sprintID)
 	if err != nil {
 		return model.Sprint{}, err

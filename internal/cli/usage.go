@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -23,20 +24,23 @@ func usage(args []string, out, errOut io.Writer, baseURL string) int {
 	if len(args) > 0 && args[0] == "record" {
 		return usageRecord(args[1:], out, errOut, baseURL)
 	}
-	_, _ = fmt.Fprintln(errOut, "usage: tk usage <project-id> | tk usage record <project-id> <session-id> <agent-id> <model> <turn> <input> <output> [cache-write] [cache-read] [messages] [sprint-id]")
+	if len(args) > 0 && args[0] == "ingest" {
+		return usageIngest(args[1:], out, errOut, baseURL)
+	}
+	_, _ = fmt.Fprintln(errOut, "usage: tk usage <project-id> | tk usage record <project-id> <session-id> <agent-id> <model> <turn> <input> <output> [cache-write] [cache-read] [messages] [sprint-id] | tk usage ingest <project-id> <envelope.json>")
 	return 2
 }
 
 func usageSummary(projectID string, out, errOut io.Writer, baseURL string) int {
 	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + url.PathEscape(projectID) + "/usage-summary"
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
+	response, err := newHTTPClient(10 * time.Second).Get(endpoint)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "read usage summary", response)
 		return 1
 	}
 	var summary model.ProjectUsageSummary
@@ -105,14 +109,14 @@ func usageRecord(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := newHTTPClient(10 * time.Second).Do(request)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
 		return 1
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusCreated {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned %s\n", response.Status)
+		reportHTTPStatus(errOut, "record usage", response)
 		return 1
 	}
 	var result model.UsageSnapshotResult
@@ -124,6 +128,114 @@ func usageRecord(args []string, out, errOut io.Writer, baseURL string) int {
 		result.Session.SessionID, result.Duplicate, result.Delta.InputTokens, result.Delta.OutputTokens,
 		result.Delta.CacheCreationTokens, result.Delta.CacheReadTokens, result.Delta.Messages)
 	return 0
+}
+
+func usageIngest(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) != 2 {
+		_, _ = fmt.Fprintln(errOut, "usage: tk usage ingest <project-id> <envelope.json>")
+		return 2
+	}
+	body, err := os.ReadFile(args[1])
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "read usage envelope: %v\n", err)
+		return 1
+	}
+	if len(body) > 64<<10 {
+		_, _ = fmt.Fprintln(errOut, "usage envelope must be at most 64 KiB")
+		return 2
+	}
+	if err := rejectUsageSensitiveKeys(body); err != nil {
+		_, _ = fmt.Fprintf(errOut, "usage envelope rejected: %v\n", err)
+		return 2
+	}
+	var envelope struct {
+		RedactionStatus string                   `json:"redaction_status"`
+		Source          string                   `json:"source"`
+		Coverage        string                   `json:"coverage"`
+		Snapshot        model.UsageSnapshotInput `json:"snapshot"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		_, _ = fmt.Fprintf(errOut, "decode usage envelope: %v\n", err)
+		return 2
+	}
+	if envelope.RedactionStatus != "verified" {
+		_, _ = fmt.Fprintln(errOut, "usage envelope requires redaction_status=verified")
+		return 2
+	}
+	if strings.TrimSpace(envelope.Source) == "" || strings.TrimSpace(envelope.Coverage) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage envelope requires source and coverage")
+		return 2
+	}
+	if strings.TrimSpace(envelope.Snapshot.SessionID) == "" {
+		_, _ = fmt.Fprintln(errOut, "usage envelope snapshot requires session_id")
+		return 2
+	}
+	envelope.Snapshot.Source = envelope.Source
+	envelope.Snapshot.Coverage = envelope.Coverage
+	payload, err := json.Marshal(envelope.Snapshot)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "encode usage snapshot: %v\n", err)
+		return 1
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + url.PathEscape(args[0]) + "/usage-sessions/" + url.PathEscape(envelope.Snapshot.SessionID) + "/snapshots"
+	request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "create usage request: %v\n", err)
+		return 1
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := newHTTPClient(10 * time.Second).Do(request)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		reportHTTPStatus(errOut, "ingest usage snapshot", response)
+		return 1
+	}
+	var result model.UsageSnapshotResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid usage JSON: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(out, "%s\tsource=%s\tcoverage=%s\tduplicate=%t\tinput=%d\toutput=%d\n",
+		result.Session.SessionID, result.Session.Source, result.Session.Coverage, result.Duplicate,
+		result.Delta.InputTokens, result.Delta.OutputTokens)
+	return 0
+}
+
+func rejectUsageSensitiveKeys(body []byte) error {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(&value); err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+	var walk func(any) error
+	walk = func(current any) error {
+		switch value := current.(type) {
+		case map[string]any:
+			for key, child := range value {
+				switch strings.ToLower(strings.ReplaceAll(key, "-", "_")) {
+				case "prompt", "prompt_body", "transcript", "tool_output", "password", "secret", "api_key", "bearer", "cookie", "credential":
+					return fmt.Errorf("sensitive field %q is not accepted; send counters only", key)
+				}
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, child := range value {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walk(value)
 }
 
 func parseNonNegativeUsageInt(value string, errOut io.Writer) (int64, error) {

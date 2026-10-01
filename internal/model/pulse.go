@@ -75,7 +75,8 @@ type RegisteredGuardian struct {
 // outside the watched agent's potentially hung work loop, then explicitly
 // acknowledge the nudge through Time Keeper once recovery is observed.
 type PulseGuardianSignal struct {
-	Format string     `json:"format"`
-	Action string     `json:"action"`
-	Nudge  PulseNudge `json:"nudge"`
+	Format   string     `json:"format"`
+	Action   string     `json:"action"`
+	Reminder string     `json:"reminder"`
+	Nudge    PulseNudge `json:"nudge"`
 }

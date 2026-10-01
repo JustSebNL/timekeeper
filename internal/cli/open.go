@@ -47,7 +47,7 @@ func openBrowser(args []string, out, errOut io.Writer, baseURL string) int {
 
 	// Health-check before launching. We never want to send the user
 	// to a browser tab that errors out.
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := newHTTPClient(2 * time.Second)
 	healthURL := strings.TrimRight(url, "/") + "/health"
 	resp, err := client.Get(healthURL)
 	if err != nil {

@@ -2,142 +2,53 @@
 
 Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved. This is proprietary software; see `LICENSE` and `NOTICE`.
 
-TimeKeeper is a local work-tracking and memory tool for people and AI agents. It keeps a project moving when work stretches across terminals, days, or conversation windows.
+**Help agents stay oriented when project work outlasts a single chat.**
 
-It answers four simple questions:
+A useful project rarely fits in one conversation. Work gets interrupted, agents change, and the next session needs to know what matters and what to do next. TimeKeeper gives people and agents a durable project record they can return to, instead of asking a chat transcript to be the filing cabinet.
 
-- What are we trying to finish?
-- What is the next concrete piece of work?
-- How long should it take?
-- What happened, and how do we continue later?
+## Why it helps
 
-TimeKeeper stores that record locally in SQLite. It does not require a cloud account and it is not a chat service.
+TimeKeeper helps you:
 
-## What it is best for
+- keep the project goal, next action, and current progress in one place;
+- break long work into small, finishable steps;
+- leave decisions, blockers, and handoffs for the next session or agent;
+- keep a step-by-step, reversible history of edits made in the dashboard's file editor;
+- see the same local project record in a browser dashboard or from an agent's tools.
 
-Use TimeKeeper for work that benefits from continuity and accountability:
+A Sprint is one focused piece of work: a manageable next bite, not “finish the internet before lunch.” Starting, pausing, resuming, or completing it records active-time intervals. It is a planning aid—not a screen monitor, and not a promise that the work is correct. An agent still needs to check its result before saying “done.”
 
-- software projects and long-running technical tasks;
-- work shared between people and coding agents;
-- tasks that need honest time estimates;
-- handoffs, interruptions, and recovery after a context window ends;
-- decisions and discoveries that should not disappear in chat history.
+## A gentle first session
 
-A project is organised as:
+Once TimeKeeper is installed and running, open the dashboard at `http://127.0.0.1:1618/`. Choose an existing Project or create one, pick a small next step, and leave a short note when a decision or handoff will help later. That is enough to begin; you do not need to learn the API or every command first.
 
-```text
-Project -> Category -> Task -> optional Subtask -> Sprint
-```
+The repository is proprietary and currently provides a source-based installation, not a downloadable application package. If you have access to a checkout, the [install guide](docs/install.md) has the platform-specific steps. The installer does not add commands to your `PATH`.
 
-A Sprint is one bounded piece of work, usually 15–45 minutes. TimeKeeper records its status, time, notes, evidence, and handoff history.
-
-## Install
-
-Use the one installer for your platform from inside the checkout:
-
-```text
-Linux / WSL:  install/install.sh
-Windows:     install\\install.bat
-```
-
-The installer finds the repository from the installer's own location, builds the local binaries, prepares the dashboard, installs the background service, and verifies the result. It keeps application state inside this checkout's `.timekeeper/` directory.
-
-The installer requires Git and Go to be available. It refuses an unverified checkout rather than building from an unexpected directory or revision. See [`docs/install.md`](docs/install.md) for prerequisites, options, service management, and troubleshooting.
-
-After installation, verify the service:
-
-```text
-.timekeeper/app/bin/tk doctor
-```
-
-Open the dashboard at:
-
-```text
-http://127.0.0.1:1618/
-```
-
-Friendly local URLs may also be available as `http://timekeeper.local/` and `http://api.timekeeper.local/` when the hosts-file and proxy setup succeeds.
-
-## Tell an agent to use it
-
-From the TimeKeeper repository, tell the agent exactly this:
+For an AI agent using this repository, the intended first-use phrase is:
 
 ```text
 Use TimeKeeper in the terminal and start using the app.
 ```
 
-The repository's [`AGENTS.md`](AGENTS.md) turns that instruction into the workflow automatically. The agent will:
+The [agent onboarding Skill](harness/skills/onboarding/SKILL.md) provides a calm, step-by-step introduction. The repository's `AGENTS.md` and [harness contract](harness/SKILL.md) explain the more detailed agent workflow for tools that read and follow repository instructions.
 
-1. read the short harness guide and the relevant Skill;
-2. locate the local `tk` command;
-3. run `tk doctor`;
-4. inspect existing Projects, Tasks, and Sprints;
-5. resume suitable work or create a durable record for the next action;
-6. record decisions, blockers, evidence, and handoffs;
-7. verify work before calling it complete.
+## One agent, or a swarm
 
-The compact first-use guide is [`docs/HARNESS.md`](docs/HARNESS.md). The operational instructions are [`harness/SKILL.md`](harness/SKILL.md), and the project-specific Skills are in [`harness/skills/`](harness/skills/).
+TimeKeeper can give several agents a common local view of a Project and its work. It is designed for agents that share access to the same local TimeKeeper service—not for coordinating machines through a hosted cloud workspace. A trusted runtime adapter is still required if an agent must be woken or resumed automatically; TimeKeeper cannot attach itself to an arbitrary chat session.
 
-An agent can also discover the workflow before it knows the project structure:
+## What TimeKeeper does not do
 
-```text
-timekeeper --help
-```
+- It does not monitor screens or infer that work happened; active time follows the Sprint status you record.
+- It does not judge code quality, independently verify evidence, or reconstruct a lost conversation.
+- It does not sync projects to the cloud or provide remote, authenticated team hosting.
 
-## A human's first commands
+Your Project data stays on this machine; it is not encrypted automatically. TimeKeeper does not ask you to sign in, so anyone who can run programs as your operating-system user can access the local app. Do not share it over a network, and protect the project folder and any backups.
 
-```text
-tk doctor
-tk list
-tk tree <project-id>
-tk summary <project-id>
-tk pulse
-```
+## Where to go next
 
-Use the dashboard when you want to browse the plan visually. Use `tk` when you want a fast terminal workflow. Both use the same local data.
+- [Getting started](docs/install.md) — install the local app and open the dashboard.
+- [Using TimeKeeper with an agent](harness/skills/onboarding/SKILL.md) — the gentle first-use walkthrough.
+- [Documentation index](docs/README.md) — choose a guide if you need more detail.
+- [Privacy and security](THREAT_REVIEW.md) — what stays local and what the app does not protect.
 
-For durable context, record a short note or Trail of Thought checkpoint rather than relying on chat history:
-
-```text
-tk msg <project-id> add --kind decision "Use the local adapter first."
-tk msg <project-id> checkpoint --author <agent-id> --entry 'evidence|Tests passed.|verification'
-```
-
-## Staying on track
-
-TimeKeeper is deliberately honest about unfinished work:
-
-- active Sprints can be checked through `tk pulse`;
-- blocked work can be put on hold with a reason;
-- failed retrieval attempts remain visible;
-- completed work should include real verification evidence;
-- context can be recovered from the Project tree, summary, events, and Trail of Thought references.
-
-It does not decide whether an agent's code is good. It keeps the plan and claims visible so a person or another agent can check them.
-
-## Runs locally
-
-The service listens on loopback by default at `127.0.0.1:1618`. Keep it local; do not expose the API to a network without adding proper authentication and transport security.
-
-The local database, dashboard state, logs, and service configuration live under `.timekeeper/`. Do not put credentials, private prompts, or unbounded transcript content into TimeKeeper records.
-
-## More detail
-
-- [First-use harness guide](docs/HARNESS.md)
-- [Agent instructions](AGENTS.md)
-- [Harness Skill](harness/SKILL.md)
-- [Agent/API integration contract](AGENT_INTEGRATION.md)
-- [Installation and service management](docs/install.md)
-- [Execution safeguards](docs/execution-safeguards.md)
-- [API reference](API.md)
-
-## Development
-
-Run the tests from the repository root:
-
-```text
-go test ./...
-go vet ./...
-```
-
-TimeKeeper is a local-first project tool. Its job is simple: keep the work, the clock, and the memory in the same place.
+Detailed command, API, integration, and operator references are currently grouped in the repository's documentation index. A combined documentation and plugin Store portal at `time.mngr.eu.org` is planned, but is not a live documentation link in this checkout. Keep the existing references until the site is published and verified.

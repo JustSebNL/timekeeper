@@ -5,8 +5,8 @@ When the user says “Use TimeKeeper in the terminal and start using the app,”
 From the repository root, do this automatically before project work:
 
 1. Read `harness/SKILL.md`.
-2. Read the one relevant Skill under `harness/skills/`.
-3. Locate the local CLI: prefer `.timekeeper/app/tk`, then `.timekeeper/app/bin/tk`, then `tk` on `PATH`.
+2. On first use, read `harness/skills/onboarding/SKILL.md`; otherwise read the one Skill relevant to the next action under `harness/skills/`.
+3. Locate the local CLI: on Linux/WSL prefer `.timekeeper/app/tk`, then `.timekeeper/app/bin/tk`; on Windows use `.timekeeper/app/bin/tk.exe`. Fall back to `tk` on `PATH` only when no local CLI is present.
 4. Run `<cli> doctor` against the local TimeKeeper service.
 5. If health fails, follow the failure-only recovery procedure in `harness/SKILL.md`, then run `doctor` once more. Never start a second server or database.
 6. Run `<cli> list`, inspect the relevant `<cli> tree <project-id>` and `<cli> summary <project-id>`, and resume existing work when present.

@@ -22,18 +22,20 @@ The server binds to loopback by default. It has no network authentication yet, s
 
 ## Identity metadata
 
-Each caller supplies stable identity when it has one. Omit unknown values; Time Keeper must not invent a model or agent identity.
+Direct HTTP clients should supply a stable identity when they have one and omit unknown values; do not invent a model or runtime identity. Identity-aware `tk` builds can resolve a FASE identity automatically and attach it for attribution. FASE IDs and `X-Agent-ID` headers are not authentication.
 
 ```text
-X-Agent-ID: agent:worker-7
+X-Agent-ID: stable caller identity
+X-Agent-Session-ID: stable runtime session, when available
 X-Agent-Name: optional human-readable name
 X-Agent-Type: agent | human | system
+X-Agent-Runtime: reported runtime name
 X-Swarm-ID: optional coordination group
 X-LLM-Provider: supplied only when known
 X-LLM-Model: supplied only when known
 ```
 
-`X-Agent-ID` should survive a process restart when the host framework can provide a durable worker identity. A random per-request ID destroys audit continuity. Tiny paper cut, gigantic forensic headache later.
+`X-Agent-ID` should survive a process restart when the host framework can provide a durable worker identity. A random per-request ID destroys audit continuity. State-aware activity also needs a stable session ID. These headers are attribution metadata, not authentication or authorization. See [FASE identity](docs/fase-identity-design.md) for the current CLI identity behavior and deployment status.
 
 ## Current workflow
 
@@ -60,7 +62,7 @@ category, task, and sprint IDs for ordinary work.
 The intended harness-level contract is:
 
 ```bash
-tk log --project Suck-It-Up "Fix crash diagnostics upload"
+tk log --project Example-Project "Fix crash diagnostics upload"
 ```
 
 When a project is already bound to the current agent session, the project flag
@@ -84,6 +86,15 @@ in the nearest-looking Category. The raw `curl`/HTTP workflow remains the
 fallback for advanced clients; this command is the ergonomic front door. This
 is a target contract until the CLI and Jev adapter are implemented and tested.
 
+The implementation-facing Jev routing protocol is documented in
+[`docs/jev-category-sprint-decision-protocol.md`](docs/jev-category-sprint-decision-protocol.md).
+The retrieval-oriented domain knowledge is split into
+[`docs/Jev-kb/00-index.md`](docs/Jev-kb/00-index.md) and its linked Project,
+Category, Task, Sprint, queue, policy, example, output, and maintenance files.
+It defines the two-pass Category then Task/Sprint decision flow, candidate
+bounds, ShadowBox secret boundary, confidence gates, abstention, idempotency,
+readback, calibration, and the distinction between the existing planning-draft
+feature and Jev routing.
 
 Use the Project Board for short-lived context that deserves long-term survival: reasoning checkpoints, discoveries, decisions, questions, answers, lessons, and source links. Bodies are capped at 1000 Unicode characters. Store only the compact `ref` (for example `M-42`) in the active context, then retrieve the post or complete thread when needed.
 
@@ -123,6 +134,18 @@ curl -sS -X POST http://127.0.0.1:1618/api/v1/projects/P-10053/usage-sessions/se
 ```
 
 Counters are cumulative; Time Keeper returns the newly observed delta and treats a repeated session/turn as an idempotent no-op. Send a new session ID if the provider resets its counters. Redact credentials, prompt bodies, private transcript paths, and tool output before sending. Only sessions that submit snapshots are covered; unknown pricing is not guessed. Read a Project's aggregate with `GET /api/v1/projects/{projectID}/usage-summary`.
+
+For a harness that produces a bounded file rather than making HTTP directly, use the CLI ingestion path:
+
+```json
+{"redaction_status":"verified","source":"harness","coverage":"partial_session","snapshot":{"session_id":"session-42","agent_id":"agent:worker-7","model":"gpt-5","turn_seq":7,"input_tokens":12000,"output_tokens":1800,"messages":14}}
+```
+
+```bash
+tk usage ingest P-10053 ./usage-envelope.json
+```
+
+The envelope is capped at 64 KiB, rejects unknown fields and sensitive fields, and requires `redaction_status=verified`. `source` and `coverage` are persisted on the session and cannot change mid-session. Supported coverage values are `explicit_snapshot`, `partial_session`, `complete_session`, and `unknown`; these describe what was measured, not a claim that unobserved turns were zero.
 
 Example portable HTTP calls:
 

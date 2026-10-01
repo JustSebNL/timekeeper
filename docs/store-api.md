@@ -4,16 +4,15 @@ The protocol between TimeKeeper Core and TimeKeeper-Store. Publishing
 this document does not publish the Store: the server implementation
 lives in the private `TimeKeeper-Store` repository.
 
-Base URL in production is the Cloudflare Worker gateway. The origin is
-never contacted directly.
-
-```
-https://api.timekeeper.example/v1
-```
+The checked-in client uses the reserved placeholder host
+`api.timekeeper.example`; it is not a live production endpoint. A deployment
+must supply its actual Store gateway URL through `TIMEKEEPER_STORE_URL`. The
+production gateway should be the only public entry point; its origin is not
+contacted directly.
 
 Local development may point `TIMEKEEPER_STORE_URL` at a loopback Store
 (for example `http://127.0.0.1:8787`). Non-HTTPS is refused except for
-loopback.
+loopback. Core project tracking does not need a Store URL.
 
 ## Client rules
 
@@ -98,6 +97,9 @@ The client requests. The server decides. See [auth-protocol.md](auth-protocol.md
 
 ## Installing what you bought
 
-A Store package becomes a plugin through the registry seam; core is not
-edited to install one. See [plugin-architecture.md](plugin-architecture.md)
-and [package-format.md](package-format.md).
+A Store package becomes an installed, verified, staged plugin without editing
+Core. The supported runtime path is a separate plugin box connected through the
+stable `timekeeper-bridge/v1` contract; Core does not import Store package code.
+See [store-developer-guide.md](store-developer-guide.md),
+[plugin-architecture.md](plugin-architecture.md), and
+[package-format.md](package-format.md).

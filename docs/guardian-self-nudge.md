@@ -98,7 +98,7 @@ Starts the self-nudge loop:
 
 ```bash
 # Start the self-nudge loop (registers agent + starts receiver)
-tk guardian self-nudge --agent-id xatia --lease 30m
+tk guardian self-nudge --agent-id example-agent --lease 30m
 
 # The agent will now:
 # 1. Register with the guardian
@@ -107,7 +107,37 @@ tk guardian self-nudge --agent-id xatia --lease 30m
 # 4. On Ctrl+C: unregister and exit
 ```
 
+## Hermes Agent wake bridge
+
+The full operator and agent usage guide is [`anti-slack-engine.md`](anti-slack-engine.md). It documents the friendly Anti Slack Engine name, the Pulse Guardian protocol, cross-platform wake CLI, custom adapter contract, callback acceptance header, lease discipline, ntfy/poll fallback, and recovery troubleshooting.
+
+The Pulse Guardian callback is not the same thing as a running Hermes
+conversation. A registered callback with no listener is only a dead address,
+and a callback that acknowledges a failed work hook loses the recovery signal.
+The default work hook therefore fails closed and never claims or completes a
+Sprint by itself.
+
+For Hermes, install a stable monitor under `~/.hermes/scripts/` and attach it
+to a scheduled agent job. The monitor reads `tk pulse`, removes changing
+runtime durations, and emits only the stable overdue Sprint set. Hermes runs
+the reminder prompt only when that set changes:
+
+```bash
+cp scripts/guardian/timekeeper-pulse-monitor.sh ~/.hermes/scripts/
+hermes cron create --name 'TimeKeeper idle recovery' --deliver local \
+  --monitor-script timekeeper-pulse-monitor.sh \
+  --workdir /path/to/TimeKeeper --skill timekeeper-development 'every 5m' \
+  'You are idling. Continue the remaining TimeKeeper work. Inspect the real repository state, use TimeKeeper as the authority, and do not complete a Sprint without actual work and verification.'
+```
+
+The reminder is intentionally explicit: `You're idling — please continue
+remaining work.` This is the activation boundary. TimeKeeper detects and
+reports attention; Hermes supplies the process that can start a new agent run.
+`--deliver local` keeps the wake internal. Use a gateway delivery target only
+when an external chat notification is wanted.
+
 ## Future Work
+
 
 - Work cycle as a pluggable script (not hardcoded)
 - Multiple work cycles (build, test, review)

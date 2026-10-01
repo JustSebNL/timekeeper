@@ -4,23 +4,34 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+
+	"github.com/JustSebNL/timekeeper/internal/api"
+	"github.com/JustSebNL/timekeeper/internal/store"
 )
 
 func TestClientDispatchUsesAPIWithoutServerStartup(t *testing.T) {
 	calls := 0
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "dispatch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	handler := api.New(s)
+	t.Setenv("TIMEKEEPER_SESSION_ID", "dispatch-test")
+	t.Setenv("TIMEKEEPER_AGENT_RUNTIME", "test")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if r.URL.Path != "/api/v1/projects" {
+		if r.URL.Path != "/api/v1/projects" && r.URL.Path != "/api/v1/agent-identities/resolve" {
 			t.Errorf("path=%s", r.URL.Path)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"items":[]}`))
+		handler.ServeHTTP(w, r)
 	}))
-	defer api.Close()
+	defer server.Close()
 	var out, errOut bytes.Buffer
-	handled, code := dispatchClient([]string{"list"}, api.URL, &out, &errOut)
-	if !handled || code != 0 || calls != 1 {
+	handled, code := dispatchClient([]string{"list"}, server.URL, &out, &errOut)
+	if !handled || code != 0 || calls != 2 {
 		t.Fatalf("handled=%v code=%d calls=%d error=%s", handled, code, calls, errOut.String())
 	}
 }

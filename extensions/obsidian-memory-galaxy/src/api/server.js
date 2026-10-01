@@ -83,7 +83,7 @@ class GalaxyApiServer {
       }
       if (url.pathname === '/api/v1/galaxy/items' && request.method === 'POST') {
         const body = await this.body(request);
-        const candidate = this.strictObject(body, ['title', 'content', 'type', 'visibility', 'promotion_key', 'origin']);
+        const candidate = this.strictObject(body, ['title', 'content', 'type', 'visibility', 'promotion_key', 'origin', 'topics', 'tags']);
         const result = await this.repository.create(candidate, candidate.promotion_key);
         return this.json(response, result.duplicate ? 200 : 201, { ...result.item, duplicate: result.duplicate });
       }

@@ -128,7 +128,13 @@ func captureFileSnapshot(service FileHistoryService) http.HandlerFunc {
 			writeFileHistoryError(w, err)
 			return
 		}
-		tracked, version, err := service.Capture(r.Context(), history.CaptureInput{ProjectID: file.ProjectID, RelativePath: file.CurrentPath, FileType: file.FileType, TrackingPolicy: file.TrackingPolicy, AgentID: body.AgentID, SessionID: body.SessionID, Model: body.Model, TaskID: body.TaskID, SubtaskID: body.SubtaskID, SprintID: body.SprintID, CheckpointID: body.CheckpointID, ChangeSummary: body.ChangeSummary, SnapshotType: body.Phase})
+		summary := strings.TrimSpace(body.ChangeSummary)
+		if summary == "" {
+			summary = body.Phase
+		} else {
+			summary = body.Phase + ": " + summary
+		}
+		tracked, version, err := service.Capture(r.Context(), history.CaptureInput{ProjectID: file.ProjectID, RelativePath: file.CurrentPath, FileType: file.FileType, TrackingPolicy: file.TrackingPolicy, AgentID: body.AgentID, SessionID: body.SessionID, Model: body.Model, TaskID: body.TaskID, SubtaskID: body.SubtaskID, SprintID: body.SprintID, CheckpointID: body.CheckpointID, ChangeSummary: summary, SnapshotType: "full"})
 		if err != nil {
 			writeFileHistoryError(w, err)
 			return

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/JustSebNL/timekeeper/internal/model"
+	"github.com/JustSebNL/timekeeper/internal/pricing"
 	"github.com/JustSebNL/timekeeper/internal/store"
 )
 
@@ -24,7 +25,7 @@ func TestUsageSnapshotsAreIdempotentAndReturnCumulativeDelta(t *testing.T) {
 	}
 
 	first, err := database.RecordUsageSnapshot(ctx, project.ProjectID, model.UsageSnapshotInput{
-		SessionID: "session-1", AgentID: "codex", Model: "gpt-5", TurnSeq: 1,
+		SessionID: "session-1", AgentID: "codex", Model: "gpt-5", Source: "harness", Coverage: "partial_session", TurnSeq: 1,
 		InputTokens: 1000, OutputTokens: 200, CacheReadTokens: 50, Messages: 2,
 		CapturedAt: time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC),
 	})
@@ -34,9 +35,12 @@ func TestUsageSnapshotsAreIdempotentAndReturnCumulativeDelta(t *testing.T) {
 	if first.Delta.InputTokens != 1000 || first.Delta.OutputTokens != 200 || first.Duplicate {
 		t.Fatalf("first result = %#v", first)
 	}
+	if first.Session.Source != "harness" || first.Session.Coverage != "partial_session" {
+		t.Fatalf("first metadata = %#v", first.Session)
+	}
 
 	second, err := database.RecordUsageSnapshot(ctx, project.ProjectID, model.UsageSnapshotInput{
-		SessionID: "session-1", AgentID: "codex", Model: "gpt-5", TurnSeq: 2,
+		SessionID: "session-1", AgentID: "codex", Model: "gpt-5", Source: "harness", Coverage: "partial_session", TurnSeq: 2,
 		InputTokens: 1600, OutputTokens: 350, CacheReadTokens: 100, Messages: 3,
 		CapturedAt: time.Date(2026, 9, 2, 10, 5, 0, 0, time.UTC),
 	})
@@ -48,7 +52,7 @@ func TestUsageSnapshotsAreIdempotentAndReturnCumulativeDelta(t *testing.T) {
 	}
 
 	duplicate, err := database.RecordUsageSnapshot(ctx, project.ProjectID, model.UsageSnapshotInput{
-		SessionID: "session-1", AgentID: "codex", Model: "gpt-5", TurnSeq: 2,
+		SessionID: "session-1", AgentID: "codex", Model: "gpt-5", Source: "harness", Coverage: "partial_session", TurnSeq: 2,
 		InputTokens: 1600, OutputTokens: 350, CacheReadTokens: 100, Messages: 3,
 		CapturedAt: time.Date(2026, 9, 2, 10, 5, 0, 0, time.UTC),
 	})
@@ -68,6 +72,49 @@ func TestUsageSnapshotsAreIdempotentAndReturnCumulativeDelta(t *testing.T) {
 	}
 	if len(summary.Days) == 0 || summary.Days[0].InputTokens != 1600 {
 		t.Fatalf("usage days = %#v", summary.Days)
+	}
+}
+
+func TestUsageSummaryReportsTrustedAndUnknownPricingSeparately(t *testing.T) {
+	catalog, err := pricing.NewCatalog("operator-file", "USD", map[string]pricing.Rate{
+		"priced-model": {InputPerMillionMicros: 1_000_000, OutputPerMillionMicros: 2_000_000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := store.OpenWithPricing(t.TempDir()+"/usage.db", catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	ctx := context.Background()
+	project, err := database.CreateProject(ctx, model.CreateProjectInput{Name: "Pricing project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pricedResult, err := database.RecordUsageSnapshot(ctx, project.ProjectID, model.UsageSnapshotInput{SessionID: "priced", AgentID: "agent", Model: "priced-model", TurnSeq: 1, InputTokens: 3, OutputTokens: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pricedResult.Session.Cost.Status != "priced" || pricedResult.Session.Cost.Currency != "USD" || pricedResult.Session.Cost.AmountMicros != 7 {
+		t.Fatalf("priced snapshot result = %#v", pricedResult.Session.Cost)
+	}
+	summary, err := database.ProjectUsageSummary(ctx, project.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Totals.Cost.Status != "priced" || summary.Totals.Cost.Currency != "USD" || summary.Totals.Cost.AmountMicros != 7 {
+		t.Fatalf("priced summary = %#v", summary.Totals.Cost)
+	}
+	if _, err := database.RecordUsageSnapshot(ctx, project.ProjectID, model.UsageSnapshotInput{SessionID: "unknown", AgentID: "agent", Model: "unknown-model", TurnSeq: 1, InputTokens: 3}); err != nil {
+		t.Fatal(err)
+	}
+	summary, err = database.ProjectUsageSummary(ctx, project.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Totals.Cost.Status != "unpriced" || summary.Totals.Cost.Reason == "" || summary.Sessions[0].Cost.Status == "" {
+		t.Fatalf("mixed summary = %#v", summary)
 	}
 }
 

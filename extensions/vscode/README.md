@@ -50,13 +50,12 @@ npm run lint
 npm test
 ```
 
-## Deliberately not present yet
+## Roadmap and security boundaries
 
-- code references / create Task from editor selection
-- Git integration
-- Project Authority prompt, Harness, Skill, and code-context UI
-- remote Time Keeper server support
-- direct SQLite access
-- automatic server startup or background timers
+These editor/workflow capabilities are not in the current MVP and are tracked as follow-up work in the TimeKeeper project backlog (T-10470, T-10471, T-10472):
 
-Those features must preserve the local API authority and explicit user-consent boundaries.
+- code references and create-Task-from-selection;
+- Git integration;
+- Project Authority, Harness/Skill, and consented code-context UI.
+
+The three follow-up items above are not available in the current companion. The following are deliberately outside the current security model, not promised features: remote TimeKeeper servers, direct SQLite access, and automatic server startup/background timers. Any reconsideration would need a separate security and consent design. All future extension work must preserve the local API as authority and keep workspace access or context submission explicit.

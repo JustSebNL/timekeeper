@@ -80,7 +80,6 @@ func (s *Store) RecordPulseEvent(ctx context.Context, nudgeID int64, eventType P
 // This is the poll-based fallback: the agent calls this to pick up nudges that
 // were stored while the HTTP receiver was unavailable.
 func (s *Store) ListAgentPulseEvents(ctx context.Context, agentID string) ([]PulseEvent, error) {
-	agentID = agentID
 	if agentID == "" {
 		return nil, errors.New("agent_id is required")
 	}

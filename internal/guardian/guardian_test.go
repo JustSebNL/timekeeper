@@ -37,6 +37,9 @@ func TestTickDeliversExpiredAgentNudgeToExplicitLoopbackGuardian(t *testing.T) {
 			http.Error(w, "invalid signal", http.StatusBadRequest)
 			return
 		}
+		if signal.Reminder != "You're idling — please continue remaining work." {
+			t.Errorf("callback reminder = %q", signal.Reminder)
+		}
 		received <- signal.Nudge
 		w.Header().Set("X-Timekeeper-Pulse-Accepted", "v1")
 		w.WriteHeader(http.StatusNoContent)

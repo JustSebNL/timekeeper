@@ -32,6 +32,7 @@
         <a class="nav-item" href="#pulse-card"><span class="nav-icon">◒</span><span>Pulse</span><span class="nav-count attention-count" id="nav-attention-count">0</span></a>
         <a class="nav-item" href="#guardian-card"><span class="nav-icon">◈</span><span>Guardian</span></a>
         <a class="nav-item" href="#usage-card"><span class="nav-icon">▥</span><span>Usage</span></a>
+        <a class="nav-item" href="#admin-card" id="admin-nav" hidden><span class="nav-icon">⚿</span><span>Administrator</span><span class="nav-count" id="nav-admin-count">0</span></a>
       </nav>
 
       <div class="nav-label nav-label-spaced">Manage</div>
@@ -114,9 +115,14 @@
             <div class="usage-stat"><span>Sessions</span><strong id="usage-sessions">—</strong></div>
             <div class="usage-stat"><span>Input</span><strong id="usage-input">—</strong></div>
             <div class="usage-stat"><span>Output</span><strong id="usage-output">—</strong></div>
+            <div class="usage-stat"><span>Cost</span><strong id="usage-cost">—</strong></div>
           </div>
           <div class="usage-breakdown" aria-label="Token type breakdown"><div class="usage-breakdown-bar" id="usage-breakdown-bar"></div><div class="usage-legend" id="usage-legend"></div></div>
           <div class="usage-timeline"><div class="usage-subheading"><span>Usage over time</span><small>Daily recorded deltas</small></div><div id="usage-timeline" class="usage-days"></div></div>
+          <div class="usage-owner-grid">
+            <div><div class="usage-subheading"><span>By agent</span><small>Latest cumulative totals</small></div><div class="usage-owner-list" id="usage-agents"></div></div>
+            <div><div class="usage-subheading"><span>By model</span><small>Latest cumulative totals</small></div><div class="usage-owner-list" id="usage-models"></div></div>
+          </div>
           <div class="usage-projects" id="usage-projects"><div class="empty">Loading token usage…</div></div>
           <div class="usage-sessions"><div class="usage-subheading"><span>Top sessions</span><small>Latest cumulative totals</small></div><div id="usage-session-list" class="usage-session-list"></div></div>
         </section>
@@ -125,6 +131,24 @@
           <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Safety layer</p><h2>Pulse Guardian</h2></div><span class="guardian-shield" aria-hidden="true">◇</span></div>
           <p class="panel-description">Independent local recovery leases and callbacks.</p>
           <div id="guardian" class="empty">Checking Guardian…</div>
+        </section>
+
+        <section class="panel panel-admin" id="admin-card" aria-live="polite" hidden>
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Access control</p><h2>Administrator</h2></div><span class="panel-link" id="admin-identity">Resolving identity…</span></div>
+          <p class="panel-description">Manage enabled accounts, security groups, and the information each group can influence. The API enforces these decisions; this panel is not the security boundary.</p>
+          <div id="admin-feedback" class="inline-feedback" role="status"></div>
+          <div class="admin-columns">
+            <div class="admin-block"><div class="admin-block-heading"><h3>User accounts</h3><span id="admin-user-count" class="badge-soft">0</span></div><div id="admin-users" class="admin-list empty">Loading accounts…</div></div>
+            <div class="admin-block"><div class="admin-block-heading"><h3>Security groups</h3><span id="admin-group-count" class="badge-soft">0</span></div><div id="admin-groups" class="admin-list empty">Loading groups…</div></div>
+          </div>
+          <form id="admin-group-form" class="admin-group-form" hidden>
+            <h3>Create security group</h3>
+            <div class="admin-form-grid"><input id="admin-group-slug" required maxlength="64" pattern="[a-z][a-z0-9_-]{1,63}" placeholder="group-slug" aria-label="Group slug"><input id="admin-group-name" required maxlength="128" placeholder="Group name" aria-label="Group name"><input id="admin-group-description" maxlength="2000" placeholder="Description" aria-label="Group description"></div>
+            <div id="admin-permissions" class="admin-permissions"></div>
+            <button class="btn btn-primary" type="submit">Create group</button>
+          </form>
+          <div class="admin-note">Built-in groups are protected. Account changes and denied access are recorded in the administrator audit trail.</div>
+          <div class="admin-audit-block"><div class="admin-block-heading"><h3>Recent administrator audit</h3><span class="badge-soft">last 20</span></div><div id="admin-audit" class="admin-list empty">Loading audit trail…</div></div>
         </section>
 
         <section class="panel panel-focus" id="focus-card" aria-live="polite">
@@ -170,7 +194,7 @@
 
         <section class="panel panel-file-history" id="file-history-card" aria-live="polite">
           <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Tracked files</p><h2>File history &amp; editor</h2></div><span class="panel-link" id="file-history-status">History disabled</span></div>
-          <p class="panel-description">Open a tracked file, edit it safely, compare versions, or restore an earlier version without erasing history.</p>
+          <p class="panel-description">Edits are saved as separate history steps after a short pause. Compare or restore any saved step; restoring adds a new version without erasing later work.</p>
           <form id="file-history-load-form" class="file-history-toolbar">
             <input id="file-history-id" class="form-control" required placeholder="File ID, e.g. F-10001" aria-label="Tracked file ID">
             <button class="btn btn-primary" type="submit">Load file</button>
@@ -181,7 +205,7 @@
             <textarea id="file-editor-fallback" class="file-editor-fallback" hidden aria-label="Code editor fallback"></textarea>
           </div>
           <div class="file-history-actions">
-            <button id="file-history-save" class="btn btn-primary" type="button" disabled>Save new version</button>
+            <button id="file-history-save" class="btn btn-primary" type="button" disabled>Save step now</button>
             <select id="file-history-version" aria-label="Restore version" disabled></select>
             <button id="file-history-restore" class="btn btn-outline-secondary" type="button" disabled>Restore selected</button>
             <select id="file-history-compare-from" aria-label="Compare from version" disabled></select>

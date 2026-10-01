@@ -1,283 +1,135 @@
-# Friendly Local URLs: `timekeeper.local` and `api.timekeeper.local`
+# Friendly local URLs
 
-Status: implemented.
+TimeKeeper has a canonical loopback address and optional friendlier hostnames. These addresses are local conveniences; they do not make TimeKeeper a network service.
 
-All code paths landed. The friendly URLs work end-to-end on hosts
-where the proxy can bind port 80. On hosts where port 80 is
-already taken (Windows in particular), the proxy logs a warning,
-the canonical 1618 listener keeps working, and `tk doctor`
-reports which endpoints are reachable.
+## Addresses
 
-Verified live:
+- `http://127.0.0.1:1618/` — canonical dashboard and API listener; use this when diagnosing a connection.
+- `http://timekeeper.local/` — friendly dashboard hostname when the hosts-file entry and proxy route are available.
+- `http://api.timekeeper.local/` — friendly API hostname when the same local setup is available.
 
-- `timekeeper.exe -proxy-addr 127.0.0.1:80` starts the proxy
-  listener alongside the canonical 1618 listener
-- `tk open --ip` opens the dashboard in the default browser
-- `tk doctor` probes all three endpoints and reports accurately
-- `tk hosts status` reads the OS hosts file
-- `tk hosts add` (when run with elevation) writes the entries
-  idempotently
-- `tk uninstall` strips the hosts entries
-- `install.sh` calls `tk hosts add` after install
-- `service-install.bat` and `service-install.sh` (both copies)
-  pass `-proxy-addr 127.0.0.1:80` to NSSM / systemd
-- README has a "Friendly URLs" section explaining the URLs, the
-  proxy, the port-80 conflict, and the `TIMEKEEPER_PROXY_ADDR`
-  override
+Both friendly hostnames route to the same TimeKeeper handler. The dashboard is served at `/`; API routes are under `/api/`. The running service advertises the URLs it can currently use through `GET /api/v1/connection-info`; `tk open` uses that information when it can reach the service.
 
-## Goal
+## What has to work
 
-TimeKeeper is served at two human-friendly hostnames, no port in the URL:
+The friendly names depend on two local pieces:
 
-- `http://timekeeper.local/` — the dashboard (browser)
-- `http://api.timekeeper.local/` — the API (tools, agents, scripts)
+1. The operating-system hosts file maps both names to `127.0.0.1`.
+2. TimeKeeper's optional loopback proxy can bind its configured port (port 80 by default).
 
-The IP `127.0.0.1:1618` stays exposed as a fallback address for
-diagnostics and for the small number of cases where the loopback
-address is genuinely the right answer (containers, WSL-to-Windows
-interop where `*.local` does not resolve, scripted health checks
-that should not depend on the hosts file). It is no longer the
-headline URL.
+The installer attempts to add the hosts-file entries. That step may require Administrator/root permission. `tk hosts status` checks the entries; `tk hosts add` and `tk hosts remove` manage them. The server and proxy bind to loopback; do not expose either listener on a LAN or public interface.
 
-## Mechanism
+## If the friendly URL does not open
 
-Three pieces, all shipped by default, all owned by the project.
+1. Check the canonical address first: browse to `http://127.0.0.1:1618/` or run `tk doctor`.
+2. Check the managed host entries with `tk hosts status`. If they are missing, run `tk hosts add` from an elevated shell.
+3. Check the proxy results from `tk doctor`. Port 80 may already be in use, especially on Windows. Do not stop or reconfigure another service unless you know who owns it.
+4. Use `tk open --ip` while diagnosing. The canonical loopback address does not depend on the friendly host entries.
 
-### 1. Hosts entries
+If the proxy is configured on a non-default port, use the URL reported by `tk doctor` or `/api/v1/connection-info`; it may include `:<port>`. On Linux/WSL, the source installer supports `--with-port=127.0.0.1:<port>` and `--without-proxy`. These options are platform-specific; see [Installation](install.md) before changing service configuration.
 
-`install.sh` writes two lines to the OS hosts file as part of the
-normal install:
+A failed friendly-URL check does not by itself mean the TimeKeeper API or dashboard is unavailable. Confirm the canonical health result before changing any system service.
 
-- Windows: `C:\Windows\System32\drivers\etc\hosts`
-- Linux / WSL: `/etc/hosts`
-- macOS: `/etc/hosts`
+## Opening the dashboard
 
+```text
+tk open --ip   # open the canonical loopback address
+tk open        # open the advertised friendly dashboard URL, when available
+tk open --api  # open the advertised API hostname
 ```
+
+`tk open` checks `/health` before launching the browser and does not start or restart the service. It uses `rundll32` on Windows, `open` on macOS, and `xdg-open` on Linux; a headless host without a browser launcher should use the URL directly. `tk doctor` is the first check when the service or URL is unavailable.
+
+## Operator details and verification
+
+The short troubleshooting path is `tk doctor`, `tk hosts status`, and `tk open --ip`. The details below are for users who need to understand how the local aliases are managed or diagnose a port conflict.
+
+### Hosts-file entries
+
+The CLI manages a marked block in the operating-system hosts file:
+
+| Platform | Hosts file |
+| --- | --- |
+| Windows | `%SystemRoot%\System32\drivers\etc\hosts` |
+| Linux / WSL / macOS | `/etc/hosts` |
+
+The current block maps `timekeeper.local`, `api.timekeeper.local`, and `guardian.local` to `127.0.0.1`. The dashboard and API use the first two. `tk hosts add` is safe to rerun; `tk hosts status` reports missing managed mappings; `tk hosts remove` removes only TimeKeeper's marked block and keeps unrelated lines. Editing the operating-system hosts file may require Administrator/root permission.
+
+The installer attempts this setup. The Linux/WSL shell installer reports a failed write but can still leave a healthy canonical listener. The Windows service installer runs elevated and treats a failed host setup as an install failure. In either case, check the actual result with `tk hosts status` rather than assuming the names were added.
+
+### Listener and generated URLs
+
+The canonical server handles both the dashboard and versioned API on loopback port 1618 by default. The optional friendly listener is also loopback-only and uses port 80 by default; it forwards to the same handler. The host header does not select a separate application.
+
+The running server reports its current friendly URLs at `GET /api/v1/connection-info`. Those URLs may include a port when the configured proxy is not using port 80 or when the server advertises the canonical listener as the fallback. `tk doctor` checks the configured API endpoint and the URLs returned by the running service. `tk open` uses those URLs when it can read the connection information; `tk open --ip` uses the configured canonical base URL.
+
+A browser's default HTTP port is 80, so `http://timekeeper.local/` works only if the host mapping and proxy are both ready. When a different port is advertised, use the complete URL reported by `tk doctor` or `/api/v1/connection-info`, for example `http://timekeeper.local:8080/`.
+
+### Port 80 conflicts and supported choices
+
+On native Linux, the shell service manager uses `ss` or `netstat` to check whether the configured loopback port is already listening. If port 80 is occupied and the install is interactive, it offers these choices:
+
+1. Free port 80 and rerun the install.
+2. Choose a different port; the friendly URL then includes `:<port>`.
+3. Disable the proxy and use only the canonical address.
+
+The shell installer persists `--with-port=127.0.0.1:<port>` and `--without-proxy` in `.timekeeper/app/INSTALLATION.env`; subsequent Linux service installs honor that choice. An explicit `TIMEKEEPER_PROXY_ADDR` takes precedence during service setup.
+
+The probe returns unknown under WSL because Linux cannot see Windows-side listeners. The native Windows PowerShell installer also relies on the server's runtime bind check instead of this Linux prompt. If the proxy cannot bind, the server reports the issue and keeps the canonical listener available. Do not stop IIS, HTTP.sys, or another service unless you know who owns it.
+
+### Checks you can run
+
+With the service running, the canonical health endpoint should return `{"status":"ok"}`:
+
+```bash
+curl -fsS http://127.0.0.1:1618/health
+tk doctor
+tk hosts status
+```
+
+If the host mapping and default proxy are working, these local checks should also succeed:
+
+```bash
+curl -fsS http://timekeeper.local/health
+curl -fsS http://api.timekeeper.local/health
+```
+
+For a custom port, use the exact host and port reported by TimeKeeper. A friendly-URL failure is not proof that the API is down; verify `http://127.0.0.1:1618/health` before changing services.
+
+### Scope and security
+
+Friendly URLs do not add authentication, TLS, or remote access. The canonical listener and optional proxy must remain on numeric loopback addresses. Both hostnames reach the same handler, so `/` serves the dashboard and `/api/...` serves the API regardless of which friendly hostname was used. There is no separate API process or host-based access policy.
+
+Earlier design notes described port 80 and host-file setup as unconditional, proposed a macOS launchd service, and said uninstall removed installed binaries. Those are not current operational instructions: host setup can fail, the proxy can be changed or disabled on supported installer paths, this repository has no automated launchd installer, and uninstall leaves `.timekeeper/` (including binaries and local data) in place. See the current [install guide](install.md) for platform-specific behavior.
+
+## Managed host-block details and maintainer checks
+
+### Managed hosts block
+
+`tk hosts add` writes a sentinel-delimited TimeKeeper block so a later `remove` can target only the entries owned by TimeKeeper:
+
+```text
+# >>> timekeeper begin
 127.0.0.1 timekeeper.local
 127.0.0.1 api.timekeeper.local
+127.0.0.1 guardian.local
+# <<< timekeeper end
 ```
 
-Properties:
+`tk hosts status` checks all three managed names. The dashboard and API links in this guide are `timekeeper.local` and `api.timekeeper.local`; the helper also manages `guardian.local`. If the installer could not write the file, run `tk hosts add` from an elevated shell and check the result rather than retrying service installation.
 
-- **Always written on install.** No flag, no opt-in. Every install
-  gets the friendly URLs.
-- **Idempotent.** Re-running `install.sh` is safe; each entry is
-  checked for before being added.
-- **Removed on uninstall.** `tk uninstall` strips both lines. We
-  own the feature, we own its lifecycle.
-- **mDNS is not a concern.** Hosts file is consulted before mDNS
-  on every platform we target. `timekeeper.local` in the hosts
-  file wins.
+### Maintainer smoke checklist
 
-### 2. Reverse proxy: `127.0.0.1:80 → 127.0.0.1:1618`
+For a local change to URL or proxy behavior, verify the complete user path rather than only checking that a listener bound:
 
-TimeKeeper binds two listeners, both on loopback:
+1. `tk doctor` reports the canonical `/health` result and any advertised friendly URLs.
+2. `tk hosts status` reports each managed mapping; rerunning `tk hosts add` does not duplicate the marked block.
+3. `tk open --ip` opens the canonical dashboard; `tk open` opens the advertised friendly URL when its mapping and listener work.
+4. Both the canonical URL and working friendly URLs return `{"status":"ok"}` from `/health`.
+5. A busy/unavailable proxy does not make the canonical listener fail, and configured URLs include their port when needed.
+6. A remote or wildcard listener address is rejected; the dashboard and API remain loopback-only.
+7. `tk uninstall` removes the service and managed host block where permissions allow, but leaves the local database and installed app directory in place.
 
-- `127.0.0.1:1618` — the API + dashboard, canonical port. The
-  server's `mux` already routes `/` to the dashboard and
-  `/api/...` to the API by path. The `Host` header is not used to
-  gate routes; both `timekeeper.local` and `api.timekeeper.local`
-  reach the same handler.
-- `127.0.0.1:80` — the friendly-URL listener, a reverse proxy to
-  the same handler. The browser hits this one.
+## Removing friendly URLs
 
-Implementation:
-
-- `timekeeper.exe` always starts the proxy. No flag to disable.
-  Default proxy address: `127.0.0.1:80`.
-- Override via env var `TIMEKEEPER_PROXY_ADDR` for users who
-  genuinely need a different bind (rare; documented).
-- ~20 lines of Go in `cmd/server/main.go` using
-  `httputil.NewSingleHostReverseProxy`.
-- Loopback-only check applied to the proxy address (same
-  `validateServerConfig` pattern).
-
-Service install:
-
-- Windows NSSM service runs as SYSTEM — binding 80 is fine.
-  `AppParameters` always includes `-proxy-addr 127.0.0.1:80`.
-- Linux systemd user service binds 80 in the user namespace if
-  available; the install log warns (and falls back to
-  `127.0.0.1:8080` documented in README) if the user is
-  unprivileged and cannot bind 80. The NSSM / root case is the
-  common one.
-- macOS: launchd plist uses the same flag.
-
-### 3. Startup banner
-
-The server prints a deliberate banner on start:
-
-```
-TimeKeeper is at:
-  - http://timekeeper.local/         (dashboard)
-  - http://api.timekeeper.local/     (API)
-Canonical address (loopback, tools, diagnostics): http://127.0.0.1:1618/
-```
-
-Structured log (`internal/logging`) emits all three URLs in the
-`timekeeper starting` and `timekeeper listening` events.
-
-## CLI
-
-### `tk open`
-
-Opens the default browser. Default URL: `http://timekeeper.local/`.
-
-Cross-platform:
-
-- Windows: `rundll32 url.dll,FileProtocolHandler <url>`
-- macOS: `open <url>`
-- Linux: `xdg-open <url>`
-
-`tk open --api` opens `http://api.timekeeper.local/` instead.
-`tk open --ip` opens the canonical `http://127.0.0.1:1618/`.
-
-`tk open` fails loudly (non-zero exit, "no browser available")
-when no browser is registered. It never auto-starts the service
-as a side effect.
-
-### `tk uninstall`
-
-Strips both hosts entries, stops the OS service, removes the
-installed binaries from `.timekeeper/app/`. This is the only
-place the hosts entries are removed; we wrote them, we own
-them.
-
-### `tk doctor`
-
-Existing command, updated to verify:
-
-- The two hosts entries resolve to `127.0.0.1`
-- `timekeeper.local:80` and `api.timekeeper.local:80` both
-  respond
-- `127.0.0.1:1618` responds
-- The OS service is running
-
-## Real-world constraint: port 80 may already be in use
-
-Some hosts (Windows in particular) reserve port 80 for system
-services — HTTP.sys / IIS / Windows activation. PID 4 (`System`)
-often holds `0.0.0.0:80` even when no application is visibly
-using it. On those hosts, TimeKeeper's default `-proxy-addr
-127.0.0.1:80` cannot bind.
-
-The proxy startup handles this as a warning, not a fatal error:
-
-```
-[WARN] proxy listener could not bind 127.0.0.1:80: ...
-       TimeKeeper canonical address is still http://127.0.0.1:1618/
-       Set TIMEKEEPER_PROXY_ADDR to a free port, or free port 127.0.0.1:80, then restart.
-```
-
-The canonical 1618 listener keeps working. `tk doctor` reports
-the proxy as failed. The user has three options:
-
-1. **Free port 80.** Stop the service that holds it (often a
-   Windows feature you can disable in "Turn Windows features on
-   or off" → uncheck "Internet Information Services"). Not
-   always possible on production / shared hosts.
-2. **Pick a different port.** Set
-   `TIMEKEEPER_PROXY_ADDR=127.0.0.1:8080` (or any unprivileged
-   port). The friendly URL becomes `http://timekeeper.local:8080/`.
-   The "no port in the URL" goal is sacrificed; the "friendly
-   hostname" goal is preserved.
-3. **Run without the proxy.** Pass `-proxy-addr ""` to disable
-   the friendly-URL listener. Only the canonical 1618 address
-   works. `timekeeper.local` is still in the hosts file but does
-   not resolve to a listening port.
-
-The installer must detect the port-80 conflict and present these
-three options to the user rather than silently falling back.
-
-## What stays the same
-
-- `127.0.0.1:1618` remains a real listener. It is documented as
-  the loopback / diagnostic / container address. Nothing about
-  its behavior changes.
-- The `mux` routing by path (`/` for dashboard, `/api/...` for
-  the API) is unchanged. The proxy forwards to the same handler;
-  no Host-header-based routing logic.
-- `validateServerConfig` keeps rejecting non-numeric /
-  non-loopback addresses on the canonical listener. The proxy
-  address gets the same check.
-- Pulse Guardian, `tk` CLI, and existing API clients all keep
-  pointing at `127.0.0.1:1618` by default. They can be
-  reconfigured to `http://api.timekeeper.local/` if the user
-  prefers; the wire protocol is identical.
-- SQLite database, web assets, and OS service install path are
-  unchanged.
-
-## What changes
-
-| File | Change |
-| --- | --- |
-| `cmd/server/main.go` | Always start the proxy listener; update banner to the three URLs |
-| `cmd/server/proxy.go` (new) | `httputil.NewSingleHostReverseProxy` wiring; loopback-only check |
-| `internal/cli/cli.go` | Add `open` (with `--api`, `--ip`) and `uninstall` subcommands; extend `doctor` |
-| `install.sh` | Write both hosts entries (idempotent); remove on `uninstall` |
-| `scripts/service/service-install.bat` | Always pass `-proxy-addr 127.0.0.1:80` to NSSM |
-| `scripts/service/service-install.sh` | Same for systemd `ExecStart` |
-| `README.md` | Replace the loopback address in install / quick-start with the friendly URLs; keep the IP documented as the canonical address for tools and diagnostics |
-| `web/index.html` | Footer shows the friendly URLs as primary; the IP as small-print |
-
-## Out of scope for v1
-
-- TLS. Loopback only; no cert.
-- mDNS advertisement. Hosts file is enough.
-- `tk open` on headless servers. Fails loudly with a clear message.
-- A separate `timekeeper-proxy` binary. The proxy is one process
-  with two listeners — the smallest mechanism that solves the
-  problem.
-- Host-based routing. Both hostnames reach the same handler; the
-  server does not branch on `Host`. If we ever need to serve
-  different content per hostname, that is a follow-up.
-- CORS. The dashboard and API share an origin under
-  `timekeeper.local` once the proxy is in place, so CORS does
-  not come up for browser fetches. Direct API access from
-  browser code is not a documented use case; document if it
-  becomes one.
-
-## Verification
-
-After a fresh install and service start:
-
-1. `curl http://timekeeper.local/health` returns `{"status":"ok"}`
-2. `curl http://api.timekeeper.local/health` returns
-   `{"status":"ok"}`
-3. `curl http://127.0.0.1:1618/health` returns `{"status":"ok"}`
-4. `curl http://timekeeper.local/api/v1/projects` returns the
-   project list (same as
-   `curl http://api.timekeeper.local/api/v1/projects`)
-5. `tk open` opens the default browser to
-   `http://timekeeper.local/`; `tk open --api` opens
-   `http://api.timekeeper.local/`
-6. Re-running `install.sh` does not duplicate either hosts
-   entry
-7. `tk uninstall` removes both hosts entries, stops the service,
-   removes the binaries
-8. `tk doctor` reports green for all four checks
-9. A non-loopback proxy address is rejected at startup with a
-   clear error
-10. Pulse Guardian still posts to `http://127.0.0.1:1618` by
-    default
-
-## Open questions
-
-- **`tk uninstall` scope.** Should it touch the SQLite database
-  and the `.timekeeper/` state directory, or only what we wrote
-  (binaries, service, hosts entries)? Lean: only what we wrote.
-  State is the user's; they delete it themselves. Document
-  this.
-- **Linux port 80 unprivileged.** systemd user services cannot
-  bind 80 without root. Document `sudo setcap
-  'cap_net_bind_service=+ep' /path/to/timekeeper` as a one-shot
-  step. No setuid wrapper.
-- **macOS.** `brew services`-style install is a follow-up. v1
-  targets Windows (NSSM) and Linux (root + setcap). Document
-  the macOS manual setup, do not automate.
-- **Configurability of the API hostname.** Should
-  `api.timekeeper.local` be the only API hostname, or should
-  the user be able to set their own (e.g. `tk.local`,
-  `mycorp.local`)? Lean: fixed for v1 — `api.timekeeper.local`
-  is part of the product. Override via env var
-  `TIMEKEEPER_API_HOST` is a follow-up if anyone asks.
+`tk uninstall` removes the OS service and attempts to remove TimeKeeper's managed hosts-file entries. It leaves the `.timekeeper/` directory, including the installed binaries and local data. If the hosts-file update needs elevated permission, check `tk hosts status` and remove the entries from an elevated shell.

@@ -123,3 +123,48 @@ func TestRestoreCreatesNewVersion(t *testing.T) {
 		t.Fatalf("versions=%#v err=%v", versions, err)
 	}
 }
+
+func TestSaveContentPreservesExternalEditAsHistoryBeforeConflict(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	filePath := filepath.Join(root, "shared.go")
+	if err := os.WriteFile(filePath, []byte("package original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := store.Open(filepath.Join(root, "timekeeper.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	project, err := database.CreateProject(ctx, model.CreateProjectInput{Name: "External editor conflict"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := history.New(root, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracked, initial, err := service.Capture(ctx, history.CaptureInput{ProjectID: project.ProjectID, RelativePath: "shared.go", FileType: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := []byte("package external\n")
+	if err := os.WriteFile(filePath, external, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.SaveContent(ctx, tracked.FileID, "package editor\n", initial.VersionID, "agent", "session", "model"); !errors.Is(err, store.ErrFileVersionConflict) {
+		t.Fatalf("external edit save error=%v", err)
+	}
+	actual, err := os.ReadFile(filePath)
+	if err != nil || string(actual) != string(external) {
+		t.Fatalf("external file changed=%q err=%v", actual, err)
+	}
+	updated, err := database.GetTrackedFile(ctx, tracked.FileID)
+	if err != nil || updated.CurrentVersionID == initial.VersionID {
+		t.Fatalf("external edit was not added to history: file=%+v err=%v", updated, err)
+	}
+	content, version, err := service.ReadVersion(ctx, tracked.FileID, updated.CurrentVersionID)
+	if err != nil || string(content) != string(external) || version.ParentVersionID != initial.VersionID {
+		t.Fatalf("external history version=%+v content=%q err=%v", version, content, err)
+	}
+}

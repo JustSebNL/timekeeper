@@ -12,17 +12,29 @@ required_workflow:
   - progress_record
   - evidence_before_completion
   - handoff_note
+  - ase_lease_and_recovery
+ase:
+  friendly_name: Anti Slack Engine
+  protocol_doc: docs/anti-slack-engine.md
+  stable_identity_required: true
+  progress_only_on_real_work: true
+  callback_acceptance_header: "X-Timekeeper-Pulse-Accepted: v1"
+  acknowledgement_requires_adapter_acceptance: true
+  default_hook: fail_closed
+  poll_fallback: "tk guardian wake --agent <agent_id-from-tk-agent-identity> --adapter <trusted-executable> --poll --interval 30s"
 recovery:
   linux_wsl: scripts/service/kick-server.sh
   windows: scripts/service/kick-server.bat
   policy: failure_only_after_health_check
   healthy_path: no-op
 skills:
+  - harness/skills/onboarding/SKILL.md
   - harness/skills/project-landscape/SKILL.md
   - harness/skills/backlog-sync/SKILL.md
   - harness/skills/codebase-audit/SKILL.md
   - harness/skills/timeboxing/SKILL.md
   - harness/skills/troubleshooting/SKILL.md
+  - harness/skills/service-recovery/SKILL.md
 privacy:
   store_secrets: false
   store_prompt_bodies: false

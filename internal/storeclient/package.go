@@ -2,6 +2,7 @@ package storeclient
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,22 +24,26 @@ const (
 	MaxPackageTotal    = 64 << 20 // 64 MB unpacked
 )
 
-// ExtractPackage unpacks a .tkp archive into destDir and returns its
-// manifest.
-//
-// It refuses archives that try to escape the destination, that exceed
-// the size bounds, or whose checksums.json does not match the files
-// actually present. Callers must still call VerifyPackage on the
-// archive before extraction: checksums inside an archive only prove
-// internal consistency, not that the Store signed it.
+// ExtractPackage opens a package path and extracts the bytes it reads. New
+// install flows should prefer ReadAndVerifyPackage followed by
+// ExtractPackageBytes so verification and extraction share one exact byte
+// slice.
 func ExtractPackage(tkpPath, destDir string) (*Manifest, error) {
-	f, err := os.Open(tkpPath)
+	data, err := ReadPackageFile(tkpPath)
 	if err != nil {
 		return nil, fmt.Errorf("open package: %w", err)
 	}
-	defer f.Close()
+	return ExtractPackageBytes(data, destDir)
+}
 
-	gz, err := gzip.NewReader(f)
+// ExtractPackageBytes extracts exactly the supplied archive bytes. It never
+// reopens a path, which closes the verification-to-extraction TOCTOU window.
+func ExtractPackageBytes(data []byte, destDir string) (*Manifest, error) {
+	return extractPackage(bytes.NewReader(data), destDir)
+}
+
+func extractPackage(source io.Reader, destDir string) (*Manifest, error) {
+	gz, err := gzip.NewReader(source)
 	if err != nil {
 		return nil, fmt.Errorf("package is not gzip compressed: %w", err)
 	}

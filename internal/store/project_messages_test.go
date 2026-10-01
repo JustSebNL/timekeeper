@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/JustSebNL/timekeeper/internal/model"
 	"github.com/JustSebNL/timekeeper/internal/store"
@@ -66,6 +67,7 @@ func TestProjectMessagesSupportRepliesEditsAndRevisionHistory(t *testing.T) {
 		t.Fatalf("reply parent = %#v", reply.ParentMessageID)
 	}
 
+	time.Sleep(10 * time.Millisecond)
 	updated, err := database.UpdateProjectMessage(ctx, projectID, root.MessageID, model.UpdateProjectMessageInput{
 		Kind:   model.MessageKindLesson,
 		Author: "agent-b",

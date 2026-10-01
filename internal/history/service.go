@@ -61,6 +61,11 @@ func New(root string, database *store.Store) (*Service, error) {
 	return &Service{root: root, store: database}, nil
 }
 
+func hashContent(data []byte) string {
+	hash := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(hash[:])
+}
+
 func (s *Service) Capture(ctx context.Context, input CaptureInput) (model.TrackedFile, model.FileVersion, error) {
 	absolute, relative, err := s.resolveTrackedPath(input.RelativePath)
 	if err != nil {
@@ -73,8 +78,7 @@ func (s *Service) Capture(ctx context.Context, input CaptureInput) (model.Tracke
 	if len(data) > MaxTrackedTextBytes {
 		return model.TrackedFile{}, model.FileVersion{}, fmt.Errorf("tracked file exceeds %d bytes", MaxTrackedTextBytes)
 	}
-	hash := sha256.Sum256(data)
-	contentHash := "sha256:" + hex.EncodeToString(hash[:])
+	contentHash := hashContent(data)
 	file, err := s.store.TrackFile(ctx, model.TrackFileInput{ProjectID: input.ProjectID, CurrentPath: relative, FileType: input.FileType, TrackingPolicy: input.TrackingPolicy})
 	if err != nil {
 		file, err = s.store.GetTrackedFileByPath(ctx, input.ProjectID, relative)
@@ -127,6 +131,18 @@ func (s *Service) SaveContent(ctx context.Context, fileID, content, expectedCurr
 	original, err := os.ReadFile(absolute)
 	if err != nil {
 		return model.TrackedFile{}, model.FileVersion{}, fmt.Errorf("read current file before save: %w", err)
+	}
+	if file.CurrentVersionID != "" {
+		_, currentVersion, readErr := s.ReadVersion(ctx, fileID, file.CurrentVersionID)
+		if readErr != nil {
+			return model.TrackedFile{}, model.FileVersion{}, readErr
+		}
+		if hashContent(original) != currentVersion.ContentHash {
+			if _, _, captureErr := s.Capture(ctx, CaptureInput{ProjectID: file.ProjectID, RelativePath: file.CurrentPath, FileType: file.FileType, TrackingPolicy: file.TrackingPolicy, ChangeSummary: "External change detected before editor save"}); captureErr != nil {
+				return model.TrackedFile{}, model.FileVersion{}, fmt.Errorf("record external file change: %w", captureErr)
+			}
+			return model.TrackedFile{}, model.FileVersion{}, fmt.Errorf("%w: file changed outside the editor; an external snapshot was added to history, reload it before saving", store.ErrFileVersionConflict)
+		}
 	}
 	if err := writeAtomic(absolute, []byte(content), 0o600); err != nil {
 		return model.TrackedFile{}, model.FileVersion{}, err

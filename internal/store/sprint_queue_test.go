@@ -26,7 +26,8 @@ func TestClaimNextSprintStartsOldestRunnableWorkAndCompletingItDoesNotCloseItsTa
 	if err != nil {
 		t.Fatalf("create category: %v", err)
 	}
-	task, err := database.CreateTask(ctx, project.ProjectID, model.CreateTaskInput{CategoryID: category.CategoryID, Name: "First outcome"})
+	noAutoClose := false
+	task, err := database.CreateTask(ctx, project.ProjectID, model.CreateTaskInput{CategoryID: category.CategoryID, Name: "First outcome", AutoClose: &noAutoClose})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}

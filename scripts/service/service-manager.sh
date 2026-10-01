@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 # TIMEKEEPER_CROSS_PLATFORM_SERVICE_MANAGER
-# Manages TimeKeeper as an OS service (Windows NSSM / Linux systemd).
+# Manages TimeKeeper as an OS service (Windows Bend2Will / Linux systemd; legacy NSSM fallback).
 # All artifacts live under the repo's .timekeeper/ directory.
 set -Eeuo pipefail
 
@@ -21,7 +21,7 @@ if [[ "$REPO" == "/" ]]; then
 fi
 STATE_ROOT="$REPO/.timekeeper"
 SERVICE_DIR="$STATE_ROOT/service"
-LOG_DIR="$STATE_ROOT/log"
+LOG_DIR="${TIMEKEEPER_LOG_DIR:-/data/logs}"
 BIN="$STATE_ROOT/app/bin/timekeeper"
 CLI_BIN="$STATE_ROOT/app/bin/tk"
 GUARDIAN_BIN="$STATE_ROOT/app/bin/guardian"
@@ -43,7 +43,16 @@ if [[ -f "$SCRIPT_LIB" ]]; then
   source "$SCRIPT_LIB"
 fi
 
-mkdir -p "$SERVICE_DIR" "$LOG_DIR"
+mkdir -p "$SERVICE_DIR"
+if ! mkdir -p "$LOG_DIR"; then
+  if [[ -n "${TIMEKEEPER_LOG_DIR:-}" ]]; then
+    echo "[service:err] TIMEKEEPER_LOG_DIR is not writable: $LOG_DIR" >&2
+    exit 1
+  fi
+  LOG_DIR="$STATE_ROOT/log"
+  mkdir -p "$LOG_DIR"
+  echo "[service:warn] /data/logs is not writable; using $LOG_DIR. Set TIMEKEEPER_LOG_DIR after provisioning /data/logs to keep the canonical location." >&2
+fi
 
 usage() {
   cat <<USAGE
@@ -58,8 +67,8 @@ Commands:
   status      Show service status
   logs        Show recent service log tail
 
-Windows: uses NSSM (auto-detected or set TIMEKEEPER_NSSM)
-Linux:   uses systemd (user scope, linger-enabled)
+Windows native: Bend2Will obey; legacy shell fallback: NSSM
+Linux:           systemd (user scope, linger-enabled)
 
 All service artifacts are stored under: $STATE_ROOT/service/
 USAGE
@@ -96,8 +105,8 @@ find_nssm() {
     return 0
   fi
   cat >&2 <<EOF
-[service:err] NSSM (the Non-Sucking Service Manager) is required to install
-[service:err] TimeKeeper as a Windows service, but nssm.exe was not found.
+[service:err] NSSM is required only by the legacy shell fallback, but nssm.exe was not found.
+[service:err] Native Windows installation uses Bend2Will obey through install-windows.ps1.
 [service:err]
 [service:err] Searched:
 $(printf '  - %s\n' "${searched[@]}" >&2)
@@ -351,7 +360,7 @@ case "${os:-}" in
   *)       err "unsupported OS: $os"; exit 64 ;;
 esac
 
-if [[ -f "$STATE_ROOT/app/bin/timekeeper.exe" ]]; then
+if [[ "$platform" == "windows" && -f "$STATE_ROOT/app/bin/timekeeper.exe" ]]; then
   native="$SCRIPT_DIR/install-windows.ps1"
   if command -v wslpath >/dev/null 2>&1; then native="$(wslpath -w "$native")"; elif command -v cygpath >/dev/null 2>&1; then native="$(cygpath -w "$native")"; fi
   exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$native" -Action "${1:-status}" -Elevate

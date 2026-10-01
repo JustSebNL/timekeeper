@@ -44,11 +44,12 @@ func TestTaskCreatedThroughAPIBelongsToItsCategory(t *testing.T) {
 		CategoryID  string `json:"category_id"`
 		ItemAddress string `json:"item_address"`
 		Name        string `json:"name"`
+		AutoClose   bool   `json:"auto_close"`
 	}
 	if err := json.NewDecoder(created.Body).Decode(&task); err != nil {
-		t.Fatalf("decode task: %v", err)
+		t.Fatalf("decode task response: %v", err)
 	}
-	if task.TaskID != "T-10002" || task.CategoryID != category.CategoryID || task.ItemAddress != "10000.10001.10002" || task.Name != "Build recall" {
+	if task.TaskID != "T-10002" || task.CategoryID != category.CategoryID || task.ItemAddress != "10000.10001.10002" || task.Name != "Build recall" || !task.AutoClose {
 		t.Fatalf("unexpected task: %#v", task)
 	}
 
@@ -62,6 +63,7 @@ func TestTaskCreatedThroughAPIBelongsToItsCategory(t *testing.T) {
 		Items []struct {
 			TaskID     string `json:"task_id"`
 			CategoryID string `json:"category_id"`
+			AutoClose  bool   `json:"auto_close"`
 		} `json:"items"`
 	}
 	if err := json.NewDecoder(listed.Body).Decode(&payload); err != nil {

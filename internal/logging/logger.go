@@ -8,11 +8,12 @@
 //     and full stack traces on every error
 //
 // Crashes and request errors are written to both stderr and
-// .timekeeper/log/app.log so we can bugfix them later.
+// /data/logs/app.log so we can bugfix them later.
 package logging
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -248,6 +249,12 @@ func NewRequestLogger() *RequestLogger {
 func (r *RequestLogger) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		start := time.Now()
+		rid := requestID(req)
+		// Return the same correlation ID that is written to the server log.
+		// Clients can include it in their failure output without guessing which
+		// request a human should inspect.
+		w.Header().Set("X-Request-ID", rid)
+		req.Header.Set("X-Request-ID", rid)
 		rw := &statusRecorder{ResponseWriter: w, status: 200}
 		next.ServeHTTP(rw, req)
 		dur := time.Since(start)
@@ -258,8 +265,18 @@ func (r *RequestLogger) Wrap(next http.Handler) http.Handler {
 			slog.Int("bytes", rw.bytes),
 			slog.Duration("duration", dur),
 			slog.String("remote", remoteAddr(req)),
+			slog.Int64("request_bytes", req.ContentLength),
+			slog.String("content_type", req.Header.Get("Content-Type")),
 			slog.String("ua", req.UserAgent()),
-			slog.String("rid", requestID(req)),
+			slog.String("client_version", req.Header.Get("X-TimeKeeper-Client")),
+			slog.String("command", req.Header.Get("X-TimeKeeper-Command")),
+			slog.String("agent_id", req.Header.Get("X-Agent-ID")),
+			slog.String("rid", rid),
+		}
+		if rw.status >= http.StatusBadRequest {
+			if code, message, ok := structuredError(rw.body); ok {
+				base = append(base, slog.String("error_code", code), slog.String("error_message", message))
+			}
 		}
 		if IsDebug() {
 			base = append(base, slog.String("query", req.URL.RawQuery))
@@ -280,6 +297,7 @@ type statusRecorder struct {
 	status      int
 	bytes       int
 	wroteHeader bool
+	body        []byte
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
@@ -290,13 +308,47 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+func (r *statusRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 func (r *statusRecorder) Write(p []byte) (int, error) {
 	if !r.wroteHeader {
 		r.wroteHeader = true
 	}
 	n, err := r.ResponseWriter.Write(p)
 	r.bytes += n
+	const maxErrorBody = 16 << 10
+	if len(r.body) < maxErrorBody {
+		remaining := maxErrorBody - len(r.body)
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		r.body = append(r.body, p...)
+	}
 	return n, err
+}
+
+func structuredError(body []byte) (code, message string, ok bool) {
+	var payload struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", "", false
+	}
+	if payload.Error.Code == "" && payload.Error.Message == "" {
+		return "", "", false
+	}
+	return payload.Error.Code, payload.Error.Message, true
 }
 
 func remoteAddr(r *http.Request) string {

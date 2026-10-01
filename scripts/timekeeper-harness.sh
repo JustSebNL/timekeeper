@@ -30,5 +30,5 @@ for _ in $(seq 1 10); do
   sleep 1
 done
 
-printf 'TimeKeeper remains unavailable on %s. Inspect .timekeeper/log/ and run tk doctor when recovered.\n' "$ADDR" >&2
+printf 'TimeKeeper remains unavailable on %s. Inspect /data/logs/ and run tk doctor when recovered.\n' "$ADDR" >&2
 exit 1

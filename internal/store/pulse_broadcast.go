@@ -67,7 +67,7 @@ func (s *Store) CreateBroadcastNudge(ctx context.Context, message string) (Broad
 		return BroadcastNudgeResult{}, fmt.Errorf("no active agents to broadcast to")
 	}
 
-	now := time.Now()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return BroadcastNudgeResult{}, fmt.Errorf("begin broadcast: %w", err)
@@ -77,11 +77,12 @@ func (s *Store) CreateBroadcastNudge(ctx context.Context, message string) (Broad
 	ids := make([]string, 0, len(agents))
 	for _, a := range agents {
 		// Broadcast nudges are per-agent so the existing delivery loop
-		// and ack flow work unchanged. detected_after is 0 (not an
-		// escalation) and the message is stored as the nudge body.
+		// and ack flow work unchanged. The schema requires a positive
+		// detected_after value; one second represents an immediate manual
+		// signal without pretending it was an elapsed lease interval.
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO pulse_nudges (agent_id, active_sprint_id, kind, status, detected_after_seconds, created_at)
-			VALUES (?, ?, 'broadcast', 'Pending', 0, ?)`,
+			VALUES (?, ?, 'broadcast', 'Pending', 1, ?)`,
 			a.AgentID, a.ActiveSprintID, now)
 		if err != nil {
 			return BroadcastNudgeResult{}, fmt.Errorf("insert broadcast nudge: %w", err)

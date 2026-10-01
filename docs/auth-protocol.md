@@ -1,8 +1,8 @@
 # TimeKeeper Store authentication protocol
 
-Local TimeKeeper never requires an account. Authentication exists only
-for Store functionality: browsing extensions, claiming, installing,
-account and device management.
+Core project tracking never requires a Store account or login. Store
+authentication is only for Store functions: browsing extensions, claiming,
+installing, and account/device management.
 
 ```
 Local TimeKeeper
@@ -12,7 +12,7 @@ Local TimeKeeper
 
 ## Authority model
 
-TimeKeeper is open source, so any client can be modified. The Store
+A client is not a trust boundary and may be modified. The Store
 therefore treats every request as untrusted:
 
 - no request field may assert ownership;

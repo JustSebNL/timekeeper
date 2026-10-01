@@ -17,7 +17,8 @@ import (
 // an agent to use TimeKeeper with the guardian wake-up system.
 //
 // Usage:
-//   tk init --agent <id> [--project <id>] [--lease <duration>] [--url <api-base>]
+//
+//	tk init --agent <id> [--project <id>] [--lease <duration>] [--url <api-base>]
 //
 // This creates a .tkrc config file, registers the agent with the guardian,
 // and starts the self-nudge receiver so the agent can be woken by the guardian.
@@ -119,7 +120,7 @@ func tkInit(args []string, out, errOut io.Writer, baseURL string) int {
 
 	regInput := map[string]any{
 		"lease_duration_seconds": int64(leaseDur.Seconds()),
-		"guardian_url":          guardianURL,
+		"guardian_url":           guardianURL,
 	}
 	regBody, err := json.Marshal(regInput)
 	if err != nil {
@@ -133,7 +134,7 @@ func tkInit(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	regReq.Header.Set("Content-Type", "application/json")
-	regResp, err := (&http.Client{Timeout: 10 * time.Second}).Do(regReq)
+	regResp, err := newHTTPClient(10 * time.Second).Do(regReq)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "register agent: %v\n", err)
 		return 1
@@ -145,13 +146,30 @@ func tkInit(args []string, out, errOut io.Writer, baseURL string) int {
 	}
 	_, _ = fmt.Fprintf(out, "registered agent %s with lease %s\n", agentID, lease)
 
-	// 3. Start the self-nudge receiver.
-	selfExe := os.Args[0]
-	selfDir := filepath.Dir(selfExe)
-	receiverExe := filepath.Join(selfDir, "tk-guardian-self.exe")
-	if _, err := os.Stat(receiverExe); err != nil {
-		_, _ = fmt.Fprintf(out, "tk-guardian-self.exe not found at %s\n", receiverExe)
-		_, _ = fmt.Fprintf(out, "build it with: go build -o %s ./cmd/tk-guardian-self\n", receiverExe)
+	// Resolve the actual executable and keep bounded fallbacks for WSL, where
+	// a Windows binary may be invoked without its `.exe` suffix.
+	selfPath, execErr := os.Executable()
+	if execErr != nil || strings.TrimSpace(selfPath) == "" {
+		selfPath = os.Args[0]
+	}
+	if absolute, absErr := filepath.Abs(selfPath); absErr == nil {
+		selfPath = absolute
+	}
+	receiverName := "tk-guardian-self.exe"
+	receiverCandidates := []string{
+		filepath.Join(filepath.Dir(selfPath), receiverName),
+		filepath.Join(filepath.Dir(os.Args[0]), receiverName),
+		filepath.Join(".timekeeper", "app", "bin", receiverName),
+	}
+	receiverExe := ""
+	for _, candidate := range receiverCandidates {
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			receiverExe = candidate
+			break
+		}
+	}
+	if receiverExe == "" {
+		_, _ = fmt.Fprintf(out, "tk-guardian-self.exe not found beside the installed CLI. Build it with: go build -o %s ./cmd/tk-guardian-self\n", receiverCandidates[0])
 		return 0
 	}
 
@@ -165,12 +183,22 @@ func tkInit(args []string, out, errOut io.Writer, baseURL string) int {
 	if projectID != "" {
 		cmd.Env = append(cmd.Env, "PROJECT_ID="+projectID)
 	}
-	cmd.Stdout = out
-	cmd.Stderr = errOut
+	// The receiver is a detached background service. Do not inherit the
+	// caller's stdout/stderr pipe: headless workers (including `hermes -z`)
+	// otherwise wait forever for the receiver to close their tool-output pipe.
+	devNull, devNullErr := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if devNullErr != nil {
+		_, _ = fmt.Fprintf(errOut, "open receiver output sink: %v\n", devNullErr)
+		return 1
+	}
+	cmd.Stdout = devNull
+	cmd.Stderr = devNull
 	if err := cmd.Start(); err != nil {
+		_ = devNull.Close()
 		_, _ = fmt.Fprintf(errOut, "start receiver: %v\n", err)
 		return 1
 	}
+	_ = devNull.Close()
 	_, _ = fmt.Fprintf(out, "self-nudge receiver started (pid %d)\n", cmd.Process.Pid)
 
 	// 4. Print next steps.

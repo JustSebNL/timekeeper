@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -29,20 +30,23 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+
+	"github.com/JustSebNL/timekeeper/internal/stuck"
 	"syscall"
 	"time"
 )
 
 const (
-	defaultBindAddr = "127.0.0.1:1619"
+	defaultBindAddr   = "127.0.0.1:1619"
 	defaultWorkScript = "scripts/guardian/self-nudge-work.sh"
 )
 
 // nudgeSignal mirrors model.PulseGuardianSignal.
 type nudgeSignal struct {
-	Format string `json:"format"`
-	Action string `json:"action"`
-	Nudge  struct {
+	Format   string `json:"format"`
+	Action   string `json:"action"`
+	Reminder string `json:"reminder"`
+	Nudge    struct {
 		NudgeID int64  `json:"nudge_id"`
 		AgentID string `json:"agent_id"`
 		Kind    string `json:"kind"`
@@ -66,6 +70,7 @@ func main() {
 	if agentID == "" {
 		log.Fatal("TK_AGENT_ID is required")
 	}
+	workGate := make(chan struct{}, 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -110,13 +115,33 @@ func main() {
 			http.Error(w, "missing nudge fields", http.StatusBadRequest)
 			return
 		}
+		if sig.Nudge.AgentID != agentID {
+			// A shared loopback port may receive stale signals intended for
+			// another worker. Never run this worker for another identity.
+			http.Error(w, "nudge is for another agent", http.StatusNotFound)
+			return
+		}
+		select {
+		case workGate <- struct{}{}:
+			defer func() { <-workGate }()
+		default:
+			http.Error(w, "work cycle already running", http.StatusServiceUnavailable)
+			return
+		}
 		log.Printf("received nudge %d for agent %s (kind=%s)", sig.Nudge.NudgeID, sig.Nudge.AgentID, sig.Nudge.Kind)
+		if sig.Reminder != "" {
+			log.Printf("REMINDER: %s", sig.Reminder)
+		}
 
-		// Run the work cycle.
-		if err := runWorkCycle(ctx, workScript); err != nil {
-			log.Printf("work cycle failed: %v", err)
-			// Still ack — the nudge was delivered; the work cycle failing
-			// should not block the guardian from moving on.
+		// Run the work cycle with stuck detection.
+		detector := stuck.NewDetector(stuck.DefaultConfig())
+		workErr := runWorkCycle(ctx, workScript, detector)
+		if !shouldAcknowledgeWorkCycle(workErr) {
+			log.Printf("work cycle failed: %v", workErr)
+			// Do not ack a failed recovery. The Guardian must retry it instead
+			// of treating a printed reminder as completed work.
+			http.Error(w, "work cycle failed", http.StatusInternalServerError)
+			return
 		}
 
 		// Acknowledge the nudge.
@@ -126,6 +151,8 @@ func main() {
 			return
 		}
 		log.Printf("nudge %d acknowledged", sig.Nudge.NudgeID)
+		w.Header().Set("X-Timekeeper-Pulse-Accepted", "v1")
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"accepted"}`))
 	}
@@ -154,13 +181,42 @@ func main() {
 	}
 }
 
+func shouldAcknowledgeWorkCycle(err error) bool {
+	return err == nil
+}
+
 // runWorkCycle executes the work script. The script is responsible for
 // running tk commands (pulse, sp next, build, test, msg add, sp complete).
-func runWorkCycle(ctx context.Context, script string) error {
+func runWorkCycle(ctx context.Context, script string, detector *stuck.Detector) error {
 	if _, err := os.Stat(script); err != nil {
 		return fmt.Errorf("work script %s: %w", script, err)
 	}
 	cmd := exec.CommandContext(ctx, "bash", script)
+	if detector != nil {
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			return fmt.Errorf("create stdout pipe: %w", err)
+		}
+		cmd.Stderr = cmd.Stdout
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start work cycle: %w", err)
+		}
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.Contains(line, "Build OK") || strings.Contains(line, "build pass") {
+				detector.RecordNow(stuck.SignalBuildPass, nil)
+			} else if strings.Contains(line, "Tests passed") || strings.Contains(line, "test pass") {
+				detector.RecordNow(stuck.SignalTestPass, nil)
+			} else if strings.Contains(line, "Sprint") && strings.Contains(line, "completed") {
+				detector.RecordNow(stuck.SignalWorkCycle, nil)
+			} else if strings.Contains(line, "failed") || strings.Contains(line, "error") {
+				detector.RecordNow(stuck.SignalError, map[string]string{"reason": line})
+			}
+			fmt.Println(line)
+		}
+		return cmd.Wait()
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
