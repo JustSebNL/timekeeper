@@ -22,10 +22,10 @@ var (
 
 // Entry metadata flags.
 const (
-	flagActive   = 1 << 0 // entry is in the cache
-	flagVisited  = 1 << 1 // entry has been accessed since last eviction pass
-	flagPinned   = 1 << 2 // entry is pinned (never evicted)
-	flagEvicted  = 1 << 3 // entry has been evicted
+	flagActive  = 1 << 0 // entry is in the cache
+	flagVisited = 1 << 1 // entry has been accessed since last eviction pass
+	flagPinned  = 1 << 2 // entry is pinned (never evicted)
+	flagEvicted = 1 << 3 // entry has been evicted
 )
 
 // entryHeader is the fixed-size header for each cache entry in the ring buffer.
@@ -72,10 +72,10 @@ type shard struct {
 // countMinSketch is a simple Count-Min Sketch for frequency estimation.
 // Uses 4-bit counters in a nybble vector (2 counters per byte).
 type countMinSketch struct {
-	depth  uint32
-	width  uint32
+	depth    uint32
+	width    uint32
 	counters []uint8 // nybble vector: high nibble = counter[2i], low = counter[2i+1]
-	mask   uint32
+	mask     uint32
 }
 
 func newCountMinSketch(capacity int) *countMinSketch {
@@ -145,6 +145,18 @@ func hashKey(key []byte) uint64 {
 	return h.Sum64()
 }
 
+// agentNamespacedHash returns a hash that incorporates both the agent identifier
+// and the original key, preventing cross-agent cache collisions when agentID is provided.
+func agentNamespacedHash(agentID []byte, keyHash uint64) uint64 {
+	h := fnv.New64a()
+	h.Write(agentID)
+	// Encode the uint64 hash as 8 bytes to incorporate it
+	b := make([]byte, 8)
+	binary.LittleEndian.PutUint64(b, keyHash)
+	h.Write(b)
+	return h.Sum64()
+}
+
 // Config configures the bounded context cache.
 type Config struct {
 	// NumShards is the number of shards (power of 2, default 256).
@@ -168,13 +180,13 @@ type Config struct {
 // DefaultConfig returns a default configuration suitable for guardian context caching.
 func DefaultConfig() Config {
 	return Config{
-		NumShards:        256,
-		MaxEntries:       10000,
-		MaxBytes:         64 * 1024 * 1024, // 64MB
-		MaxKeySize:       1024,
-		MaxValSize:       64 * 1024,
-		AdmissionEnabled: true,
-		WindowRatio:      0.01,
+		NumShards:         256,
+		MaxEntries:        10000,
+		MaxBytes:          64 * 1024 * 1024, // 64MB
+		MaxKeySize:        1024,
+		MaxValSize:        64 * 1024,
+		AdmissionEnabled:  true,
+		WindowRatio:       0.01,
 		EvictionBatchSize: 64,
 	}
 }
@@ -240,10 +252,10 @@ func New(cfg Config) (*Cache, error) {
 	c.shards = make([]*shard, cfg.NumShards)
 	for i := range c.shards {
 		s := &shard{
-			entries: make(map[uint64]*entry),
-			ring:    make([]byte, perShardBytes),
+			entries:  make(map[uint64]*entry),
+			ring:     make([]byte, perShardBytes),
 			ringSize: perShardBytes,
-			cms:     newCountMinSketch(perShardEntries),
+			cms:      newCountMinSketch(perShardEntries),
 		}
 		c.shards[i] = s
 	}
@@ -252,63 +264,119 @@ func New(cfg Config) (*Cache, error) {
 	return c, nil
 }
 
-// getShard returns the shard for a given key.
+// getShard returns the shard for a raw key.
 func (c *Cache) getShard(key []byte) *shard {
-	h := hashKey(key)
-	return c.shards[h%uint64(c.numShards)]
+	return c.getShardForHash(hashKey(key))
+}
+
+// getShardForHash returns the shard selected by a canonical cache hash.
+// Callers that namespace keys must use this helper; hashing an already-derived
+// hash again routes the same logical key to a different shard.
+func (c *Cache) getShardForHash(keyHash uint64) *shard {
+	return c.shards[keyHash%uint64(c.numShards)]
 }
 
 // Get retrieves a value from the cache. Returns ErrKeyNotFound if absent.
-func (c *Cache) Get(key []byte) ([]byte, error) {
+// If agentID is non-nil, the key is namespaced with the agent hash (as set by Cache.Set).
+func (c *Cache) Get(agentID []byte, key []byte) ([]byte, error) {
 	if len(key) > c.config.MaxKeySize {
 		return nil, ErrKeyTooLarge
 	}
-	s := c.getShard(key)
-	h := hashKey(key)
 
-	s.mu.RLock()
+	var keyHash uint64
+	if agentID != nil {
+		keyHash = agentNamespacedHash(agentID, hashKey(key))
+	} else {
+		keyHash = hashKey(key)
+	}
+
+	s := c.getShardForHash(keyHash)
+
+	h := keyHash
+
+	s.mu.Lock()
 	e, ok := s.entries[h]
 	if !ok || e.header.flags&flagActive == 0 {
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		s.misses.Add(1)
 		return nil, ErrKeyNotFound
 	}
-	// Mark visited (SIEVE lazy promotion)
+	// Check TTL expiration: expired entries are treated as missing.
+	if e.header.ttl > 0 {
+		elapsed := uint32(time.Now().Unix()) - e.header.createdAt
+		if int(elapsed) >= int(e.header.ttl) {
+			e.header.flags &^= flagActive
+			e.header.flags |= flagEvicted
+			delete(s.entries, h)
+			totalSize := int64(entryHeaderSize) + int64(e.header.keyLen) + int64(e.header.valLen)
+			s.used -= totalSize
+			s.mu.Unlock()
+			s.misses.Add(1)
+			return nil, ErrKeyNotFound
+		}
+	}
+	// Mark visited (SIEVE lazy promotion).
 	e.header.flags |= flagVisited
-	// Read value from ring buffer (after header + key)
+	// Read value from ring buffer (after header + key).
 	valStart := e.offset + entryHeaderSize + int64(e.header.keyLen)
 	val := make([]byte, e.header.valLen)
 	copy(val, s.ring[valStart:valStart+int64(e.header.valLen)])
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	s.hits.Add(1)
 	return val, nil
 }
 
 // GetWithTTL retrieves a value and its remaining TTL in seconds.
-func (c *Cache) GetWithTTL(key []byte) ([]byte, int, error) {
-	val, err := c.Get(key)
-	if err != nil {
-		return nil, 0, err
+func (c *Cache) GetWithTTL(agentID []byte, key []byte) ([]byte, int, error) {
+	if len(key) > c.config.MaxKeySize {
+		return nil, 0, ErrKeyTooLarge
 	}
-	s := c.getShard(key)
-	h := hashKey(key)
-	s.mu.RLock()
-	e := s.entries[h]
+
+	var keyHash uint64
+	if agentID != nil {
+		keyHash = agentNamespacedHash(agentID, hashKey(key))
+	} else {
+		keyHash = hashKey(key)
+	}
+	s := c.getShardForHash(keyHash)
+	s.mu.Lock()
+	e, ok := s.entries[keyHash]
+	if !ok || e.header.flags&flagActive == 0 {
+		s.mu.Unlock()
+		s.misses.Add(1)
+		return nil, 0, ErrKeyNotFound
+	}
+	e.header.flags |= flagVisited
+	valStart := e.offset + entryHeaderSize + int64(e.header.keyLen)
+	val := make([]byte, e.header.valLen)
+	copy(val, s.ring[valStart:valStart+int64(e.header.valLen)])
+
 	ttl := 0
 	if e.header.ttl > 0 {
 		elapsed := uint32(time.Now().Unix()) - e.header.createdAt
 		remaining := int(e.header.ttl) - int(elapsed)
-		if remaining < 0 {
-			remaining = 0
+		if remaining <= 0 {
+			// Expired: mirror Get behavior — delete, update used, mark evicted.
+			e.header.flags &^= flagActive
+			e.header.flags |= flagEvicted
+			totalSize := int64(entryHeaderSize) + int64(e.header.keyLen) + int64(e.header.valLen)
+			s.used -= totalSize
+			delete(s.entries, keyHash)
+			s.mu.Unlock()
+			s.misses.Add(1)
+			return nil, 0, ErrKeyNotFound
 		}
 		ttl = remaining
 	}
-	s.mu.RUnlock()
+	s.mu.Unlock()
+	s.hits.Add(1)
 	return val, ttl, nil
 }
 
 // Set inserts or updates a key-value pair. Returns the evicted entry's key if any.
-func (c *Cache) Set(key, val []byte, ttl time.Duration) ([]byte, error) {
+// If agentID is non-nil, the key is namespaced with the agent hash to prevent
+// cross-agent content loss in the shared cache.
+func (c *Cache) Set(agentID []byte, key, val []byte, ttl time.Duration) (evictedKey []byte, err error) {
 	if len(key) > c.config.MaxKeySize {
 		return nil, ErrKeyTooLarge
 	}
@@ -316,8 +384,18 @@ func (c *Cache) Set(key, val []byte, ttl time.Duration) ([]byte, error) {
 		return nil, ErrValTooLarge
 	}
 
-	s := c.getShard(key)
-	h := hashKey(key)
+	// When agentID is provided, namespace the key to prevent cross-agent collisions.
+	// Different agents with the same logical key will use different cache entries.
+	var keyHash uint64
+	if agentID != nil {
+		keyHash = agentNamespacedHash(agentID, hashKey(key))
+	} else {
+		keyHash = hashKey(key)
+	}
+
+	s := c.getShardForHash(keyHash)
+
+	h := keyHash
 	valLen := uint32(len(val))
 	keyLen := uint16(len(key))
 
@@ -398,12 +476,17 @@ func (c *Cache) Set(key, val []byte, ttl time.Duration) ([]byte, error) {
 }
 
 // Delete removes a key from the cache.
-func (c *Cache) Delete(key []byte) bool {
+func (c *Cache) Delete(agentID []byte, key []byte) bool {
 	if len(key) > c.config.MaxKeySize {
 		return false
 	}
-	s := c.getShard(key)
-	h := hashKey(key)
+	var h uint64
+	if agentID != nil {
+		h = agentNamespacedHash(agentID, hashKey(key))
+	} else {
+		h = hashKey(key)
+	}
+	s := c.getShardForHash(h)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
