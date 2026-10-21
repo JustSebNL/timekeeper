@@ -102,10 +102,13 @@ func (s *Store) Close() error {
 }
 
 // BackupTo creates a self-contained SQLite snapshot at a new destination path.
-// It never overwrites an existing file.
+// It refuses an unhealthy primary and never overwrites an existing file.
 func (s *Store) BackupTo(ctx context.Context, destination string) error {
 	if s == nil || s.db == nil {
 		return errors.New("backup Time Keeper database: store is closed")
+	}
+	if err := s.IntegrityCheck(ctx); err != nil {
+		return fmt.Errorf("primary health check failed; backup skipped: %w", err)
 	}
 	path, err := filepath.Abs(strings.TrimSpace(destination))
 	if err != nil || strings.TrimSpace(destination) == "" {
@@ -151,6 +154,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			project_name TEXT NOT NULL COLLATE NOCASE UNIQUE,
 			project_description TEXT NOT NULL DEFAULT '',
 			project_goal TEXT NOT NULL DEFAULT '',
+			planned_start_date TEXT NOT NULL DEFAULT '',
+			target_end_date TEXT NOT NULL DEFAULT '',
+			actual_started_at TEXT,
+			completed_at TEXT,
+			cancelled_at TEXT,
+			lifecycle_phase TEXT NOT NULL DEFAULT 'intake',
+			schedule_timezone TEXT NOT NULL DEFAULT 'UTC',
+			deadline_warning_days INTEGER NOT NULL DEFAULT 7 CHECK (deadline_warning_days BETWEEN 0 AND 365),
 			status TEXT NOT NULL,
 			priority TEXT NOT NULL,
 			palette_id INTEGER NOT NULL CHECK (palette_id BETWEEN 1 AND 20),
@@ -196,6 +207,19 @@ func (s *Store) migrate(ctx context.Context) error {
 			UNIQUE(category_id, task_name)
 		)`,
 		"CREATE INDEX IF NOT EXISTS tasks_project_category_updated_idx ON tasks(project_id, category_id, updated_at DESC)",
+		`CREATE TABLE IF NOT EXISTS project_milestones (
+			milestone_id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+			milestone_name TEXT NOT NULL,
+			milestone_description TEXT NOT NULL DEFAULT '',
+			target_date TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('Planned', 'In Progress', 'Completed', 'Cancelled')),
+			linked_task_id TEXT REFERENCES tasks(task_id) ON DELETE SET NULL,
+			completed_at TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		"CREATE INDEX IF NOT EXISTS project_milestones_project_due_idx ON project_milestones(project_id, target_date, status)",
 		`CREATE TABLE IF NOT EXISTS subtasks (
 			subtask_id TEXT PRIMARY KEY,
 			project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
@@ -375,6 +399,45 @@ func (s *Store) migrate(ctx context.Context) error {
 			INSERT INTO project_messages_fts(rowid, body, author, tags, link)
 			VALUES (new.message_id, new.body, new.author, new.tags, new.link);
 		END`,
+		`CREATE TABLE IF NOT EXISTS project_gems (
+			gem_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+			parent_gem_id INTEGER,
+			category TEXT NOT NULL COLLATE NOCASE CHECK (length(category) BETWEEN 1 AND 120),
+			subcategory TEXT NOT NULL DEFAULT '' COLLATE NOCASE CHECK (length(subcategory) <= 120),
+			name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+			content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 20000),
+			tags TEXT NOT NULL DEFAULT '' CHECK (length(tags) <= 500),
+			source_ref TEXT NOT NULL DEFAULT '' CHECK (length(source_ref) <= 2048),
+			revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+			pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+			deleted_at TEXT,
+			created_by TEXT NOT NULL DEFAULT '' CHECK (length(created_by) <= 120),
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE(project_id, gem_id),
+			FOREIGN KEY(project_id, parent_gem_id) REFERENCES project_gems(project_id, gem_id) ON DELETE RESTRICT
+		)`,
+		"CREATE INDEX IF NOT EXISTS project_gems_project_updated_idx ON project_gems(project_id, deleted_at, pinned DESC, updated_at DESC, gem_id DESC)",
+		"CREATE INDEX IF NOT EXISTS project_gems_project_category_idx ON project_gems(project_id, category COLLATE NOCASE, subcategory COLLATE NOCASE, created_at DESC)",
+		"CREATE INDEX IF NOT EXISTS project_gems_project_parent_idx ON project_gems(project_id, parent_gem_id, created_at ASC, gem_id ASC)",
+		`CREATE TABLE IF NOT EXISTS project_gem_revisions (
+			revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+			gem_id INTEGER NOT NULL,
+			revision INTEGER NOT NULL CHECK (revision >= 1),
+			category TEXT NOT NULL COLLATE NOCASE CHECK (length(category) BETWEEN 1 AND 120),
+			subcategory TEXT NOT NULL DEFAULT '' COLLATE NOCASE CHECK (length(subcategory) <= 120),
+			name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+			content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 20000),
+			tags TEXT NOT NULL DEFAULT '' CHECK (length(tags) <= 500),
+			source_ref TEXT NOT NULL DEFAULT '' CHECK (length(source_ref) <= 2048),
+			edited_by TEXT NOT NULL DEFAULT '' CHECK (length(edited_by) <= 120),
+			created_at TEXT NOT NULL,
+			UNIQUE(gem_id, revision),
+			FOREIGN KEY(project_id, gem_id) REFERENCES project_gems(project_id, gem_id) ON DELETE CASCADE
+		)`,
+		"CREATE INDEX IF NOT EXISTS project_gem_revisions_gem_revision_idx ON project_gem_revisions(project_id, gem_id, revision DESC)",
 		`CREATE TABLE IF NOT EXISTS llm_pipelines (
 			pipeline_id INTEGER PRIMARY KEY AUTOINCREMENT,
 			pipeline_name TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -481,15 +544,24 @@ func (s *Store) migrate(ctx context.Context) error {
 			file_type TEXT NOT NULL DEFAULT 'text',
 			created_at TEXT NOT NULL,
 			current_version_id TEXT NOT NULL DEFAULT '',
-			tracking_policy TEXT NOT NULL DEFAULT 'manual'
+			tracking_policy TEXT NOT NULL DEFAULT 'manual',
+			source_root TEXT NOT NULL DEFAULT ''
 		)`,
 		"CREATE UNIQUE INDEX IF NOT EXISTS tracked_files_project_path_idx ON tracked_files(project_id, current_path)",
+		`CREATE TABLE IF NOT EXISTS project_file_roots (
+			project_id TEXT PRIMARY KEY REFERENCES projects(project_id) ON DELETE RESTRICT,
+			root_path TEXT NOT NULL CHECK (length(root_path) BETWEEN 1 AND 4096),
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS file_versions (
 			version_id TEXT PRIMARY KEY,
 			file_id TEXT NOT NULL REFERENCES tracked_files(file_id) ON DELETE RESTRICT,
 			version_number INTEGER NOT NULL CHECK (version_number > 0),
 			content_hash TEXT NOT NULL CHECK (length(content_hash) BETWEEN 1 AND 128),
 			parent_version_id TEXT REFERENCES file_versions(version_id) ON DELETE RESTRICT,
+			restores_version_id TEXT REFERENCES file_versions(version_id) ON DELETE RESTRICT,
+			change_kind TEXT NOT NULL DEFAULT 'code_change',
 			snapshot_type TEXT NOT NULL CHECK (snapshot_type IN ('full', 'delta', 'code_start', 'code_end')),
 			blob_ref TEXT NOT NULL,
 			size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
@@ -610,6 +682,52 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS projects_alias_idx ON projects(project_alias)"); err != nil {
 		return fmt.Errorf("migrate projects alias index: %w", err)
 	}
+	for _, column := range []struct{ name, definition string }{
+		{"planned_start_date", "TEXT NOT NULL DEFAULT ''"},
+		{"target_end_date", "TEXT NOT NULL DEFAULT ''"},
+		{"actual_started_at", "TEXT"},
+		{"completed_at", "TEXT"},
+		{"cancelled_at", "TEXT"},
+		{"lifecycle_phase", "TEXT NOT NULL DEFAULT 'execution'"},
+		{"schedule_timezone", "TEXT NOT NULL DEFAULT 'UTC'"},
+		{"deadline_warning_days", "INTEGER NOT NULL DEFAULT 7"},
+	} {
+		if err := s.ensureColumn(ctx, "projects", column.name, column.definition); err != nil {
+			return fmt.Errorf("migrate Project %s: %w", column.name, err)
+		}
+	}
+	if err := s.ensureColumn(ctx, "tracked_files", "source_root", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("migrate tracked file source root: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, "DROP INDEX IF EXISTS tracked_files_project_path_idx"); err != nil {
+		return fmt.Errorf("migrate tracked file root index drop: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS tracked_files_project_path_idx ON tracked_files(project_id, current_path, source_root)"); err != nil {
+		return fmt.Errorf("migrate tracked file root index: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "file_versions", "change_kind", "TEXT NOT NULL DEFAULT 'code_change'"); err != nil {
+		return fmt.Errorf("migrate file version change kind: %w", err)
+	}
+	if err := s.ensureColumn(ctx, "file_versions", "restores_version_id", "TEXT REFERENCES file_versions(version_id) ON DELETE RESTRICT"); err != nil {
+		return fmt.Errorf("migrate file version restore branch: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE file_versions
+		SET change_kind = 'reversion', restores_version_id = substr(change_summary, 10)
+		WHERE change_kind = 'code_change'
+		  AND change_summary LIKE 'Restored FV-%'
+		  AND EXISTS (
+			SELECT 1 FROM file_versions target
+			WHERE target.file_id = file_versions.file_id
+			  AND target.version_id = substr(file_versions.change_summary, 10)
+		  )`); err != nil {
+		return fmt.Errorf("migrate historical file reversion branches: %w", err)
+	}
+	if err := s.ensureInstanceIdentity(ctx); err != nil {
+		return fmt.Errorf("migrate instance identity: %w", err)
+	}
+	if err := s.migrateRegistrationQueue(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -649,8 +767,36 @@ func (s *Store) backfillProjectMessageRevisions(ctx context.Context) error {
 // CreateProject persists a new project and assigns its durable public ID.
 func (s *Store) CreateProject(ctx context.Context, input model.CreateProjectInput) (model.Project, error) {
 	input.Name = strings.TrimSpace(input.Name)
+	input.PlannedStartDate = strings.TrimSpace(input.PlannedStartDate)
+	input.TargetEndDate = strings.TrimSpace(input.TargetEndDate)
+	input.LifecyclePhase = model.ProjectPhase(strings.TrimSpace(string(input.LifecyclePhase)))
+	input.ScheduleTimezone = strings.TrimSpace(input.ScheduleTimezone)
 	if input.Name == "" {
 		return model.Project{}, errors.New("project name is required")
+	}
+	if !model.IsValidProjectDate(input.PlannedStartDate) || !model.IsValidProjectDate(input.TargetEndDate) {
+		return model.Project{}, fmt.Errorf("%w: project dates must use YYYY-MM-DD", ErrValidation)
+	}
+	if input.PlannedStartDate != "" && input.TargetEndDate != "" && input.PlannedStartDate > input.TargetEndDate {
+		return model.Project{}, fmt.Errorf("%w: planned start date must be on or before target end date", ErrValidation)
+	}
+	if input.LifecyclePhase == "" {
+		input.LifecyclePhase = model.ProjectPhaseIntake
+	}
+	if !model.IsValidProjectPhase(input.LifecyclePhase) {
+		return model.Project{}, fmt.Errorf("%w: invalid Project lifecycle phase", ErrValidation)
+	}
+	if input.ScheduleTimezone == "" {
+		input.ScheduleTimezone = "UTC"
+	}
+	if _, err := time.LoadLocation(input.ScheduleTimezone); err != nil {
+		return model.Project{}, fmt.Errorf("%w: schedule timezone must be an IANA timezone", ErrValidation)
+	}
+	if input.DeadlineWarningDays == 0 {
+		input.DeadlineWarningDays = 7
+	}
+	if input.DeadlineWarningDays < 0 || input.DeadlineWarningDays > 365 {
+		return model.Project{}, fmt.Errorf("%w: deadline warning days must be between 0 and 365", ErrValidation)
 	}
 	if input.Priority == "" {
 		input.Priority = "Normal"
@@ -674,26 +820,36 @@ func (s *Store) CreateProject(ctx context.Context, input model.CreateProjectInpu
 
 	now := time.Now().UTC().Round(0)
 	project := model.Project{
-		ProjectID:          fmt.Sprintf("P-%d", number),
-		ProjectNumber:      number,
-		ItemAddress:        fmt.Sprintf("%d", number),
-		ProjectName:        input.Name,
-		ProjectDescription: strings.TrimSpace(input.Description),
-		ProjectGoal:        strings.TrimSpace(input.Goal),
-		Status:             "Open",
-		Priority:           input.Priority,
-		PaletteID:          input.PaletteID,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-		ProjectAlias:       strings.TrimSpace(input.Alias),
+		ProjectID:           fmt.Sprintf("P-%d", number),
+		ProjectNumber:       number,
+		ItemAddress:         fmt.Sprintf("%d", number),
+		ProjectName:         input.Name,
+		ProjectDescription:  strings.TrimSpace(input.Description),
+		ProjectGoal:         strings.TrimSpace(input.Goal),
+		PlannedStartDate:    input.PlannedStartDate,
+		TargetEndDate:       input.TargetEndDate,
+		LifecyclePhase:      input.LifecyclePhase,
+		ScheduleTimezone:    input.ScheduleTimezone,
+		DeadlineWarningDays: input.DeadlineWarningDays,
+		Status:              "Open",
+		Priority:            input.Priority,
+		PaletteID:           input.PaletteID,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		ProjectAlias:        strings.TrimSpace(input.Alias),
 	}
+	project.DeadlineState, project.DaysToDeadline = project.ScheduleState(now)
 	_, err = tx.ExecContext(ctx, `INSERT INTO projects (
 		project_id, project_number, item_address, project_name, project_description,
-		project_goal, status, priority, palette_id, created_at, updated_at, project_alias
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		project_goal, planned_start_date, target_end_date, actual_started_at, completed_at,
+		cancelled_at, lifecycle_phase, schedule_timezone, deadline_warning_days,
+		status, priority, palette_id, created_at, updated_at, project_alias
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		project.ProjectID, project.ProjectNumber, project.ItemAddress, project.ProjectName,
-		project.ProjectDescription, project.ProjectGoal, project.Status, project.Priority,
-		project.PaletteID, project.CreatedAt.Format(time.RFC3339Nano), project.UpdatedAt.Format(time.RFC3339Nano), project.ProjectAlias)
+		project.ProjectDescription, project.ProjectGoal, project.PlannedStartDate, project.TargetEndDate,
+		nil, nil, nil, project.LifecyclePhase, project.ScheduleTimezone, project.DeadlineWarningDays,
+		project.Status, project.Priority, project.PaletteID, project.CreatedAt.Format(time.RFC3339Nano),
+		project.UpdatedAt.Format(time.RFC3339Nano), project.ProjectAlias)
 	if err != nil {
 		return model.Project{}, fmt.Errorf("insert project: %w", err)
 	}
@@ -962,28 +1118,45 @@ func nullString(value string) any {
 // UpdateProjectStatus persists a deliberate workflow state for a Project.
 func (s *Store) UpdateProjectStatus(ctx context.Context, projectID string, input model.UpdateProjectStatusInput) (model.Project, error) {
 	status := strings.TrimSpace(input.Status)
+	reason := strings.TrimSpace(input.Reason)
 	if status != "Open" && status != "On Hold" && status != "Completed" && status != "Cancelled" {
 		return model.Project{}, errors.New("project status must be Open, On Hold, Completed, or Cancelled")
+	}
+	if (status == "Completed" || status == "Cancelled") && reason == "" {
+		return model.Project{}, fmt.Errorf("%w: completion requires an evidence summary and cancellation requires a reason", ErrValidation)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.Project{}, fmt.Errorf("begin project status update: %w", err)
 	}
 	defer tx.Rollback()
-	var previous string
-	if err := tx.QueryRowContext(ctx, "SELECT status FROM projects WHERE project_id = ?", projectID).Scan(&previous); err != nil {
+	var previous, previousPhase string
+	if err := tx.QueryRowContext(ctx, "SELECT status, lifecycle_phase FROM projects WHERE project_id = ?", projectID).Scan(&previous, &previousPhase); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.Project{}, fmt.Errorf("%w: project %s", ErrNotFound, projectID)
 		}
 		return model.Project{}, fmt.Errorf("read project status: %w", err)
 	}
 	now := time.Now().UTC().Round(0)
-	if _, err := tx.ExecContext(ctx, "UPDATE projects SET status = ?, updated_at = ? WHERE project_id = ?", status, now.Format(time.RFC3339Nano), projectID); err != nil {
+	stamp := now.Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `UPDATE projects SET status = ?, updated_at = ?,
+		lifecycle_phase = CASE WHEN ? = 'Completed' THEN 'closeout' ELSE lifecycle_phase END,
+		completed_at = CASE WHEN ? = 'Completed' AND ? != 'Completed' THEN ? ELSE completed_at END,
+		cancelled_at = CASE WHEN ? = 'Cancelled' AND ? != 'Cancelled' THEN ? ELSE cancelled_at END
+		WHERE project_id = ?`, status, stamp, status, status, previous, stamp, status, previous, stamp, projectID); err != nil {
 		return model.Project{}, fmt.Errorf("update project status: %w", err)
 	}
 	if previous != status {
 		message := fmt.Sprintf("Project status changed from %s to %s.", previous, status)
+		if reason != "" {
+			message += " Reason: " + reason
+		}
 		if err := recordProjectEvent(ctx, tx, projectID, "project", projectID, "project_status_changed", message, now); err != nil {
+			return model.Project{}, err
+		}
+	}
+	if status == "Completed" && previousPhase != string(model.ProjectPhaseCloseout) {
+		if err := recordProjectEvent(ctx, tx, projectID, "project", projectID, "project_phase_changed", fmt.Sprintf("Project lifecycle phase changed from %s to closeout on completion.", previousPhase), now); err != nil {
 			return model.Project{}, err
 		}
 	}
@@ -992,7 +1165,9 @@ func (s *Store) UpdateProjectStatus(ctx context.Context, projectID string, input
 	}
 	return scanProject(s.db.QueryRowContext(ctx, `SELECT project_id, project_number, item_address, project_name,
 		project_description, project_goal, status, priority, palette_id,
-		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias,
+		planned_start_date, target_end_date, actual_started_at, completed_at, cancelled_at,
+		lifecycle_phase, schedule_timezone, deadline_warning_days
 		FROM projects WHERE project_id = ?`, projectID))
 }
 
@@ -1029,7 +1204,9 @@ func (s *Store) UpdateProjectMetadata(ctx context.Context, projectID string, inp
 	}
 	return scanProject(s.db.QueryRowContext(ctx, `SELECT project_id, project_number, item_address, project_name,
 		project_description, project_goal, status, priority, palette_id,
-		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias,
+		planned_start_date, target_end_date, actual_started_at, completed_at, cancelled_at,
+		lifecycle_phase, schedule_timezone, deadline_warning_days
 		FROM projects WHERE project_id = ?`, projectID))
 }
 
@@ -1037,7 +1214,9 @@ func (s *Store) UpdateProjectMetadata(ctx context.Context, projectID string, inp
 func (s *Store) ProjectExecutionTree(ctx context.Context, projectID string) (model.ExecutionTree, error) {
 	project, err := scanProject(s.db.QueryRowContext(ctx, `SELECT project_id, project_number, item_address, project_name,
 		project_description, project_goal, status, priority, palette_id,
-		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias,
+		planned_start_date, target_end_date, actual_started_at, completed_at, cancelled_at,
+		lifecycle_phase, schedule_timezone, deadline_warning_days
 		FROM projects WHERE project_id = ?`, projectID))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1103,34 +1282,166 @@ func (s *Store) ProjectExecutionTree(ctx context.Context, projectID string) (mod
 	return tree, nil
 }
 
+// CalculateProjectCompletionPct derives calculated completion for a project using flat batch queries.
+func (s *Store) CalculateProjectCompletionPct(ctx context.Context, projectID string) (float64, error) {
+	type taskInfo struct {
+		taskID string
+		status string
+		estSec int64
+	}
+	type subtaskInfo struct {
+		subtaskID string
+		taskID    string
+		status    string
+		estSec    int64
+	}
+	type sprintInfo struct {
+		taskID    string
+		subtaskID string
+		status    string
+		estSec    int64
+		bufSec    int64
+	}
+
+	tRows, err := s.db.QueryContext(ctx, `SELECT task_id, status, estimated_duration_seconds FROM tasks WHERE project_id = ?`, projectID)
+	if err != nil {
+		return 0, fmt.Errorf("query project tasks: %w", err)
+	}
+	defer tRows.Close()
+
+	tasks := make(map[string]*taskInfo)
+	for tRows.Next() {
+		var t taskInfo
+		if err := tRows.Scan(&t.taskID, &t.status, &t.estSec); err != nil {
+			return 0, err
+		}
+		tasks[t.taskID] = &t
+	}
+	if err := tRows.Err(); err != nil {
+		return 0, err
+	}
+
+	stRows, err := s.db.QueryContext(ctx, `SELECT subtask_id, task_id, status, estimated_duration_seconds FROM subtasks WHERE project_id = ?`, projectID)
+	if err != nil {
+		return 0, fmt.Errorf("query project subtasks: %w", err)
+	}
+	defer stRows.Close()
+
+	subtasksByTask := make(map[string][]*subtaskInfo)
+	for stRows.Next() {
+		var st subtaskInfo
+		if err := stRows.Scan(&st.subtaskID, &st.taskID, &st.status, &st.estSec); err != nil {
+			return 0, err
+		}
+		subtasksByTask[st.taskID] = append(subtasksByTask[st.taskID], &st)
+	}
+	if err := stRows.Err(); err != nil {
+		return 0, err
+	}
+
+	spRows, err := s.db.QueryContext(ctx, `SELECT task_id, COALESCE(subtask_id, ''), status, estimated_duration_seconds, buffer_duration_seconds FROM sprints WHERE project_id = ?`, projectID)
+	if err != nil {
+		return 0, fmt.Errorf("query project sprints: %w", err)
+	}
+	defer spRows.Close()
+
+	taskSprints := make(map[string][]sprintInfo)
+	subtaskSprints := make(map[string][]sprintInfo)
+	for spRows.Next() {
+		var sp sprintInfo
+		if err := spRows.Scan(&sp.taskID, &sp.subtaskID, &sp.status, &sp.estSec, &sp.bufSec); err != nil {
+			return 0, err
+		}
+		if sp.subtaskID != "" {
+			subtaskSprints[sp.subtaskID] = append(subtaskSprints[sp.subtaskID], sp)
+		} else {
+			taskSprints[sp.taskID] = append(taskSprints[sp.taskID], sp)
+		}
+	}
+	if err := spRows.Err(); err != nil {
+		return 0, err
+	}
+
+	calcSprintWeight := func(sprints []sprintInfo) (int64, int64) {
+		var tot, comp int64
+		for _, sp := range sprints {
+			w := sp.estSec + sp.bufSec
+			if w <= 0 {
+				w = 1
+			}
+			tot += w
+			if sp.status == "Completed" {
+				comp += w
+			}
+		}
+		return tot, comp
+	}
+
+	var projectTotal, projectCompleted int64
+	for taskID, t := range tasks {
+		tTot, tComp := calcSprintWeight(taskSprints[taskID])
+		for _, st := range subtasksByTask[taskID] {
+			stTot, stComp := calcSprintWeight(subtaskSprints[st.subtaskID])
+			if stTot == 0 {
+				w := st.estSec
+				if w <= 0 {
+					w = 1
+				}
+				stTot = w
+				if st.status == "Completed" {
+					stComp = w
+				}
+			}
+			tTot += stTot
+			tComp += stComp
+		}
+		if tTot == 0 {
+			w := t.estSec
+			if w <= 0 {
+				w = 1
+			}
+			tTot = w
+			if t.status == "Completed" {
+				tComp = w
+			}
+		}
+		projectTotal += tTot
+		projectCompleted += tComp
+	}
+
+	if projectTotal == 0 {
+		return 0, nil
+	}
+	return math.Round((float64(projectCompleted)*100/float64(projectTotal))*10) / 10, nil
+}
+
 // ListProjects returns projects in most-recent activity order.
 func (s *Store) ListProjects(ctx context.Context) ([]model.Project, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT project_id, project_number, item_address, project_name,
 		project_description, project_goal, status, priority, palette_id,
-		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias,
+		planned_start_date, target_end_date, actual_started_at, completed_at, cancelled_at,
+		lifecycle_phase, schedule_timezone, deadline_warning_days
 		FROM projects ORDER BY updated_at DESC, project_number DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
 	defer rows.Close()
+
 	projects := make([]model.Project, 0)
 	for rows.Next() {
 		project, err := scanProject(rows)
 		if err != nil {
 			return nil, err
 		}
-		tree, err := s.ProjectExecutionTree(ctx, project.ProjectID)
+		pct, err := s.CalculateProjectCompletionPct(ctx, project.ProjectID)
 		if err != nil {
-			// A completion-calculation failure for one project must not take
-			// down the entire project list (and every caller that depends on
-			// it). Log it and fall back to a zero completion so the project
-			// is still listed and usable.
 			fmt.Printf("warn: project %s completion calc failed: %v\n", project.ProjectID, err)
 			project.CalculatedCompletionPct = 0
 			projects = append(projects, project)
 			continue
 		}
-		project.CalculatedCompletionPct = tree.Project.CalculatedCompletionPct
+		project.CalculatedCompletionPct = pct
 		projects = append(projects, project)
 	}
 	if err := rows.Err(); err != nil {
@@ -1167,7 +1478,9 @@ func (s *Store) GetProjectByAlias(ctx context.Context, alias string) (model.Proj
 	}
 	row := s.db.QueryRowContext(ctx, `SELECT project_id, project_number, item_address, project_name,
 		project_description, project_goal, status, priority, palette_id,
-		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias,
+		planned_start_date, target_end_date, actual_started_at, completed_at, cancelled_at,
+		lifecycle_phase, schedule_timezone, deadline_warning_days
 		FROM projects WHERE project_alias = ? AND project_alias != '' LIMIT 1`, alias)
 	project, err := scanProject(row)
 	if err != nil {
@@ -1203,7 +1516,9 @@ func (s *Store) UpdateProjectAlias(ctx context.Context, projectID string, input 
 	}
 	return scanProject(s.db.QueryRowContext(ctx, `SELECT project_id, project_number, item_address, project_name,
 		project_description, project_goal, status, priority, palette_id,
-		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias,
+		planned_start_date, target_end_date, actual_started_at, completed_at, cancelled_at,
+		lifecycle_phase, schedule_timezone, deadline_warning_days
 		FROM projects WHERE project_id = ?`, projectID))
 }
 
@@ -1211,9 +1526,12 @@ func (s *Store) UpdateProjectAlias(ctx context.Context, projectID string, input 
 func scanProject(scanner interface{ Scan(...any) error }) (model.Project, error) {
 	var project model.Project
 	var createdAt, updatedAt string
+	var actualStartedAt, completedAt, cancelledAt sql.NullString
 	if err := scanner.Scan(&project.ProjectID, &project.ProjectNumber, &project.ItemAddress, &project.ProjectName,
 		&project.ProjectDescription, &project.ProjectGoal, &project.Status, &project.Priority, &project.PaletteID,
-		&project.ReportedCompletionPct, &project.CalculatedCompletionPct, &createdAt, &updatedAt, &project.ProjectAlias); err != nil {
+		&project.ReportedCompletionPct, &project.CalculatedCompletionPct, &createdAt, &updatedAt, &project.ProjectAlias,
+		&project.PlannedStartDate, &project.TargetEndDate, &actualStartedAt, &completedAt, &cancelledAt,
+		&project.LifecyclePhase, &project.ScheduleTimezone, &project.DeadlineWarningDays); err != nil {
 		return model.Project{}, fmt.Errorf("scan project: %w", err)
 	}
 	var err error
@@ -1225,6 +1543,26 @@ func scanProject(scanner interface{ Scan(...any) error }) (model.Project, error)
 	if err != nil {
 		return model.Project{}, fmt.Errorf("parse project updated_at: %w", err)
 	}
+	parseOptionalTime := func(value sql.NullString, field string) (*time.Time, error) {
+		if !value.Valid || strings.TrimSpace(value.String) == "" {
+			return nil, nil
+		}
+		parsed, parseErr := time.Parse(time.RFC3339Nano, value.String)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse project %s: %w", field, parseErr)
+		}
+		return &parsed, nil
+	}
+	if project.ActualStartedAt, err = parseOptionalTime(actualStartedAt, "actual_started_at"); err != nil {
+		return model.Project{}, err
+	}
+	if project.CompletedAt, err = parseOptionalTime(completedAt, "completed_at"); err != nil {
+		return model.Project{}, err
+	}
+	if project.CancelledAt, err = parseOptionalTime(cancelledAt, "cancelled_at"); err != nil {
+		return model.Project{}, err
+	}
+	project.DeadlineState, project.DaysToDeadline = project.ScheduleState(time.Now())
 	return project, nil
 }
 
@@ -2771,14 +3109,19 @@ func resolveCategoryID(ctx context.Context, tx *sql.Tx, projectID, inputCategory
 	if err == nil {
 		return catID, catAddress, nil
 	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", "", fmt.Errorf("lookup category %q: %w", inputCategory, err)
+	}
 
 	err = tx.QueryRowContext(ctx, "SELECT category_id, item_address FROM categories WHERE category_name = ? COLLATE NOCASE AND project_id = ?", inputCategory, projectID).Scan(&catID, &catAddress)
 	if err == nil {
 		return catID, catAddress, nil
 	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", "", fmt.Errorf("lookup category name %q: %w", inputCategory, err)
+	}
 
-	addr, err := ensureDefaultCategory(ctx, tx, projectID)
-	return "C-00000", addr, err
+	return "", "", fmt.Errorf("%w: category %q in project %s", ErrNotFound, inputCategory, projectID)
 }
 
 // CreateTask persists a category-owned task with a global ID and hierarchical address.
@@ -2861,6 +3204,17 @@ func (s *Store) CreateTasksBatch(ctx context.Context, projectID string, inputs [
 	}
 	defer tx.Rollback()
 
+	projectStatus, err := readProjectStatus(ctx, tx, projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: project %s", ErrNotFound, projectID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read task batch Project: %w", err)
+	}
+	if projectStatus != "Open" {
+		return nil, fmt.Errorf("%w: target Project is not Open", ErrValidation)
+	}
+
 	categoryCache := make(map[string]struct {
 		id   string
 		addr string
@@ -2885,6 +3239,13 @@ func (s *Store) CreateTasksBatch(ctx context.Context, projectID string, inputs [
 			cID, cAddr, err := resolveCategoryID(ctx, tx, projectID, input.CategoryID)
 			if err != nil {
 				return nil, fmt.Errorf("task %d: resolve category: %w", i+1, err)
+			}
+			var categoryStatus string
+			if err := tx.QueryRowContext(ctx, "SELECT status FROM categories WHERE category_id = ? AND project_id = ?", cID, projectID).Scan(&categoryStatus); err != nil {
+				return nil, fmt.Errorf("task %d: read Category status: %w", i+1, err)
+			}
+			if categoryStatus != "Open" {
+				return nil, fmt.Errorf("%w: task %d Category is not Open", ErrValidation, i+1)
 			}
 			catInfo = struct {
 				id   string
@@ -2969,13 +3330,60 @@ func (s *Store) ListTasks(ctx context.Context, projectID string) ([]model.Task, 
 	return tasks, nil
 }
 
+// UpdateTaskMetadataPartial patches only the supplied Task context fields.
+// Omitted fields keep their stored value, so editing a long description cannot
+// silently clear the goal.
+func (s *Store) UpdateTaskMetadataPartial(ctx context.Context, taskID string, input model.PatchTaskMetadataInput) (model.Task, error) {
+	if input.Goal == nil && input.Description == nil {
+		return model.Task{}, fmt.Errorf("%w: a task metadata patch must supply at least one of goal or description", ErrValidation)
+	}
+	goal := input.Goal
+	description := input.Description
+	// Task/subtask goal and description are deliberately unbounded. A character
+	// ceiling shapes what can be described, which costs more than the storage
+	// it saves: the only real limit is the 1 MiB mutating-request body cap in
+	// the API layer. Empty-after-trim is rejected below, not length-limited.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Task{}, err
+	}
+	defer tx.Rollback()
+	var projectID, previousGoal, previousDescription string
+	if err := tx.QueryRowContext(ctx, "SELECT project_id, task_goal, task_description FROM tasks WHERE task_id = ?", taskID).Scan(&projectID, &previousGoal, &previousDescription); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.Task{}, fmt.Errorf("%w: task %s", ErrNotFound, taskID)
+		}
+		return model.Task{}, err
+	}
+	nextGoal := previousGoal
+	if goal != nil {
+		nextGoal = strings.TrimSpace(*goal)
+	}
+	nextDescription := previousDescription
+	if description != nil {
+		nextDescription = strings.TrimSpace(*description)
+	}
+	now := time.Now().UTC().Round(0)
+	if _, err := tx.ExecContext(ctx, "UPDATE tasks SET task_goal = ?, task_description = ?, updated_at = ? WHERE task_id = ?", nextGoal, nextDescription, now.Format(time.RFC3339Nano), taskID); err != nil {
+		return model.Task{}, err
+	}
+	if previousGoal != nextGoal || previousDescription != nextDescription {
+		if err := recordProjectEvent(ctx, tx, projectID, "task", taskID, "task_metadata_updated", "Task goal or description updated.", now); err != nil {
+			return model.Task{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return model.Task{}, err
+	}
+	return scanTask(s.db.QueryRowContext(ctx, `SELECT task_id, project_id, category_id, item_address, task_name, task_description, task_goal, status, priority, estimated_duration_seconds, reported_completion_pct, calculated_completion_pct, auto_close, created_at, updated_at FROM tasks WHERE task_id = ?`, taskID))
+}
+
 // UpdateTaskMetadata persists editable durable Task context.
 func (s *Store) UpdateTaskMetadata(ctx context.Context, taskID string, input model.UpdateTaskMetadataInput) (model.Task, error) {
 	goal := strings.TrimSpace(input.Goal)
 	description := strings.TrimSpace(input.Description)
-	if len(goal) > 1000 || len(description) > 10000 {
-		return model.Task{}, fmt.Errorf("%w: task goal must be at most 1000 characters and description at most 10000 characters", ErrValidation)
-	}
+	// Unbounded by design - see PatchTaskMetadata. Only the ToTb board caps
+	// length, to keep agent context reads small.
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.Task{}, err

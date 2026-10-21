@@ -3,6 +3,15 @@
 ## Authority
 This document describes the durable model enforced by TimeKeeper (SQLite store + API). The code, not this text, is the source of truth; if they diverge, trust `internal/store/store.go`, `internal/model/`, and `docs/API.md`.
 
+## Registration queue (incoming offers)
+Task, Subtask, Sprint, and batch-creation API requests are first appended as durable registration offers. Each offer is FIFO, has an idempotency key when supplied, and remains visible with `Queued`, `Registered`, or `Rejected` state. Core processes each offer through the existing API validation and registration semantics; all entities in one batch and that queue item's final result/status commit atomically. A crash before processing leaves the offer queued; a crash during registration rolls back the entities and leaves the offer retryable. Rejected offers remain inspectable with structured validation findings rather than vanishing.
+
+This is the **registration queue**: it moves an API offer into the durable hierarchy and Web UI. The separate **execution queue** below is the FIFO set of runnable Open Sprints claimed by agents. Once an offer registers, its Open Sprints become execution-queue work; Tasks without Sprints remain durable plans, not runnable items. Do not create a second in-memory Task queue or silently treat a queued registration as already registered.
+
+The Core list API is FIFO-paged (`limit`/`offset` with `has_more`/`next_offset`); the Web UI must expose older pages rather than silently stopping at its first page. Queue history remains queryable by status and item ID.
+
+The CLI adds a pre-Core **local outbox** for Task/Subtask/Sprint and batch-create commands. It writes the immutable request payload and stable idempotency key under `.timekeeper/registration-outbox` before the network call, with append-only state snapshots. `tk queue list`/`show` inspect this local outbox; `tk queue flush` retries FIFO using the same key and re-runs batch smoke before apply. Local outbox entries are not yet Core records and cannot reach the Web UI until Core accepts them. Keep this boundary explicit: local outbox → Core registration queue → durable Project records → Sprint execution queue.
+
 ## Hierarchy
 Project (`P-`) → Category (`C-`) → Task (`T-`) → Subtask (`ST-`, optional) → Sprint (`SP-`).
 Every Sprint belongs to exactly one Project. It belongs directly to a Task, or to a Subtask under that Task. There is no Sprint that floats independently of a Project/Category/Task (or Subtask).
@@ -70,7 +79,7 @@ Verify queue behavior by inspecting the live state, not by reading this file:
 
 # Read-only attention (held, timed out, and non-runnable open items)
 # This is an API surface; the CLI reflects it through pulse and summary output.
-curl -sS http://127.0.0.1:1618/api/v1/projects/P-10053/attention | head
+curl -sS http://timekeeper.local/api/v1/projects/P-10053/attention | head
 ```
 
 A Sprint that claims to be completed but is still listed in the runnable queue, or a completed parent that still has open queued Sprints, indicates a divergence between this description and the store state. When that happens, the store state (verified through `tk tree`, `tk pulse`, and the `attention` endpoint) is the truth; this document must then be corrected.

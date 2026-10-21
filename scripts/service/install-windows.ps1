@@ -21,11 +21,14 @@ $binary=Join-Path $state 'app/bin/timekeeper.exe'
 $cliBinary=Join-Path $state 'app/bin/tk.exe'
 $legacyName='TimeKeeper-Launcher'
 $serviceName='TimeKeeper'
+$serviceDescription='Timekeeper the project manager for AI agents and human alike'
 $obeyBinary=Join-Path $state 'app/bin/obey.exe'
 $serviceLog=Join-Path $state 'log/service.log'
 $serviceErrorLog=Join-Path $state 'log/service.error.log'
-if(!$Bend2WillRoot){$candidate=Join-Path (Split-Path $root -Parent) 'Bend2Will';if(Test-Path -LiteralPath (Join-Path $candidate 'go.mod')){$Bend2WillRoot=$candidate}}
-if($Bend2WillRoot){if(!(Test-Path -LiteralPath (Join-Path $Bend2WillRoot 'go.mod'))){throw "Bend2Will source not found at $Bend2WillRoot"};$Bend2WillRoot=(Resolve-Path -LiteralPath $Bend2WillRoot).Path}
+$guardianState=Join-Path $state 'app/state'
+$toolsBend2Will=Join-Path $root 'tools/Bend2Will'
+if(!(Test-Path -LiteralPath (Join-Path $toolsBend2Will 'go.mod'))){throw "Bend2Will source not found at $toolsBend2Will - run install.bat to sync tools/"}
+$Bend2WillRoot=(Resolve-Path -LiteralPath $toolsBend2Will).Path
 if($ObeyPath){if(!(Test-Path -LiteralPath $ObeyPath)){throw "obey.exe not found at $ObeyPath"};$ObeyPath=(Resolve-Path -LiteralPath $ObeyPath).Path}
 if(!$ObeyPath -and (Test-Path -LiteralPath $obeyBinary)){$ObeyPath=$obeyBinary}
 if(!$ObeyPath){$found=Get-Command obey.exe -ErrorAction SilentlyContinue;if($found){$ObeyPath=$found.Source}}
@@ -45,13 +48,40 @@ if(Test-Path -LiteralPath $config){
   if($line -eq 'TIMEKEEPER_PROXY_DISABLED=1'){$proxyAddr=''}
  }
 }
-$serviceArgsArray=@('-addr','127.0.0.1:1618','-db',(Join-Path $state 'timekeeper.db'),'-ui',(Join-Path $state 'web/index.html'),'-pulse-guardian-interval','5m',('-proxy-addr='+$proxyAddr))
+# Tracked-file history root. Empty means the /api/v1/files/* routes are disabled and
+# every project file list returns 503 history_unconfigured, which reads as "file
+# history is broken" rather than "file history was never switched on".
+$historyRoot=Join-Path $state 'tracked'
+if(Test-Path -LiteralPath $config){
+ foreach($line in Get-Content -LiteralPath $config){
+  if($line -match '^TIMEKEEPER_HISTORY_ROOT=(.+)$'){$historyRoot=$Matches[1]}
+  if($line -eq 'TIMEKEEPER_HISTORY_DISABLED=1'){$historyRoot=''}
+ }
+}
+if($historyRoot -and !(Test-Path -LiteralPath $historyRoot)){New-Item -ItemType Directory -Path $historyRoot -Force|Out-Null}
+$shadowCopyDir=Join-Path (Join-Path $state 'recovery') 'sqlite-shadow'
+$shadowCopyInterval='5m'
+$shadowCopyDisabled=$false
+if($config -and (Test-Path -LiteralPath $config)){
+ foreach($line in Get-Content -LiteralPath $config){
+  if($line -match '^TIMEKEEPER_SHADOW_COPY_DIR=(.+)$'){$shadowCopyDir=$Matches[1]}
+  if($line -match '^TIMEKEEPER_SHADOW_COPY_INTERVAL=(.+)$'){$shadowCopyInterval=$Matches[1]}
+  if($line -eq 'TIMEKEEPER_SHADOW_COPY_DISABLED=1'){$shadowCopyDisabled=$true}
+ }
+}
+if($env:TIMEKEEPER_SHADOW_COPY_DIR){$shadowCopyDir=$env:TIMEKEEPER_SHADOW_COPY_DIR}
+if($env:TIMEKEEPER_SHADOW_COPY_INTERVAL){$shadowCopyInterval=$env:TIMEKEEPER_SHADOW_COPY_INTERVAL}
+if($env:TIMEKEEPER_SHADOW_COPY_DISABLED -eq '1'){$shadowCopyDisabled=$true}
+if($shadowCopyDisabled){$shadowCopyInterval='0'}
+$serviceArgsArray=@('-addr','127.0.0.1:1618','-db',(Join-Path $state 'timekeeper.db'),'-ui',(Join-Path $state 'web/index.html'),'-pulse-guardian-interval','5m','-guardian-state-dir',$guardianState,'-shadow-copy-dir',$shadowCopyDir,'-shadow-copy-interval',$shadowCopyInterval,('-proxy-addr='+$proxyAddr))
+if($historyRoot){$serviceArgsArray+=('-history-root='+$historyRoot)}
 $parameters=$serviceArgsArray -join [char]31
 $parametersForDisplay=ConvertTo-Json -InputObject $serviceArgsArray -Compress
-$nssmParameters='-addr 127.0.0.1:1618 -db "'+(Join-Path $state 'timekeeper.db')+'" -ui "'+(Join-Path $state 'web/index.html')+'" -pulse-guardian-interval 5m -proxy-addr='+$proxyAddr
+$nssmParameters='-addr 127.0.0.1:1618 -db "'+(Join-Path $state 'timekeeper.db')+'" -ui "'+(Join-Path $state 'web/index.html')+'" -pulse-guardian-interval 5m -guardian-state-dir "'+$guardianState+'" -shadow-copy-dir "'+$shadowCopyDir+'" -shadow-copy-interval '+$shadowCopyInterval+' -proxy-addr='+$proxyAddr
+if($historyRoot){$nssmParameters+=' -history-root "'+$historyRoot+'"'}
 if($Plan){
  [pscustomobject]@{
-  Repository=$root;Binary=$binary;Obey=$ObeyPath;ObeyTarget=$obeyBinary;Bend2WillRoot=$Bend2WillRoot
+  Repository=$root;Binary=$binary;Obey=$ObeyPath;ObeyTarget=$obeyBinary;Bend2WillRoot=$Bend2WillRoot;ServiceDescription=$serviceDescription
   Parameters=$parametersForDisplay;NssmParameters=$nssmParameters;Service=$serviceName;Manager=$installManager
   ExistingServiceBackend=$existingPlanBackend;MigrationRequired=($existingPlanBackend -eq 'NSSM' -and $installManager -eq 'Bend2Will obey')
   Account='NT AUTHORITY\LocalService';Start='delayed-auto';RestartOnFailure='5s';Log=$serviceLog;LogMaxBytes=10485760
@@ -61,6 +91,10 @@ if($Plan){
  exit 0
 }
 if($Action -eq 'install' -and $installManager -eq 'Bend2Will obey' -and $existingPlanBackend -eq 'NSSM' -and !$MigrateFromNssm){throw 'An NSSM TimeKeeper service is installed. No service was changed; rerun with -MigrateFromNssm to approve the Bend2Will migration.'}
+# status and logs are read-only queries: never elevate for them, otherwise the
+# UAC child detaches stdout and `tk service status` returns nothing at all.
+$privilegedActions=@('install','uninstall','start','stop','restart')
+if($privilegedActions -contains $Action){
 $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
 $admin=([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if(!$admin){
@@ -74,8 +108,9 @@ if(!$admin){
 $launchArgs+=@('-ObeyPath',('"'+$ObeyPath+'"'))}
  if($Bend2WillRoot){$launchArgs+=@('-Bend2WillRoot',('"'+$Bend2WillRoot+'"'))}
  if($NssmPath){$launchArgs+=@('-NssmPath',('"'+$NssmPath+'"'))}
- $child=Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe') -ArgumentList $launchArgs -Verb RunAs -WindowStyle Hidden -PassThru
- $child.WaitForExit();exit $child.ExitCode
+$child=Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe') -ArgumentList $launchArgs -Verb RunAs -WindowStyle Hidden -PassThru
+  $child.WaitForExit();exit $child.ExitCode
+ }
 }
 function Invoke-Nssm([string[]]$Arguments){if(!$NssmPath -or !(Test-Path -LiteralPath $NssmPath)){throw 'NSSM is unavailable for the installed legacy service.'};$result=& $NssmPath @Arguments 2>&1;if($LASTEXITCODE -ne 0){throw "NSSM $($Arguments[0]) failed: $result"};return (($result -join "`n") -replace "`0", "").Trim()}
 function Invoke-NssmStartOrRestart([string]$Action){
@@ -112,9 +147,9 @@ function Wait-ServiceRemoved {
  do{if(!(Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue)){return};Start-Sleep -Milliseconds 200}while((Get-Date) -lt $deadline)
  throw "Windows did not finish removing service '$serviceName'."
 }
-function Install-ObeyService([string]$ArgumentsEncoded,[string]$LogPath,[long]$LogMaxBytes){
+function Install-ObeyService([string]$ArgumentsEncoded,[string]$LogPath,[long]$LogMaxBytes,[string]$Description=$serviceDescription){
  Wait-ServiceRemoved
- $arguments=@('install',$serviceName,'--command',$binary,'--arguments',$ArgumentsEncoded,'--workdir',$root,'--log',$LogPath,'--log-max-bytes',"$LogMaxBytes",'--service-account','LocalService','--enable','--delayed-auto-start','--restart-service-on-failure','--service-restart-delay','5s','--now')
+ $arguments=@('install',$serviceName,'--command',$binary,'--arguments',$ArgumentsEncoded,'--workdir',$root,'--description',$Description,'--log',$LogPath,'--log-max-bytes',"$LogMaxBytes",'--service-account','LocalService','--enable','--delayed-auto-start','--restart-service-on-failure','--service-restart-delay','5s','--now')
  Invoke-Obey $obeyBinary $arguments|Out-Null
 }
 function Build-Obey([string]$Destination){
@@ -170,9 +205,17 @@ if($Action -in @('start','stop','restart')){
  exit 0
 }
 if($Action -eq 'uninstall'){
- if($existingBackend -eq 'obey'){Invoke-Obey $serviceObeyPath @('release',$serviceName)|Out-Null}
- elseif($existingBackend -eq 'nssm'){Invoke-Nssm @('stop',$serviceName)|Out-Null;Invoke-Nssm @('remove',$serviceName,'confirm')|Out-Null}
- elseif($existingBackend -eq 'unknown'){throw "Refusing to remove unknown service image: $($existingService.PathName)"}
+ $operationLogDir=Join-Path $state 'service/operations'
+ New-Item -ItemType Directory -Path $operationLogDir -Force|Out-Null
+ $operationLog=Join-Path $operationLogDir ('uninstall-'+(Get-Date -Format 'yyyyMMdd-HHmmss')+'.log')
+ Start-Transcript -Path $operationLog|Out-Null
+ try {
+  if($existingBackend -eq 'obey'){Invoke-Obey $serviceObeyPath @('release',$serviceName)|Out-Null}
+  elseif($existingBackend -eq 'nssm'){Invoke-Nssm @('stop',$serviceName)|Out-Null;Invoke-Nssm @('remove',$serviceName,'confirm')|Out-Null}
+  elseif($existingBackend -eq 'unknown'){throw "Refusing to remove unknown service image: $($existingService.PathName)"}
+ } finally {
+  Stop-Transcript|Out-Null
+ }
  exit 0
 }
 $backup=Join-Path $state ('service/migration-'+(Get-Date -Format 'yyyyMMdd-HHmmss'))
@@ -229,7 +272,7 @@ $legacy=Get-ScheduledTask -TaskName $legacyName -TaskPath '\' -ErrorAction Silen
  $previousObeyMetadata=Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
  if($previousObeyMetadata.ServiceManager -ne 'Bend2Will'){throw 'Existing service install record does not identify Bend2Will; refusing takeover.'}
  $legacyWasRunning=$existingService.State -eq 'Running'
- $serviceAlreadyConfigured=($previousObeyMetadata.Parameters -eq $parameters -and $previousObeyMetadata.LogPath -eq $serviceLog -and [long]$previousObeyMetadata.LogMaxBytes -eq 10485760)
+ $serviceAlreadyConfigured=($previousObeyMetadata.Parameters -eq $parameters -and $previousObeyMetadata.ServiceDescription -eq $serviceDescription -and $previousObeyMetadata.LogPath -eq $serviceLog -and [long]$previousObeyMetadata.LogMaxBytes -eq 10485760)
 }elseif($existingBackend -eq 'unknown'){
  throw "Refusing to replace unknown service image: $($existingService.PathName)"
 }
@@ -242,7 +285,7 @@ $legacy=Get-ScheduledTask -TaskName $legacyName -TaskPath '\' -ErrorAction Silen
  (Get-Service $serviceName).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(30))
 }
  foreach($owner in @(Get-TkListener)){Stop-Process -Id $owner;$stoppedStandalone=$true;Wait-Process -Id $owner -Timeout 10 -ErrorAction SilentlyContinue}
- New-Item -ItemType Directory -Path (Join-Path $state 'app/bin'),(Join-Path $state 'log'),(Join-Path $state 'web') -Force | Out-Null
+ New-Item -ItemType Directory -Path (Join-Path $state 'app/bin'),$guardianState,(Join-Path $state 'log'),(Join-Path $state 'web') -Force | Out-Null
 if($installManager -eq 'Bend2Will obey' -and $obeySource -ine $obeyBinary){
  if(Test-Path -LiteralPath $obeyBinary){Copy-Item -LiteralPath $obeyBinary -Destination (Join-Path $backup 'obey.previous.exe');$previousObeySaved=$true}
  Copy-Item -LiteralPath $obeySource -Destination $obeyBinary -Force
@@ -260,10 +303,19 @@ if($installManager -eq 'Bend2Will obey' -and $obeySource -ine $obeyBinary){
  if(!(Test-Path -LiteralPath (Join-Path $state 'web/index.html'))){throw 'Dashboard assets missing.'}
  # Dedicated low-privilege service account; no user password is collected.
  & icacls.exe $state /grant '*S-1-5-19:(OI)(CI)M' /T /Q | Out-Null;if($LASTEXITCODE -ne 0){throw 'Could not grant LocalService access to TimeKeeper runtime state.'}
+if($shadowCopyInterval -ne '0'){
+ try{
+  New-Item -ItemType Directory -Path $shadowCopyDir -Force|Out-Null
+  $shadowUserSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $shadowAclArgs=@($shadowCopyDir,'/inheritance:r','/remove:g','*S-1-1-0','/remove:d','*S-1-1-0','/grant','*S-1-5-18:(OI)(CI)F','*S-1-5-19:(OI)(CI)M','*S-1-5-32-544:(OI)(CI)F',('*'+$shadowUserSid+':(OI)(CI)F'),'/T','/Q')
+  & icacls.exe @shadowAclArgs|Out-Null
+  if($LASTEXITCODE -ne 0){throw "Could not secure shadow directory $shadowCopyDir."}
+ }catch{throw "Cannot prepare secure shadow directory $shadowCopyDir : $_"}
+}
  if($installManager -eq 'NSSM legacy fallback'){
   if(!$NssmPath){throw 'NSSM is required for the legacy fallback; set TIMEKEEPER_NSSM.'}
   if(!$existingService){Invoke-Nssm @('install',$serviceName,$binary)|Out-Null;$nssmInstalled=$true}
-  $settings=[ordered]@{Application=$binary;AppDirectory=$root;AppParameters=$nssmParameters;DisplayName='TimeKeeper';Description='TimeKeeper project execution service';ObjectName='NT AUTHORITY\LocalService';Start='SERVICE_DELAYED_AUTO_START';AppStdout=$serviceLog;AppStderr=$serviceErrorLog;AppStdoutCreationDisposition='4';AppStderrCreationDisposition='4';AppRotateFiles='1';AppRotateBytes='10485760';AppRestartDelay='5000';AppThrottle='30000'}
+  $settings=[ordered]@{Application=$binary;AppDirectory=$root;AppParameters=$nssmParameters;DisplayName='TimeKeeper';Description=$serviceDescription;ObjectName='NT AUTHORITY\LocalService';Start='SERVICE_DELAYED_AUTO_START';AppStdout=$serviceLog;AppStderr=$serviceErrorLog;AppStdoutCreationDisposition='4';AppStderrCreationDisposition='4';AppRotateFiles='1';AppRotateBytes='10485760';AppRestartDelay='5000';AppThrottle='30000'}
   foreach($key in $settings.Keys){Invoke-Nssm @('set',$serviceName,$key,$settings[$key])|Out-Null}
   Invoke-Nssm @('set',$serviceName,'AppExit','Default','Restart')|Out-Null
  }else{
@@ -278,6 +330,7 @@ if($installManager -eq 'Bend2Will obey' -and $obeySource -ine $obeyBinary){
    Wait-ServiceRemoved
   }
  }
+# The shared CLI helper owns the managed Core, Guardian, and Vite loopback aliases.
  if(!$existingService -or $UpdateHosts){& $cliBinary hosts add;if($LASTEXITCODE -ne 0){throw 'Friendly hostname setup failed.'}}
  if($installManager -eq 'NSSM legacy fallback'){Invoke-NssmStartOrRestart 'start'}
  elseif($serviceAlreadyConfigured){Invoke-Obey $obeyBinary @('start',$serviceName)|Out-Null}
@@ -288,7 +341,7 @@ elseif($legacy){Write-Output 'Legacy launcher task was retained; it remains disa
  if($installManager -eq 'NSSM legacy fallback'){
  [pscustomobject]@{ServiceManager='NSSM';Service=$serviceName;Status='Running';Health='ok';Parameters=$nssmParameters;LogPath=$serviceLog;LogMaxBytes=10485760;Account='NT AUTHORITY\LocalService';Start='delayed-auto';LegacyTaskRemoved=[bool]($legacy -and $RetireLegacyLauncher);LegacyTaskRetained=[bool]($legacy -and !$RetireLegacyLauncher);Backup=$backup}|ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $installRecordPath
 }else{
- [pscustomobject]@{ServiceManager='Bend2Will';Service=$serviceName;Status='Running';Health='ok';ObeyPath=$obeyBinary;Parameters=$parameters;LogPath=$serviceLog;LogMaxBytes=10485760;Account='NT AUTHORITY\LocalService';Start='delayed-auto';RestartServiceOnFailure=$true;ServiceRestartDelay='5s';LegacyTaskRemoved=[bool]($legacy -and $RetireLegacyLauncher);LegacyTaskRetained=[bool]($legacy -and !$RetireLegacyLauncher);Backup=$backup}|ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $installRecordPath
+ [pscustomobject]@{ServiceManager='Bend2Will';Service=$serviceName;Status='Running';Health='ok';ObeyPath=$obeyBinary;Parameters=$parameters;ServiceDescription=$serviceDescription;LogPath=$serviceLog;LogMaxBytes=10485760;Account='NT AUTHORITY\LocalService';Start='delayed-auto';RestartServiceOnFailure=$true;ServiceRestartDelay='5s';LegacyTaskRemoved=[bool]($legacy -and $RetireLegacyLauncher);LegacyTaskRetained=[bool]($legacy -and !$RetireLegacyLauncher);Backup=$backup}|ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $installRecordPath
 }
  Write-Output "TimeKeeper service verified; legacy task retired. Backup: $backup"
 } catch {
@@ -306,7 +359,7 @@ elseif($legacy){Write-Output 'Legacy launcher task was retained; it remains disa
  if($legacyNssmRemoved -and $legacyNssmSettings){
   try{Restore-NssmSettings $legacyNssmSettings;if($legacyWasRunning){Invoke-NssmStartOrRestart 'start';Assert-ServiceHealth}}catch{Write-Warning "Could not restore the previous NSSM service: $_"}
  }elseif($obeyServiceRemoved -and $previousObeyMetadata){
-  try{Install-ObeyService $previousObeyMetadata.Parameters $previousObeyMetadata.LogPath ([long]$previousObeyMetadata.LogMaxBytes);if($legacyWasRunning){Invoke-Obey $obeyBinary @('start',$serviceName)|Out-Null;Assert-ServiceHealth}}catch{Write-Warning "Could not restore the previous Bend2Will service: $_"}
+  try{$previousDescription='';if($previousObeyMetadata.PSObject.Properties['ServiceDescription']){$previousDescription=[string]$previousObeyMetadata.ServiceDescription};Install-ObeyService $previousObeyMetadata.Parameters $previousObeyMetadata.LogPath ([long]$previousObeyMetadata.LogMaxBytes) $previousDescription;if($legacyWasRunning){Invoke-Obey $obeyBinary @('start',$serviceName)|Out-Null;Assert-ServiceHealth}}catch{Write-Warning "Could not restore the previous Bend2Will service: $_"}
  }elseif($existingBackend -eq 'obey' -and $serviceAlreadyConfigured -and $legacyWasRunning){
   try{Invoke-Obey $obeyBinary @('start',$serviceName)|Out-Null;Assert-ServiceHealth}catch{Write-Warning "Could not restart the previous Bend2Will service: $_"}
  }elseif($existingBackend -eq 'nssm' -and !$legacyNssmRemoved -and $legacyNssmSettings){

@@ -72,7 +72,7 @@ func ExecuteCobra(args []string, out, errOut io.Writer, baseURL string) int {
 	}
 
 	engine := NewCobraEngine(args, out, errOut, baseURL)
-	
+
 	// Execute command dispatched via RunTracked to preserve exact FASE identity and API behavior
 	return RunTracked(args, out, errOut, engine.BaseURL)
 }
@@ -80,7 +80,7 @@ func ExecuteCobra(args []string, out, errOut io.Writer, baseURL string) int {
 // BuildCobraTree generates the explicit Cobra subcommand hierarchy for diagnostic inspection.
 func BuildCobraTree(out, errOut io.Writer, baseURL string) *cobra.Command {
 	engine := NewCobraEngine(nil, out, errOut, baseURL)
-	
+
 	subcommands := []struct {
 		use   string
 		short string
@@ -91,6 +91,7 @@ func BuildCobraTree(out, errOut io.Writer, baseURL string) *cobra.Command {
 		{"project", "Project management commands"},
 		{"task", "Task management commands"},
 		{"sprint", "Sprint management commands"},
+		{"tc", "Project-scoped Treasure Chest for reusable gems"},
 		{"events", "Event stream commands"},
 		{"doctor", "System health diagnostics"},
 	}

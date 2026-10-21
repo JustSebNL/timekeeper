@@ -118,6 +118,14 @@ type UpdateProjectMessageInput struct {
 	Tags   string      `json:"tags"`
 }
 
+type ProjectMessageSearchFilter struct {
+	Limit  int
+	Kind   string
+	Tags   []string
+	After  *time.Time
+	Before *time.Time
+}
+
 // ProjectMessageSearchHit is one search result, with the FTS5 snippet
 // that matched so the UI can show why this entry came back.
 type ProjectMessageSearchHit struct {

@@ -45,6 +45,14 @@ type UpdateTaskMetadataInput struct {
 	Description string `json:"description"`
 }
 
+// PatchTaskMetadataInput holds a partial Task context update. A nil field is
+// "leave unchanged", which is the only way to edit one long field without
+// first re-reading and resubmitting the other.
+type PatchTaskMetadataInput struct {
+	Goal        *string `json:"goal,omitempty"`
+	Description *string `json:"description,omitempty"`
+}
+
 // UpdateTaskStatusInput holds an explicit Task workflow state.
 type UpdateTaskStatusInput struct {
 	Status string `json:"status"`

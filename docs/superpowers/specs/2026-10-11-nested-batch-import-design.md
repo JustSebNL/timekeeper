@@ -90,10 +90,26 @@ extensions:
       - name: Add feed error-state coverage
         estimated_duration_seconds: 1800
         buffer_pct: 0
+planning:
+  # Informational only: these records never create or modify TimeKeeper items.
+  executable_task_metadata:
+    - task_index: 0
+      key: sample_feature
+      phase: 1
+      acceptance: ["Smoke test and atomic apply pass"]
+  deferred_items:
+    - key: future_provider
+      condition: "Deferred until its provider contract and approval exist."
+      acceptance: ["Provider outage leaves local operation intact."]
+  release_gates: []
+  application_constraints: []
 ```
 
 Fields map to existing `CreateTaskInput`, `CreateSubtaskInput`, and
-`CreateSprintInput` contracts; status, IDs for newly created objects, time
+`CreateSprintInput` contracts; the optional `planning` object has only the
+documented `executable_task_metadata`, `deferred_items`, `release_gates`, and
+`application_constraints` keys and is strictly validated but never executed.
+Status, IDs for newly created objects, time
 entries, and lifecycle transitions are never accepted from a batch. Estimates
 are positive where required, `buffer_pct` is a whole number from 0 to 100, and
 omitted optional fields use the same defaults as normal object creation.
@@ -132,6 +148,9 @@ Add a strict nested batch request/response model. Add Project-scoped Core routes
 for validation and apply, without changing the meaning of existing
 `POST /api/v1/projects/{projectID}/tasks/batch`:
 
+- `POST /api/v1/projects/{projectID}/tasks/batch/validate` performs a read-only
+  validation for the legacy task-only payload, so CSV/TSV/XLSX/SQL/archive and
+  legacy JSON/YAML imports receive the same pre-apply smoke-test gate.
 - `POST /api/v1/projects/{projectID}/execution-batches/validate` performs a
   read-only validation and returns counts plus structured validation errors.
 - `POST /api/v1/projects/{projectID}/execution-batches` validates and creates
@@ -147,8 +166,29 @@ transaction. Any failure rolls back all objects in the batch.
 ## Error and safety behavior
 
 - Syntax/schema and server validation errors identify the object path (for
-  example `tasks[2].subtasks[0].sprints[1]`) and reason.
-- Failed validation prints a clear failure mark and zero committed counts.
+  example `tasks[2].subtasks[0].sprints[1]`), the field (for example
+  `estimated_duration_seconds`), a concise explanation, and a concrete fix
+  (for example, "set this to a positive number of seconds").
+- Validation returns all independent, safely discoverable errors in stable
+  document order, rather than stopping after the first bad object. If parsing
+  cannot safely continue (for example, malformed YAML), report the exact
+  document location when available and the syntax correction needed.
+- Failed validation prints a clear failure mark, zero committed counts, and
+  each issue in a repair-oriented form, such as:
+
+  ```text
+  ✗ Smoke test failed; nothing was written (0 objects committed)
+  tasks[2].subtasks[0].sprints[1].estimated_duration_seconds:
+    must be greater than 0; set it to a positive duration in seconds.
+  extensions[0].task_id:
+    T-99999 is not an open Task in Project P-10053; choose an open Task ID
+    from this Project or add the work beneath a new task in `tasks`.
+  ```
+
+- Machine-readable validation responses expose stable `path`, `field`,
+  `code`, `message`, and `suggestion` properties per issue. Messages must not
+  echo secrets or arbitrary untrusted payloads. A failed check never prints a
+  passing checkmark and never calls the apply endpoint.
 - Core writes are all-or-nothing. No best-effort partial mode is included.
 - The API enforces project/category/parent ownership and lifecycle rules; CLI
   checks are not treated as a security boundary.
@@ -161,10 +201,11 @@ transaction. Any failure rolls back all objects in the batch.
 Update `docs/import-export.md` with the new schema, legacy compatibility,
 smoke-test/checkmark behavior, `--check-only`, examples, limits, error handling,
 and safe retry guidance. Convert
-`docs/Extended-Web-UI-Migration-Objects.json` to the canonical executable
-contract for createable Tasks and extensions; retain phase mapping and
-conditional/deferred classification without treating deferred items as
-creatable objects.
+`docs/Extended-Web-UI-Migration-Objects.json` to the canonical contract for
+createable Tasks and extensions. Retain phase mapping, acceptance, release
+gates, and application constraints only in the non-executable `planning`
+object. Conditional/deferred items stay only in `planning.deferred_items` and
+must never be counted or created as executable objects.
 
 ## Verification
 
@@ -176,7 +217,9 @@ creatable objects.
 - API tests prove read-only validation does not mutate counts/events, apply
   returns all created IDs, and invalid batches leave the tree unchanged.
 - CLI tests prove checkmark only appears on PASS, failed smoke tests never call
-  apply, `--check-only` never writes, and legacy imports still apply atomically.
+  apply, every failure includes object path/field/reason/actionable suggestion,
+  multiple independent errors are reported together, `--check-only` never
+  writes, and legacy imports still apply atomically.
 - Run focused Go tests and the relevant broader suite; run `git diff --check`.
 - Source tests do not prove the installed TimeKeeper service has been updated.
 

@@ -30,6 +30,7 @@
         <a class="nav-item active" href="#overview"><span class="nav-icon">⌂</span><span>Overview</span><span class="nav-key">1</span></a>
         <a class="nav-item" href="#projects-panel"><span class="nav-icon">▦</span><span>Projects</span><span class="nav-count" id="nav-project-count">0</span></a>
         <a class="nav-item" href="#pulse-card"><span class="nav-icon">◒</span><span>Pulse</span><span class="nav-count attention-count" id="nav-attention-count">0</span></a>
+        <a class="nav-item" href="#store-card"><span class="nav-icon">🛒</span><span>Plugin Store</span><span class="nav-count" id="nav-store-count"></span></a>
         <a class="nav-item" href="#guardian-card"><span class="nav-icon">◈</span><span>Guardian</span></a>
         <a class="nav-item" href="#usage-card"><span class="nav-icon">▥</span><span>Usage</span></a>
         <a class="nav-item" href="#admin-card" id="admin-nav" hidden><span class="nav-icon">⚿</span><span>Administrator</span><span class="nav-count" id="nav-admin-count">0</span></a>
@@ -84,6 +85,8 @@
             <label for="name">Project name</label><input class="form-control" id="name" name="name" required maxlength="200" autocomplete="off" placeholder="e.g. Product launch">
             <label for="goal">Goal <span class="optional">optional</span></label><input class="form-control" id="goal" name="goal" maxlength="1000" placeholder="What does success look like?">
             <label for="description">Description <span class="optional">optional</span></label><textarea class="form-control" id="description" name="description" maxlength="10000" placeholder="Add useful context for future-you…"></textarea>
+            <label for="planned-start-date">Planned start <span class="optional">optional</span></label><input class="form-control" id="planned-start-date" name="planned_start_date" type="date">
+            <label for="target-end-date">Target end / deadline <span class="optional">optional</span></label><input class="form-control" id="target-end-date" name="target_end_date" type="date">
             <button class="btn btn-primary form-submit" id="submit" type="submit">Create project <span>→</span></button>
           </form>
           <div id="message" role="status"></div>
@@ -93,6 +96,7 @@
           <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Execution memory</p><h2>Projects</h2></div><span class="panel-link">View all <span>→</span></span></div>
           <div class="table-head"><span>Project</span><span>Status</span><span>Progress</span><span></span></div>
           <div id="projects" class="project-list empty">Loading projects…</div>
+          <div id="deadline-watch" class="deadline-watch empty" aria-live="polite">Checking Project deadlines…</div>
         </section>
 
         <section class="panel panel-pulse" id="pulse-card" aria-live="polite">
@@ -131,6 +135,12 @@
           <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Safety layer</p><h2>Pulse Guardian</h2></div><span class="guardian-shield" aria-hidden="true">◇</span></div>
           <p class="panel-description">Independent local recovery leases and callbacks.</p>
           <div id="guardian" class="empty">Checking Guardian…</div>
+        </section>
+
+        <section class="panel panel-store" id="store-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Extensions</p><h2>Plugin Store</h2></div><span class="panel-link" id="store-status">Checking…</span></div>
+          <p class="panel-description">Read-only registry of locally installed plugins, verified against their manifest checksums.</p>
+          <div id="store" class="store-list empty">Loading plugin registry…</div>
         </section>
 
         <section class="panel panel-admin" id="admin-card" aria-live="polite" hidden>
@@ -193,27 +203,49 @@
         </section>
 
         <section class="panel panel-file-history" id="file-history-card" aria-live="polite">
-          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Tracked files</p><h2>File history &amp; editor</h2></div><span class="panel-link" id="file-history-status">History disabled</span></div>
-          <p class="panel-description">Edits are saved as separate history steps after a short pause. Compare or restore any saved step; restoring adds a new version without erasing later work.</p>
-          <form id="file-history-load-form" class="file-history-toolbar">
-            <input id="file-history-id" class="form-control" required placeholder="File ID, e.g. F-10001" aria-label="Tracked file ID">
-            <button class="btn btn-primary" type="submit">Load file</button>
-          </form>
-          <div id="file-history-meta" class="file-history-meta empty">Enter a tracked file ID.</div>
-          <div class="file-history-workspace">
-            <div id="file-editor-host" class="file-editor-host" aria-label="Code editor"></div>
-            <textarea id="file-editor-fallback" class="file-editor-fallback" hidden aria-label="Code editor fallback"></textarea>
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Tracked project files</p><h2>File history &amp; editor</h2></div><span class="panel-link" id="file-history-status">History disabled</span></div>
+          <p class="panel-description">Browse tracked files by project and inspect every recorded revision. Only captured files appear here; external edits need a snapshot to enter history.</p>
+          <div class="file-history-layout">
+            <aside class="file-explorer" aria-label="Project files">
+              <label class="file-explorer-label" for="file-history-project">Project</label>
+              <select id="file-history-project" class="form-control"><option value="">Loading projects…</option></select>
+              <label class="file-explorer-label" for="file-history-root-path">Source folder on this TimeKeeper host</label>
+              <input id="file-history-root-path" class="form-control" type="text" placeholder="Absolute local folder path" aria-label="Project source root path">
+              <div class="file-root-actions">
+                <button id="file-history-set-root" class="btn btn-outline-secondary" type="button">Set source folder</button>
+                <button id="file-history-scan" class="btn btn-primary" type="button" disabled>Scan and index</button>
+              </div>
+              <small id="file-history-root-status" class="file-root-status">No project source folder set.</small>
+              <input id="file-history-filter" class="form-control" type="search" placeholder="Filter project files" aria-label="Filter project files">
+              <div id="file-history-files" class="file-explorer-list empty" role="listbox">Select a project to browse tracked files.</div>
+            </aside>
+            <div class="file-history-main">
+              <form id="file-history-load-form" class="file-history-toolbar">
+                <input id="file-history-id" class="form-control" required placeholder="Tracked file ID" aria-label="Tracked file ID">
+                <button class="btn btn-primary" type="submit">Load file</button>
+              </form>
+              <div id="file-history-meta" class="file-history-meta empty">Select a tracked file or enter its ID.</div>
+              <div class="file-history-workspace">
+                <div id="file-editor-host" class="file-editor-host" aria-label="Code editor"></div>
+                <textarea id="file-editor-fallback" class="file-editor-fallback" hidden aria-label="Code editor fallback"></textarea>
+              </div>
+              <div class="file-history-actions">
+                <label class="file-history-change-label" for="file-history-change-kind">Change type</label>
+                <select id="file-history-change-kind" aria-label="Change type"></select>
+                <button id="file-history-save" class="btn btn-primary" type="button" disabled>Save step now</button>
+                <select id="file-history-version" aria-label="Restore version" disabled></select>
+                <button id="file-history-restore" class="btn btn-outline-secondary" type="button" disabled>Restore selected</button>
+                <select id="file-history-compare-from" aria-label="Compare from version" disabled></select>
+                <select id="file-history-compare-to" aria-label="Compare to version" disabled></select>
+                <button id="file-history-compare" class="btn btn-outline-secondary" type="button" disabled>Compare</button>
+              </div>
+              <div id="file-history-legend" class="file-history-legend" aria-label="Timeline change type legend"></div>
+              <div id="file-history-timeline" class="file-history-timeline" role="list" aria-label="Complete version history"></div>
+              <pre id="file-history-preview" class="file-history-preview" hidden></pre>
+              <div id="file-history-diff" class="file-history-diff" role="region" aria-label="Version comparison" hidden></div>
+              <div id="file-history-feedback" class="inline-feedback" role="status"></div>
+            </div>
           </div>
-          <div class="file-history-actions">
-            <button id="file-history-save" class="btn btn-primary" type="button" disabled>Save step now</button>
-            <select id="file-history-version" aria-label="Restore version" disabled></select>
-            <button id="file-history-restore" class="btn btn-outline-secondary" type="button" disabled>Restore selected</button>
-            <select id="file-history-compare-from" aria-label="Compare from version" disabled></select>
-            <select id="file-history-compare-to" aria-label="Compare to version" disabled></select>
-            <button id="file-history-compare" class="btn btn-outline-secondary" type="button" disabled>Compare</button>
-          </div>
-          <pre id="file-history-diff" class="file-history-diff" hidden></pre>
-          <div id="file-history-feedback" class="inline-feedback" role="status"></div>
         </section>
       </div>
     </main>
@@ -221,5 +253,17 @@
   <script src="/vendor/codemirror-editor.js"></script>
   <script src="/timekeeper.js"></script>
   <script src="/file-editor.js"></script>
+  <footer class="version-footer" aria-label="Version info" style="padding:0.5rem 1rem;font-size:0.75rem;color:#777;text-align:center;border-top:1px solid #e5e5e5;margin-top:2rem;">
+    <span id="tk-version">Loading version…</span>
+  </footer>
+  <script>
+  (function() {
+    fetch('/api/v1/version').then(r => r.ok ? r.json() : Promise.reject()).then(j => {
+      document.getElementById('tk-version').textContent = (j.display || (j.version + ' · ' + (j.commit || '').slice(0,7))) + ' · ' + (j.build_date || 'unknown');
+    }).catch(function() {
+      document.getElementById('tk-version').textContent = 'TimeKeeper · version unavailable (offline)';
+    });
+  })();
+  </script>
 </body>
 </html>

@@ -14,8 +14,10 @@ UI_PATH="${TIMEKEEPER_UI:-$ROOT/.timekeeper/web/index.html}"
 # recovery leases on a bounded interval. Empty disables it (for explicit opt-out
 # via TIMEKEEPER_PULSE_GUARDIAN_INTERVAL=""). Defaults to 5m.
 PULSE_GUARDIAN_INTERVAL="${TIMEKEEPER_PULSE_GUARDIAN_INTERVAL-5m}"
-# When the Guardian is enabled, also start the repo-local recovery receiver that
-# accepts recover_attention signals on loopback and records durable artifacts.
+# The canonical server route records recovery artifacts. Set
+# TIMEKEEPER_GUARDIAN_COMPAT_RECEIVER=1 only while existing agents still target
+# the legacy 1619 listener.
+GUARDIAN_COMPAT_RECEIVER="${TIMEKEEPER_GUARDIAN_COMPAT_RECEIVER:-0}"
 GUARDIAN_RECEIVER_ADDR="${TIMEKEEPER_GUARDIAN_RECEIVER_ADDR:-127.0.0.1:1619}"
 GUARDIAN_RECEIVER_AGENT="${TIMEKEEPER_GUARDIAN_RECEIVER_AGENT:-xatia}"
 
@@ -39,29 +41,31 @@ build_output="$binary"
 cli_build_output="$cli_binary"
 runtime_db="$DB_PATH"
 runtime_ui="$UI_PATH"
+runtime_state_dir="$STATE_DIR"
 if [[ "$goos" == "windows" ]] && command -v wslpath >/dev/null 2>&1; then
   build_output="$(wslpath -w "$binary")"
   cli_build_output="$(wslpath -w "$cli_binary")"
   runtime_db="$(wslpath -w "$DB_PATH")"
   runtime_ui="$(wslpath -w "$UI_PATH")"
+  runtime_state_dir="$(wslpath -w "$STATE_DIR")"
 fi
 
 (
   cd "$ROOT"
   "$GO_BIN" build -o "$build_output" ./cmd/server
   "$GO_BIN" build -o "$cli_build_output" ./cmd/tk
-  if [[ -n "$PULSE_GUARDIAN_INTERVAL" && "$PULSE_GUARDIAN_INTERVAL" != "0" && ! -x "$STATE_DIR/bin/guardian" ]]; then
+  if [[ "$GUARDIAN_COMPAT_RECEIVER" == "1" && -n "$PULSE_GUARDIAN_INTERVAL" && "$PULSE_GUARDIAN_INTERVAL" != "0" && ! -x "$STATE_DIR/bin/guardian" ]]; then
     "$GO_BIN" build -o "$STATE_DIR/bin/guardian" ./cmd/guardian
   fi
 )
 
 printf 'Time Keeper local state: %s\n' "$STATE_DIR"
 printf 'Time Keeper dashboard: http://%s/\n' "$ADDR"
-server_args=( -addr "$ADDR" -db "$runtime_db" -ui "$runtime_ui" )
+server_args=( -addr "$ADDR" -db "$runtime_db" -ui "$runtime_ui" -guardian-state-dir "$runtime_state_dir" )
 server_args+=( -pulse-guardian-interval "${PULSE_GUARDIAN_INTERVAL:-0}" )
 
-# Start the server in the background so the recovery receiver can register its
-# callback against an already-listening API, then wait for health before launch.
+# Start the server in the background so its canonical recovery route and any
+# explicitly requested compatibility receiver can register against a healthy API.
 "$binary" "${server_args[@]}" &
 server_pid=$!
 
@@ -74,9 +78,12 @@ for _ in $(seq 1 50); do
 done
 
 if [[ -n "$PULSE_GUARDIAN_INTERVAL" && "$PULSE_GUARDIAN_INTERVAL" != "0" ]]; then
-  guardian_binary="$STATE_DIR/bin/guardian"
-  "$guardian_binary" -addr "$GUARDIAN_RECEIVER_ADDR" -state-dir "$STATE_DIR" -timekeeper-url "http://$ADDR" -agent "$GUARDIAN_RECEIVER_AGENT" &
-  printf 'Pulse Guardian recovery receiver: http://%s/\n' "$GUARDIAN_RECEIVER_ADDR"
+  printf 'Pulse Guardian recovery: http://%s/api/v1/guardian/recover\n' "$ADDR"
+  if [[ "$GUARDIAN_COMPAT_RECEIVER" == "1" ]]; then
+    guardian_binary="$STATE_DIR/bin/guardian"
+    "$guardian_binary" -addr "$GUARDIAN_RECEIVER_ADDR" -state-dir "$STATE_DIR" -timekeeper-url "http://$ADDR" -agent "$GUARDIAN_RECEIVER_AGENT" &
+    printf 'Pulse Guardian compatibility receiver: http://%s/\n' "$GUARDIAN_RECEIVER_ADDR"
+  fi
 fi
 
 wait "$server_pid"

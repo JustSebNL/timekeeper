@@ -8,6 +8,7 @@ import (
 
 	"github.com/JustSebNL/timekeeper/internal/knowledge"
 	"github.com/JustSebNL/timekeeper/internal/plugin"
+	"github.com/JustSebNL/timekeeper/internal/routing"
 )
 
 // fakeProvider stands in for a plugin that core has never heard of.
@@ -38,6 +39,31 @@ func registerFake(t *testing.T, id string) {
 	plugin.Register(plugin.Descriptor{ID: id, Kind: plugin.KindKnowledge, Name: "fake"}, func(map[string]string) (any, error) {
 		return &fakeProvider{id: id}, nil
 	})
+}
+
+type fakeRouter struct{}
+
+func (fakeRouter) Status(context.Context) (routing.ProviderStatus, error) {
+	return routing.ProviderStatus{Available: true, ProtocolVersion: routing.ProtocolVersion}, nil
+}
+
+func (fakeRouter) Route(context.Context, routing.Request) (routing.Decision, error) {
+	return routing.Decision{}, nil
+}
+
+func TestRegistryBuildsRoutingProviderThroughInterface(t *testing.T) {
+	const id = "test.routing-provider"
+	plugin.Register(plugin.Descriptor{ID: id, Kind: plugin.KindRouting, Name: "fake router"}, func(map[string]string) (any, error) {
+		return fakeRouter{}, nil
+	})
+
+	instance, err := plugin.Build(plugin.KindRouting, id, nil)
+	if err != nil {
+		t.Fatalf("build routing provider: %v", err)
+	}
+	if _, ok := instance.(routing.Provider); !ok {
+		t.Fatalf("plugin did not satisfy routing.Provider: %T", instance)
+	}
 }
 
 func TestRegistryBuildsUnknownPluginThroughInterface(t *testing.T) {

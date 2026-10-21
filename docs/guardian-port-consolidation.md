@@ -1,16 +1,16 @@
 # Guardian Control-Plane and Port Consolidation
 
-Status: architecture decision and migration plan; implementation is staged to
-avoid breaking existing agents. P-10053/T-10473 tracks the remaining migration
-and compatibility checks.
+Status: Phases 1–3 for the artifact-only receiver are implemented in source. The
+canonical `POST /api/v1/guardian/recover` route shares the legacy receiver's
+validation, artifact, and acknowledgement path when `-guardian-state-dir` is
+configured, and the duplicate receiver is now opt-in rather than started by the
+default launchers. Existing 1619 receivers and registrations remain supported
+during migration; no live listener has been removed. P-10053/T-10473 tracks the
+remaining deployment migration and retirement checks.
 
 ## Decision
 
-TimeKeeper should expose one canonical control-plane listener:
-
-```text
-127.0.0.1:1618  TimeKeeper API, dashboard, Pulse, Guardian, recovery routes
-```
+The friendly contact point is `http://timekeeper.local/`; the canonical process listener remains numeric loopback at `127.0.0.1:1618`. `GET /api/v1/connection-info` advertises the friendly dashboard/API hosts and the actual port suffix when the proxy uses a non-default port.
 
 Pulse Guardian already runs inside the TimeKeeper server process. The separate
 `127.0.0.1:1619` receiver duplicates a small part of the control plane and
@@ -131,46 +131,79 @@ loopback surfaces and the receiver still calls Core for acknowledgement.
 
 ### Phase 1 — additive canonical route
 
-Extract receiver validation/action code from `internal/guardian/receiver.go`
-into a reusable handler/service that accepts explicit dependencies:
+Implemented in source. `internal/guardian` now exposes a reusable recovery
+handler with explicit dependencies:
 
-- private state directory/artifact writer;
-- nudge acknowledgement function;
-- signal size and schema validation;
-- acceptance header/JSON response;
-- structured logging.
+- existing private state directory/artifact writer;
+- caller-supplied nudge acknowledgement function;
+- bounded JSON body, strict `application/json` content type, and schema checks;
+- acceptance header/JSON response.
 
-Mount the handler on the canonical API as:
+The canonical API mounts the handler as:
 
 ```text
 POST /api/v1/guardian/recover
 ```
 
-Keep the existing `/v1/recover` receiver route as a compatibility wrapper.
-Add tests proving both routes have identical validation and acknowledgement
-semantics.
+The route is enabled only when the server receives an existing private
+`-guardian-state-dir` (or `TIMEKEEPER_GUARDIAN_STATE_DIR`). Without that explicit
+configuration it returns `503 guardian_recovery_unavailable` instead of guessing
+a writable location. The existing `/v1/recover` receiver route remains as a
+compatibility wrapper, and tests cover the shared validation and
+acknowledgement path.
 
 ### Phase 2 — canonical registration
 
-Change `tk init` and the built-in self receiver registration to advertise:
+Implemented in source for the artifact-only receiver. `cmd/guardian -register`
+reads `guardian/status` and advertises the canonical recovery callback when the
+server exposes `guardian_recovery_url`:
 
 ```text
-http://127.0.0.1:1618/api/v1/guardian/recover
+http://guardian.local:1618/api/v1/guardian/recover
 ```
 
-Expose the canonical callback URL in `guardian/status`. Existing explicit
+Older Cores, unavailable status responses, or missing fields fall back to the
+existing `http://127.0.0.1:1619/v1/recover` registration, keeping compatibility
+retryable during migration.
+
+`tk init` intentionally continues to register the self-nudge receiver's `/pulse`
+URL. That callback admits a real work cycle; the artifact-only canonical route
+is not a substitute for worker admission. A separate worker-admission boundary
+is required before self-nudge registration can migrate.
+
+The canonical callback URL is exposed in `guardian/status`. Existing explicit
 1619 registrations remain readable and retryable during migration.
 
 ### Phase 3 — stop creating 1619 by default
 
-Remove automatic `tk-guardian-self` startup from the default initialization
-path. Keep `cmd/guardian` as a compatibility executable for one release cycle
-or until registered 1619 callbacks have migrated. Its status must clearly say
-that it is legacy compatibility mode.
+Implemented in source for the artifact-only receiver. `scripts/run-local.sh` and
+the generated app launcher no longer start `cmd/guardian` by default; the server
+owns recovery markers through the canonical route when `-guardian-state-dir` is
+configured.
+
+Keep `cmd/guardian` as a compatibility executable for one release cycle or until
+registered 1619 callbacks have migrated. Operators that still need the legacy
+listener can opt in with:
+
+```text
+TIMEKEEPER_GUARDIAN_COMPAT_RECEIVER=1
+```
+
+`tk-guardian-self` remains a separate agent-side worker-admission listener; it
+is not removed by this phase.
+
+`GET /api/v1/guardian/status` now reports `callback_migration` counters. Treat
+`legacy_recovery` as the number of artifact-only `/v1/recover` callbacks that
+still require the compatibility receiver; `canonical_recovery` counts exact
+`guardian_recovery_url` registrations; and `worker_or_custom` includes `/pulse`
+worker-admission callbacks and other custom callback URLs. The counters classify
+registration URLs only. They do not prove worker health, worker admission, or
+Sprint completion.
 
 ### Phase 4 — retire the duplicate listener
 
-After migration telemetry shows no active 1619 registrations:
+After `callback_migration.legacy_recovery` remains zero while the canonical
+route is configured and existing canonical callbacks have been observed:
 
 - remove the default 1619 receiver process and launcher code;
 - reject new 1619 registration with a structured migration error;
@@ -190,27 +223,32 @@ Port consolidation must not mean trust-by-port.
 - Make acknowledgement idempotent.
 - Record the recovery artifact before acknowledging.
 - Never execute a command from a signal or reminder body.
-- Return the acceptance header only after the configured adapter has established
-  the documented admission boundary.
-- Preserve the distinction between callback acceptance, worker admission, and
-  Sprint completion.
+- For the artifact-only recovery callback, return the acceptance header only
+  after the durable artifact is written and the nudge is acknowledged.
+- For a future worker-admission callback, return acceptance only after the
+  configured adapter establishes its documented admission boundary.
+- Preserve the distinction between callback acceptance, durable recovery-marker
+  creation, worker admission, and Sprint completion.
 
 ## Verification gates
 
 Before removing 1619:
 
 1. Fresh server starts with only 1618 for TimeKeeper.
-2. `tk init` registers the canonical 1618 recovery URL.
+2. `cmd/guardian -register` registers the canonical 1618 recovery URL when the
+   server advertises it, while existing 1619 registrations remain retryable.
 3. A synthetic valid signal reaches `/api/v1/guardian/recover` and creates the
    same durable artifact as the legacy receiver.
 4. Invalid format/action/agent/nudge/body cases are rejected identically.
-5. Repeated delivery acknowledges idempotently without duplicate work.
-6. The Hermes adapter still reaches the gateway and observes `source=builtin`.
-7. A reference non-Hermes adapter passes the same admission contract.
-8. Windows/WSL startup no longer needs a separate 1619 process.
-9. `tk doctor`, dashboard status, installer output, and docs report one
-   canonical TimeKeeper port.
-10. The old 1619 compatibility path is tested until its removal release.
+5. `guardian/status` reports zero `callback_migration.legacy_recovery` while the
+   canonical route remains configured.
+6. Repeated delivery acknowledges idempotently without duplicate work.
+7. The Hermes adapter still reaches the gateway and observes `source=builtin`.
+8. A reference non-Hermes adapter passes the same admission contract.
+9. Windows/WSL startup no longer needs a separate 1619 artifact receiver.
+10. `tk doctor`, dashboard status, installer output, and docs report one
+    canonical TimeKeeper port.
+11. The old 1619 compatibility path is tested until its removal release.
 
 ## User-facing result
 

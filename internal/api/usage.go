@@ -94,3 +94,15 @@ func projectUsageSummary(database *store.Store) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, summary)
 	}
 }
+
+func agentSessionsHandler(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		agentID := r.PathValue("agentID")
+		sessions, err := database.ListAgentSessions(r.Context(), agentID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "agent_sessions_failed", fmt.Sprintf("Could not load agent sessions: %v", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": sessions})
+	}
+}

@@ -15,11 +15,13 @@ import (
 
 // openBrowser launches the user's default browser at the TimeKeeper dashboard.
 //
-// Default URL: http://timekeeper.local/  (the friendly URL)
+// Default URL: http://timekeeper.local/ (the advertised contact point)
+// The runtime-advertised port is included when the friendly proxy uses one.
 //
 // Flags:
-//   --api  open http://api.timekeeper.local/ instead
-//   --ip   open http://127.0.0.1:1618/  (canonical loopback)
+//
+//	--api  open http://api.timekeeper.local/ instead
+//	--ip   open http://127.0.0.1:1618/  (canonical loopback)
 //
 // The command never auto-starts the service. If the server is not
 // reachable, it returns a non-zero exit and tells the user to run
@@ -35,7 +37,7 @@ func openBrowser(args []string, out, errOut io.Writer, baseURL string) int {
 			url = strings.TrimRight(baseURL, "/") + "/"
 		case "--help", "-h":
 			fmt.Fprintln(out, "usage: tk open [--api|--ip]")
-			fmt.Fprintln(out, "  default:  http://timekeeper.local/")
+			fmt.Fprintln(out, "  default:  http://timekeeper.local/ (runtime may advertise a port)")
 			fmt.Fprintln(out, "  --api:    http://api.timekeeper.local/")
 			fmt.Fprintln(out, "  --ip:     http://127.0.0.1:1618/")
 			return 0

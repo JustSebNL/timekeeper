@@ -1,6 +1,6 @@
 {
-  "agent_id": "xatia",
-  "base_url": "http://127.0.0.1:1618",
+  "agent_id": "FASE-TKTEST",
+  "base_url": "http://timekeeper.local",
   "bind_addr": "127.0.0.1:1619",
   "lease": "30m",
   "ntfy_server": "",

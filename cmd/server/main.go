@@ -4,14 +4,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -20,13 +25,17 @@ import (
 
 	"github.com/JustSebNL/timekeeper/internal/api"
 	"github.com/JustSebNL/timekeeper/internal/guardian"
+	"github.com/JustSebNL/timekeeper/internal/harness"
 	"github.com/JustSebNL/timekeeper/internal/history"
+	"github.com/JustSebNL/timekeeper/internal/instanceguard"
 	"github.com/JustSebNL/timekeeper/internal/knowledge"
 	"github.com/JustSebNL/timekeeper/internal/logging"
+	"github.com/JustSebNL/timekeeper/internal/model"
 	"github.com/JustSebNL/timekeeper/internal/observer"
 	"github.com/JustSebNL/timekeeper/internal/plugin"
 	edgeplugin "github.com/JustSebNL/timekeeper/internal/plugin/edgeplugin"
 	obsidianplugin "github.com/JustSebNL/timekeeper/internal/plugin/knowledgeobsidian"
+	"github.com/JustSebNL/timekeeper/internal/shadowcopy"
 	"github.com/JustSebNL/timekeeper/internal/store"
 	"github.com/JustSebNL/timekeeper/internal/version"
 )
@@ -47,6 +56,26 @@ func recoveryPolicy() string {
 	// write a durable local recovery artifact and acknowledge the nudge. It
 	// performs no process control. This string is status evidence, not a grant.
 	return "local-artifact: durable recovery marker only; no process control"
+}
+
+func newGuardianRecoveryHandler(database *store.Store, stateDir string) (http.Handler, error) {
+	stateDir = strings.TrimSpace(stateDir)
+	if stateDir == "" {
+		return nil, nil
+	}
+	absolute, err := filepath.Abs(stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve Guardian recovery state directory: %w", err)
+	}
+	return guardian.NewRecoveryHandler(guardian.RecoveryHandlerConfig{
+		StateDir:    absolute,
+		Action:      guardian.RecoveryActionLocalArtifact,
+		PolicyLabel: recoveryPolicy(),
+		Acknowledge: func(ctx context.Context, nudge model.PulseNudge) error {
+			_, err := database.AcknowledgePulseNudge(ctx, nudge.NudgeID, nudge.AgentID)
+			return err
+		},
+	})
 }
 
 func validateServerConfig(addr, uiPath string) error {
@@ -161,8 +190,20 @@ Agent / Guardian
 
 Server (start the HTTP service)
   timekeeper -addr 127.0.0.1:1618 -db .timekeeper/timekeeper.db -ui web/index.html -keep-alive-interval 5m
-  -obsidian-descriptor <path>                   Optional authenticated Galaxy endpoint descriptor
-  -history-root <path>                           Optional tracked-file history root
+  -shadow-copy-dir .timekeeper/recovery/sqlite-shadow     A/B verified SQLite shadow location
+  -shadow-copy-interval 5m                             Local cadence; 0 disables (minimum 1m)
+  -restore-shadow-slot shadow-a.db -confirm-shadow-restore
+                                                       Offline restore; requires Core stopped, preserves DB/WAL/SHM
+  -db <standalone.db> -offline-batch-file <batch> -offline-batch-project <P-ID> -offline-batch-copy-to <new.db>
+                                                       Offline Core smoke; default is check-only, no HTTP listener
+  -offline-batch-apply                                 Apply only to the new copy, after successful Core preflight
+
+Offline batch refuses an active Core lock, SQLite sidecars, corrupt sources, and existing output files.
+It never writes the source database; output-copy promotion is a separate explicit operation.
+  -obsidian-descriptor <path>                          Optional authenticated Galaxy endpoint descriptor
+  -history-root <path>                                  Optional tracked-file history root
+
+Each shadow run verifies the primary before copying and checks the candidate before A/B promotion.
 
 Run 'tk <command> --help' for details on a specific command.
 
@@ -209,6 +250,13 @@ func friendlyURLs(addr string) []string {
 }
 
 func main() {
+	exitCode := 0
+	defer func() {
+		if exitCode != 0 {
+			os.Exit(exitCode)
+		}
+	}()
+
 	if len(os.Args) == 1 || os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h" {
 		showHelp()
 		return
@@ -230,14 +278,68 @@ func main() {
 	uiPath := flag.String("ui", ".timekeeper/web/index.html", "dashboard HTML path")
 	keepAliveInterval := flag.Duration("keep-alive-interval", 5*time.Minute, "local dashboard keep-alive interval; 0 disables it")
 	backupTo := flag.String("backup-to", "", "create a SQLite backup at this new path, then exit")
+	offlineBatchFile := flag.String("offline-batch-file", "", "parse and Core-validate a batch against a new offline database copy")
+	offlineBatchProject := flag.String("offline-batch-project", "", "target Project ID for offline batch validation/application")
+	offlineBatchCopyTo := flag.String("offline-batch-copy-to", "", "new isolated database-copy path; source database is never modified")
+	offlineBatchFormat := flag.String("offline-batch-format", "", "batch format override; empty auto-detects from the file extension")
+	offlineBatchApply := flag.Bool("offline-batch-apply", false, "apply only to the isolated output copy after successful Core preflight; default is smoke-only")
+	shadowCopyDir := flag.String("shadow-copy-dir", envOr("TIMEKEEPER_SHADOW_COPY_DIR", ""), "A/B SQLite shadow directory; defaults to recovery beside the primary database")
+	shadowCopyInterval := flag.Duration("shadow-copy-interval", 5*time.Minute, "verified local shadow cadence; 0 disables, minimum 1m")
+	restoreShadowSlot := flag.String("restore-shadow-slot", "", "offline restore from the explicit shadow-a.db or shadow-b.db slot")
+	confirmShadowRestore := flag.Bool("confirm-shadow-restore", false, "required confirmation for offline shadow restore")
 	pulseGuardianInterval := flag.Duration("pulse-guardian-interval", 5*time.Minute, "run the local Pulse Guardian at this interval; 0 disables it")
 	pulseGuardianNtfyServer := flag.String("pulse-guardian-ntfy-server", "", "ntfy server URL for guardian wake-up (e.g. https://ntfy.sh); empty disables ntfy publishing")
 	pulseGuardianNtfyTopic := flag.String("pulse-guardian-ntfy-topic", "", "ntfy topic for guardian wake-up messages")
 	pulseGuardianNtfyToken := flag.String("pulse-guardian-ntfy-token", "", "ntfy authentication token (optional)")
+	guardianStateDir := flag.String("guardian-state-dir", envOr("TIMEKEEPER_GUARDIAN_STATE_DIR", ""), "existing private Guardian recovery artifact directory; enables POST /api/v1/guardian/recover")
+	shutdownOnStdinClose := flag.Bool("shutdown-on-stdin-close", false, "gracefully stop this server when its parent closes stdin")
 	logPath := flag.String("log", "/data/logs/app.log", "structured JSON log path; empty disables file logging")
 	logMode := logging.ModeNormal
 	flag.Var(modeFlag{&logMode}, "log-mode", "log mode: normal|debug (debug logs every step, raw inputs, full errors)")
 	flag.Parse()
+
+	offlineBatchRequested := strings.TrimSpace(*offlineBatchFile) != "" || strings.TrimSpace(*offlineBatchProject) != "" || strings.TrimSpace(*offlineBatchCopyTo) != "" || strings.TrimSpace(*offlineBatchFormat) != "" || *offlineBatchApply
+	if offlineBatchRequested {
+		databaseFlagSet := false
+		flag.Visit(func(parsed *flag.Flag) {
+			if parsed.Name == "db" {
+				databaseFlagSet = true
+			}
+		})
+		if !databaseFlagSet {
+			fmt.Fprintln(os.Stderr, "offline batch requires an explicit -db standalone source database")
+			exitCode = 2
+			return
+		}
+		if strings.TrimSpace(*offlineBatchFile) == "" || strings.TrimSpace(*offlineBatchProject) == "" || strings.TrimSpace(*offlineBatchCopyTo) == "" {
+			fmt.Fprintln(os.Stderr, "offline batch requires -offline-batch-file, -offline-batch-project, and -offline-batch-copy-to")
+			exitCode = 2
+			return
+		}
+		if *backupTo != "" || *restoreShadowSlot != "" || *confirmShadowRestore {
+			fmt.Fprintln(os.Stderr, "offline batch cannot be combined with backup or shadow-restore maintenance modes")
+			exitCode = 2
+			return
+		}
+		report, err := runOfflineBatchCopy(context.Background(), *dbPath, *offlineBatchCopyTo, *offlineBatchProject, *offlineBatchFile, *offlineBatchFormat, !*offlineBatchApply)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Offline batch failed: %v\n", err)
+			if report.CopyDB != "" {
+				fmt.Fprintf(os.Stderr, "Source was not intentionally modified; isolated copy retained at: %s\n", report.CopyDB)
+			}
+			exitCode = 1
+			return
+		}
+		counts := report.Validation.Counts
+		mode := "smoke passed; no batch objects created"
+		if *offlineBatchApply {
+			counts = report.Created.Counts
+			mode = "applied to isolated copy after successful smoke"
+		}
+		fmt.Printf("Offline batch %s: Tasks=%d Subtasks=%d Sprints=%d Total=%d\n", mode, counts.Tasks, counts.Subtasks, counts.Sprints, counts.TotalObjects)
+		fmt.Printf("Source DB: %s\nSource SHA-256: %s\nIsolated output copy: %s\nCopy-before-batch SHA-256: %s\nHTTP service started: no\n", report.SourceDB, report.SourceSHA256, report.CopyDB, report.CopyBeforeBatchHash)
+		return
+	}
 
 	logger := logging.Init(logging.Config{Path: *logPath, Mode: logMode, MaxSizeMiB: 10, MaxBackups: 5})
 	logger.Info("timekeeper starting",
@@ -252,10 +354,79 @@ func main() {
 	if *pulseGuardianInterval != 0 && *pulseGuardianInterval < time.Second {
 		log.Fatalf("Pulse Guardian interval must be at least %s", time.Second)
 	}
+	if *shadowCopyInterval != 0 && *shadowCopyInterval < time.Minute {
+		log.Fatalf("shadow copy interval must be at least %s or 0", time.Minute)
+	}
+
+	// One Core per TimeKeeper installation, independent of the configured DB or
+	// listener. Short-lived tk CLI processes remain clients and do not take this lock.
+	if *backupTo == "" {
+		coreLock, err := instanceguard.AcquireCoreInstance(*dbPath, *uiPath)
+		if err != nil {
+			if errors.Is(err, instanceguard.ErrCoreAlreadyRunning) {
+				log.Fatal("tk is already running")
+			}
+			log.Fatalf("acquire TimeKeeper Core singleton lock: %v", err)
+		}
+		defer coreLock.Close()
+		logger.Info("TimeKeeper Core singleton lock acquired", slog.String("path", coreLock.Path))
+	}
+
+	if *restoreShadowSlot != "" {
+		if *backupTo != "" {
+			log.Fatal("-backup-to and -restore-shadow-slot cannot be used together")
+		}
+		shadowDirectory, err := resolveShadowCopyDirectory(*dbPath, *shadowCopyDir)
+		if err != nil {
+			log.Fatalf("resolve shadow recovery directory: %v", err)
+		}
+		result, err := runShadowRestore(context.Background(), *dbPath, shadowDirectory, *restoreShadowSlot, *addr, *confirmShadowRestore)
+		if err != nil {
+			log.Fatalf("SQLite shadow restore: %v", err)
+		}
+		logger.Warn("SQLite primary restored from verified shadow", slog.String("slot", result.Slot), slog.String("primary", result.PrimaryPath), slog.String("preserved", result.PreservedDirectory), slog.String("sha256", result.SHA256))
+		fmt.Printf("Restored %s from %s. Previous database and sidecars preserved in %s. Restart Core explicitly.\n", result.PrimaryPath, result.Slot, result.PreservedDirectory)
+		for _, warning := range result.CleanupWarnings {
+			logger.Warn("shadow restore cleanup warning", slog.String("warning", warning))
+		}
+		return
+	}
+	if *confirmShadowRestore {
+		log.Fatal("-confirm-shadow-restore requires -restore-shadow-slot")
+	}
 	if *backupTo == "" {
 		if err := validateServerConfig(*addr, *uiPath); err != nil {
 			log.Fatalf("validate Time Keeper configuration: %v", err)
 		}
+	}
+
+	// Serialize Core processes that target the same durable database. This is
+	// separate from the listener bind: it prevents a second instance using a
+	// different port from running its own migrations and Pulse Guardian against
+	// the same SQLite state. Backup mode is intentionally exempt/read-only.
+	if *backupTo == "" {
+		instanceLock, err := instanceguard.Acquire(*dbPath)
+		if err != nil {
+			if errors.Is(err, instanceguard.ErrAlreadyRunning) {
+				log.Fatal("tk is already running")
+			}
+			log.Fatalf("TimeKeeper database instance guard: %v", err)
+		}
+		defer instanceLock.Close()
+		logger.Info("TimeKeeper database lock acquired", slog.String("path", instanceLock.Path))
+	}
+
+	// Reserve the primary listener before opening/migrating the database or
+	// starting Pulse Guardian. A second process configured with another DB but
+	// the same service address must fail before it can become a parallel Core.
+	var primaryListener net.Listener
+	if *backupTo == "" {
+		listener, listenErr := net.Listen("tcp", *addr)
+		if listenErr != nil {
+			log.Fatalf("tk is already running or the configured Core listener is unavailable: %v", listenErr)
+		}
+		primaryListener = listener
+		defer primaryListener.Close()
 	}
 
 	database, err := store.Open(*dbPath)
@@ -271,6 +442,47 @@ func main() {
 		log.Print(message)
 		return
 	}
+	var stopShadow func()
+	if *shadowCopyInterval > 0 {
+		shadowDirectory, shadowErr := resolveShadowCopyDirectory(*dbPath, *shadowCopyDir)
+		if shadowErr != nil {
+			logger.Error("SQLite shadow copy unavailable", slog.Any("err", shadowErr))
+		} else {
+			manager, shadowErr := shadowcopy.New(database, shadowDirectory, store.CheckDatabaseFileIntegrity)
+			if shadowErr != nil {
+				logger.Error("SQLite shadow copy unavailable", slog.String("directory", shadowDirectory), slog.Any("err", shadowErr))
+			} else {
+				shadowContext, cancelShadow := context.WithCancel(context.Background())
+				shadowDone := make(chan struct{})
+				stopShadow = func() {
+					cancelShadow()
+					<-shadowDone
+				}
+				logger.Info("SQLite A/B shadow copy enabled", slog.String("directory", shadowDirectory), slog.Duration("interval", *shadowCopyInterval))
+				go func() {
+					defer close(shadowDone)
+					if err := shadowcopy.RunPeriodic(shadowContext, manager, *shadowCopyInterval, func(result shadowcopy.Result, err error) {
+						if err != nil {
+							logger.Error("SQLite shadow copy skipped or failed", slog.Any("err", err))
+							return
+						}
+						logger.Info("SQLite shadow copy verified", slog.String("slot", result.Slot), slog.String("path", result.Path), slog.String("sha256", result.SHA256), slog.Time("created_at", result.CreatedAt))
+					}); err != nil {
+						logger.Error("SQLite shadow copy worker stopped", slog.Any("err", err))
+					}
+				}()
+			}
+		}
+	}
+	guardianRecovery, err := newGuardianRecoveryHandler(database, *guardianStateDir)
+	if err != nil {
+		log.Fatalf("configure Guardian recovery: %v", err)
+	}
+	guardianRecoveryURL := ""
+	if guardianRecovery != nil {
+		guardianRecoveryURL = strings.TrimRight(friendlyURLs(*addr)[2], "/") + "/api/v1/guardian/recover"
+		logger.Info("guardian recovery enabled", slog.String("url", guardianRecoveryURL), slog.String("state_dir", *guardianStateDir))
+	}
 	if *pulseGuardianInterval > 0 {
 		guardianContext, guardianStop := context.WithCancel(context.Background())
 		defer guardianStop()
@@ -278,8 +490,8 @@ func main() {
 		if *pulseGuardianNtfyServer != "" && *pulseGuardianNtfyTopic != "" {
 			ntfyConfig = &guardian.NtfyConfig{
 				ServerURL: *pulseGuardianNtfyServer,
-				Topic:      *pulseGuardianNtfyTopic,
-				Token:      *pulseGuardianNtfyToken,
+				Topic:     *pulseGuardianNtfyTopic,
+				Token:     *pulseGuardianNtfyToken,
 			}
 			logger.Info("pulse guardian ntfy enabled",
 				slog.String("server", *pulseGuardianNtfyServer),
@@ -367,15 +579,16 @@ func main() {
 		historyService = configuredHistory
 		logger.Info("tracked-file history configured", slog.String("root", *historyRoot))
 	}
-	apiHandler := api.NewWithObserver(database, api.RuntimeStatus{
+	apiHandler := api.NewWithGuardianRecovery(database, api.RuntimeStatus{
 		PulseGuardianEnabled:         *pulseGuardianInterval > 0,
 		PulseGuardianIntervalSeconds: int64(pulseGuardianInterval.Seconds()),
 		RecoveryPolicy:               recoveryPolicy(),
+		GuardianRecoveryURL:          guardianRecoveryURL,
 		FriendlyURLs:                 friendlyURLs(friendlyAddr),
 		PluginStoreRoot:              *pluginStoreRoot,
 		ObserverEnabled:              observerEnabled,
 		ObserverAvailable:            observerAvailable,
-	}, knowledgeService, historyService, eventObserver)
+	}, knowledgeService, historyService, eventObserver, guardianRecovery)
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiHandler)
 	mux.Handle("/health", apiHandler)
@@ -409,30 +622,84 @@ func main() {
 		proxyServer = newProxyServer(*proxyAddr, primaryHandler, logger)
 	}
 
+	contactURLs := friendlyURLs(friendlyAddr)
 	defer logging.Close()
 	logger.Info("timekeeper listening",
-		slog.String("url", "http://"+*addr+"/"),
+		slog.String("url", contactURLs[0]),
+		slog.String("canonical_url", "http://"+*addr+"/"),
 		slog.String("proxy_addr", *proxyAddr),
-		slog.Any("friendly_urls", friendlyURLs(friendlyAddr)),
+		slog.Any("friendly_urls", contactURLs),
 	)
 	if proxyServer != nil && proxyListener != nil {
-		go func() {
-
-			logger.Info("proxy listener bound", slog.String("addr", proxyServer.Addr))
-			if err := proxyServer.Serve(proxyListener); err != nil && err != http.ErrServerClosed {
-				logger.Error("proxy server exited", slog.Any("err", err))
-			}
-		}()
+		logger.Info("proxy listener bound", slog.String("addr", proxyServer.Addr))
 	}
-	log.Println("TimeKeeper is at:")
-	for _, u := range friendlyURLs(friendlyAddr) {
-		log.Printf("  - %s (requires local hosts entry)", u)
+	log.Printf("Contact point: %s", contactURLs[0])
+	for _, u := range contactURLs[1:] {
+		log.Printf("  - %s (friendly local endpoint)", u)
 	}
-	log.Printf("  - http://%s/  (loopback, tools, diagnostics)\n", *addr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	log.Printf("  - http://%s/ (loopback diagnostic fallback)\n", *addr)
+	shutdownContext, stopServer := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stopServer()
+	stopRegistrationQueueWorker := startRegistrationQueueWorker(shutdownContext, database, logger)
+	defer stopRegistrationQueueWorker()
+	if stopShadow != nil {
+		defer stopShadow()
+	}
+	watchParentInput(shutdownContext, os.Stdin, *shutdownOnStdinClose, stopServer)
+	if err := serveUntilShutdown(shutdownContext, server, primaryListener, proxyServer, proxyListener); err != nil {
 		logger.Error("server exited", slog.Any("err", err))
-		log.Fatalf("Time Keeper server: %v", err)
+		log.Printf("Time Keeper server: %v", err)
+		exitCode = 1
 	}
+}
+
+// watchParentInput enables graceful desktop-child shutdown without exposing a
+// public shutdown route. Ordinary service instances leave this disabled.
+func watchParentInput(ctx context.Context, input io.Reader, enabled bool, stop context.CancelFunc) {
+	if !enabled || input == nil || stop == nil {
+		return
+	}
+	go func() {
+		if _, err := io.Copy(io.Discard, input); err == nil && ctx.Err() == nil {
+			stop()
+		}
+	}()
+}
+
+// serveUntilShutdown owns both already-bound listeners and shuts them down
+// together when signalled. The caller's deferred Store and instance-lock
+// cleanup runs after this function returns.
+func serveUntilShutdown(ctx context.Context, primary *http.Server, primaryListener net.Listener, proxy *http.Server, proxyListener net.Listener) error {
+	serveErrors := make(chan error, 2)
+	go func() { serveErrors <- primary.Serve(primaryListener) }()
+	if proxy != nil && proxyListener != nil {
+		go func() { serveErrors <- proxy.Serve(proxyListener) }()
+	}
+	var serveErr error
+	select {
+	case <-ctx.Done():
+	case err := <-serveErrors:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr = err
+		}
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	servers := []*http.Server{primary}
+	if proxy != nil && proxyListener != nil {
+		servers = append(servers, proxy)
+	}
+	shutdownErrors := make(chan error, len(servers))
+	for _, server := range servers {
+		go func(server *http.Server) {
+			shutdownErrors <- server.Shutdown(shutdownCtx)
+		}(server)
+	}
+	var shutdownErr error
+	for range servers {
+		shutdownErr = errors.Join(shutdownErr, <-shutdownErrors)
+	}
+	return errors.Join(serveErr, shutdownErr)
 }
 
 // runKeepAlive makes a low-frequency loopback health request so a local
@@ -470,16 +737,188 @@ func runBackup(ctx context.Context, database *store.Store, destination string) (
 	if err := database.BackupTo(ctx, destination); err != nil {
 		return "", err
 	}
-	return "Time Keeper backup created: " + destination, nil
+	if err := store.CheckDatabaseFileIntegrity(ctx, destination); err != nil {
+		return "", fmt.Errorf("SQLite backup candidate integrity check failed: %w", err)
+	}
+	return "Time Keeper backup created and integrity-verified: " + destination, nil
 }
 
 func dashboard(path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			if identifier, ok := harness.QueryIdentifier(r.URL.RawQuery); ok {
+				serveHarnessDocument(w, r, identifier)
+				return
+			}
+		}
+		if r.URL.Path == "/harness" || r.URL.Path == "/harness/" || r.URL.Path == "/harness.html" {
+			serveHarnessViewer(w, r)
+			return
+		}
+		if r.URL.Path == "/api/harness/catalog" {
+			serveHarnessCatalogAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/harness/content" {
+			serveHarnessContentAPI(w, r)
+			return
+		}
 		// Serve the web directory statically. index.html is the canonical dashboard entrypoint.
 		webDir := filepath.Dir(path)
 		fs := http.FileServer(http.Dir(webDir))
 		// Strip prefix so paths resolve relative to webDir
 		http.StripPrefix("/", fs).ServeHTTP(w, r)
+	}
+}
+
+// wantsHTML reports whether the request explicitly accepts an HTML response.
+// Browsers always list text/html in their Accept header; API clients using
+// */*, text/markdown, or no Accept header keep receiving the raw bytes.
+func wantsHTML(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
+}
+
+func serveHarnessDocument(w http.ResponseWriter, r *http.Request, identifier string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	root, err := harness.FindRoot()
+	if err != nil {
+		http.Error(w, "bundled harness unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	item, content, err := harness.Lookup(root, identifier)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method == http.MethodGet && wantsHTML(r) {
+		renderHarnessViewerForItem(w, item)
+		return
+	}
+	contentType := "text/plain; charset=utf-8"
+	switch filepath.Ext(item.Path) {
+	case ".md":
+		contentType = "text/markdown; charset=utf-8"
+	case ".yaml":
+		contentType = "application/yaml; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": filepath.Base(item.Path)}))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+	if r.Method == http.MethodGet {
+		_, _ = w.Write(content)
+	}
+}
+
+func renderHarnessViewerForItem(w http.ResponseWriter, item harness.Item) {
+	serveHarnessViewerWithSelection(w, &http.Request{Method: http.MethodGet}, item.ID)
+}
+
+func serveHarnessViewer(w http.ResponseWriter, r *http.Request) {
+	selectedID := strings.TrimSpace(r.URL.Query().Get("item"))
+	if selectedID != "" {
+		root, err := harness.FindRoot()
+		if err != nil {
+			http.Error(w, "bundled harness unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		item, _, err := harness.Lookup(root, selectedID)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		selectedID = item.ID
+	}
+	serveHarnessViewerWithSelection(w, r, selectedID)
+}
+
+func serveHarnessViewerWithSelection(w http.ResponseWriter, r *http.Request, selectedID string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	page := "<!doctype html>\n" +
+		"<html lang=\"en\">\n<head>\n" +
+		"  <meta charset=\"utf-8\">\n" +
+		"  <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n" +
+		"  <title>TimeKeeper · Harness Viewer</title>\n" +
+		"  <link rel=\"stylesheet\" href=\"/harness.css\">\n</head>\n<body data-selected-id=\"" + html.EscapeString(selectedID) + "\">\n" +
+		"  <div class=\"harness-viewer\">\n" +
+		"    <aside class=\"harness-sidebar\" aria-label=\"Harness documents\">\n" +
+		"      <header class=\"harness-sidebar-header\"><h2>Harness Documents</h2><span id=\"harness-count\">Loading…</span></header>\n" +
+		"      <ul class=\"harness-menu\" id=\"harness-menu\" role=\"listbox\"></ul>\n" +
+		"    </aside>\n" +
+		"    <main class=\"harness-main\">\n" +
+		"      <header class=\"harness-header\"><p class=\"harness-eyebrow\">TimeKeeper harness document</p>\n" +
+		"        <h1 id=\"harness-title\">Select a document</h1><p id=\"harness-path\" class=\"harness-path\"></p>\n" +
+		"        <div class=\"harness-actions\"><button class=\"harness-copy\" id=\"harness-copy\" type=\"button\" disabled>Copy file</button> <a class=\"harness-back\" href=\"/\">← Dashboard</a></div>\n" +
+		"      </header>\n" +
+		"      <textarea class=\"harness-source\" id=\"harness-source\" readonly spellcheck=\"false\" aria-label=\"Document source\" placeholder=\"Select a harness document from the menu\"></textarea>\n" +
+		"    </main>\n  </div>\n<script src=\"/harness-viewer.js\"></script>\n</body>\n</html>\n"
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Length", strconv.Itoa(len(page)))
+	if r.Method == http.MethodGet {
+		_, _ = io.WriteString(w, page)
+	}
+}
+
+func serveHarnessCatalogAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	root, err := harness.FindRoot()
+	if err != nil {
+		http.Error(w, "bundled harness unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	items, err := harness.Entries(root)
+	if err != nil {
+		http.Error(w, "harness catalog error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method == http.MethodGet {
+		_ = json.NewEncoder(w).Encode(items)
+	}
+}
+
+func serveHarnessContentAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "missing id parameter", http.StatusBadRequest)
+		return
+	}
+	root, err := harness.FindRoot()
+	if err != nil {
+		http.Error(w, "bundled harness unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	_, content, err := harness.Lookup(root, id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+	if r.Method == http.MethodGet {
+		_, _ = w.Write(content)
 	}
 }
 

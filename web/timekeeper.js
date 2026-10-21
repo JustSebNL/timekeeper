@@ -5,6 +5,7 @@
 
   const api = '/api/v1/projects';
   const projects = document.querySelector('#projects');
+  const deadlineWatch = document.querySelector('#deadline-watch');
   const pulseTarget = document.querySelector('#pulse');
   const guardianTarget = document.querySelector('#guardian');
   const usageCoverage = document.querySelector('#usage-coverage');
@@ -586,14 +587,18 @@
     const submitBtn = document.createElement('button');
     submitBtn.type = 'submit';
     submitBtn.textContent = 'Update status';
+    const reason = document.createElement('input');
+    reason.type = 'text';
+    reason.placeholder = 'Closeout evidence / cancellation reason';
+    reason.setAttribute('aria-label', 'Project closeout evidence or cancellation reason');
     const feedback = document.createElement('span');
     feedback.className = 'inline-feedback';
-    form.append(label, select, submitBtn, feedback);
+    form.append(label, select, reason, submitBtn, feedback);
     form.addEventListener('submit', async event => {
       event.preventDefault();
       submitBtn.disabled = true;
       try {
-        await request(api + '/' + encodeURIComponent(project.project_id) + '/status', { method: 'POST', body: JSON.stringify({ status: select.value }) });
+        await request(api + '/' + encodeURIComponent(project.project_id) + '/status', { method: 'POST', body: JSON.stringify({ status: select.value, reason: reason.value.trim() }) });
         await refresh();
       } catch (error) {
         console.error('Project status update failed', error);
@@ -604,6 +609,206 @@
       }
     });
     return form;
+  }
+
+  function renderProjectSchedule(project, refresh) {
+    const section = document.createElement('section');
+    section.className = 'project-lifecycle';
+    const heading = document.createElement('h4');
+    heading.textContent = 'Project lifecycle & schedule';
+    const state = document.createElement('p');
+    state.className = 'status project-deadline-state';
+    state.textContent = 'Deadline · ' + (project.deadline_state || 'unscheduled') + (project.target_end_date ? ' · ' + project.target_end_date : '');
+
+    const scheduleForm = document.createElement('form');
+    scheduleForm.className = 'inline-form project-schedule-form';
+    const plannedStart = document.createElement('input');
+    plannedStart.type = 'date';
+    plannedStart.value = project.planned_start_date || '';
+    plannedStart.setAttribute('aria-label', 'Planned Project start date');
+    const targetEnd = document.createElement('input');
+    targetEnd.type = 'date';
+    targetEnd.value = project.target_end_date || '';
+    targetEnd.setAttribute('aria-label', 'Target Project end date');
+    const timezone = document.createElement('input');
+    timezone.type = 'text';
+    timezone.value = project.schedule_timezone || 'UTC';
+    timezone.placeholder = 'IANA timezone';
+    timezone.setAttribute('aria-label', 'Project schedule timezone');
+    const warningDays = document.createElement('input');
+    warningDays.type = 'number';
+    warningDays.min = '0';
+    warningDays.max = '365';
+    warningDays.value = String(project.deadline_warning_days ?? 7);
+    warningDays.setAttribute('aria-label', 'Deadline warning days');
+    const saveSchedule = document.createElement('button');
+    saveSchedule.type = 'submit';
+    saveSchedule.textContent = 'Save schedule';
+    const scheduleFeedback = document.createElement('span');
+    scheduleFeedback.className = 'inline-feedback';
+    scheduleForm.append(plannedStart, targetEnd, timezone, warningDays, saveSchedule, scheduleFeedback);
+    scheduleForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      saveSchedule.disabled = true;
+      try {
+        await request(api + '/' + encodeURIComponent(project.project_id) + '/schedule', {
+          method: 'PATCH',
+          body: JSON.stringify({ planned_start_date: plannedStart.value, target_end_date: targetEnd.value, schedule_timezone: timezone.value.trim(), deadline_warning_days: Number(warningDays.value) })
+        });
+        await refresh();
+      } catch (error) {
+        scheduleFeedback.className = 'inline-feedback error';
+        scheduleFeedback.textContent = error.message;
+      } finally {
+        saveSchedule.disabled = false;
+      }
+    });
+
+    const phaseForm = document.createElement('form');
+    phaseForm.className = 'inline-form project-phase-form';
+    const phase = document.createElement('select');
+    for (const value of ['intake', 'planning', 'execution', 'validation', 'closeout']) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      option.selected = project.lifecycle_phase === value;
+      phase.append(option);
+    }
+    phase.setAttribute('aria-label', 'Project lifecycle phase');
+    const phaseReason = document.createElement('input');
+    phaseReason.type = 'text';
+    phaseReason.placeholder = 'Reason (required when replanning/backtracking)';
+    phaseReason.setAttribute('aria-label', 'Project phase transition reason');
+    const changePhase = document.createElement('button');
+    changePhase.type = 'submit';
+    changePhase.textContent = 'Change phase';
+    const phaseFeedback = document.createElement('span');
+    phaseFeedback.className = 'inline-feedback';
+    phaseForm.append(phase, phaseReason, changePhase, phaseFeedback);
+    phaseForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      changePhase.disabled = true;
+      try {
+        await request(api + '/' + encodeURIComponent(project.project_id) + '/phase', {
+          method: 'POST', body: JSON.stringify({ phase: phase.value, reason: phaseReason.value.trim() })
+        });
+        await refresh();
+      } catch (error) {
+        phaseFeedback.className = 'inline-feedback error';
+        phaseFeedback.textContent = error.message;
+      } finally {
+        changePhase.disabled = false;
+      }
+    });
+    const actuals = document.createElement('p');
+    actuals.className = 'project-lifecycle-actuals';
+    actuals.textContent = 'Actual start: ' + (project.actual_started_at || 'not started') + ' · Completed: ' + (project.completed_at || 'not completed') + ' · Cancelled: ' + (project.cancelled_at || 'not cancelled');
+    section.append(heading, state, scheduleForm, phaseForm, actuals);
+    return section;
+  }
+
+  function renderProjectMilestones(project, milestones, refresh) {
+    const section = document.createElement('section');
+    section.className = 'project-milestones';
+    const heading = document.createElement('h4');
+    heading.textContent = 'Milestones';
+    const list = document.createElement('div');
+    list.className = 'milestone-list';
+    for (const milestone of milestones || []) {
+      const row = document.createElement('div');
+      row.className = 'milestone-row';
+      const title = document.createElement('strong');
+      title.textContent = milestone.name;
+      const due = document.createElement('input');
+      due.type = 'date';
+      due.value = milestone.target_date;
+      due.setAttribute('aria-label', 'Target date for ' + milestone.name);
+      const dueState = document.createElement('span');
+      dueState.className = 'status milestone-deadline-state';
+      dueState.textContent = (milestone.status || 'Planned') + ' · ' + (milestone.deadline_state || 'unscheduled');
+      const linkedTask = document.createElement('span');
+      linkedTask.textContent = milestone.linked_task_id ? 'Task ' + milestone.linked_task_id : 'No linked Task';
+      const reason = document.createElement('input');
+      reason.type = 'text';
+      reason.placeholder = 'Reason for cancellation/reopening';
+      reason.setAttribute('aria-label', 'Milestone transition reason');
+      const status = document.createElement('select');
+      for (const value of ['Planned', 'In Progress', 'Completed', 'Cancelled']) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        option.selected = milestone.status === value;
+        status.append(option);
+      }
+      status.setAttribute('aria-label', 'Status for ' + milestone.name);
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.textContent = 'Save milestone';
+      const feedback = document.createElement('span');
+      feedback.className = 'inline-feedback';
+      save.addEventListener('click', async () => {
+        save.disabled = true;
+        try {
+          if (due.value !== milestone.target_date) {
+            await request(api + '/' + encodeURIComponent(project.project_id) + '/milestones/' + encodeURIComponent(milestone.milestone_id), { method: 'PATCH', body: JSON.stringify({ target_date: due.value }) });
+          }
+          if (status.value !== milestone.status) {
+            await request(api + '/' + encodeURIComponent(project.project_id) + '/milestones/' + encodeURIComponent(milestone.milestone_id) + '/status', { method: 'POST', body: JSON.stringify({ status: status.value, reason: reason.value.trim() }) });
+          }
+          await refresh();
+        } catch (error) {
+          feedback.className = 'inline-feedback error';
+          feedback.textContent = error.message;
+        } finally {
+          save.disabled = false;
+        }
+      });
+      row.append(title, due, dueState, linkedTask, status, reason, save, feedback);
+      list.append(row);
+    }
+    if (!milestones || !milestones.length) {
+      const empty = document.createElement('p');
+      empty.className = 'empty';
+      empty.textContent = 'No milestones yet. Add a dated deliverable checkpoint.';
+      list.append(empty);
+    }
+    const form = document.createElement('form');
+    form.className = 'inline-form milestone-create-form';
+    const name = document.createElement('input');
+    name.required = true;
+    name.placeholder = 'Milestone name';
+    name.setAttribute('aria-label', 'Milestone name');
+    const targetDate = document.createElement('input');
+    targetDate.type = 'date';
+    targetDate.required = true;
+    targetDate.setAttribute('aria-label', 'Milestone target date');
+    const description = document.createElement('input');
+    description.placeholder = 'Description / acceptance note';
+    description.setAttribute('aria-label', 'Milestone description');
+    const linkedTask = document.createElement('input');
+    linkedTask.placeholder = 'Optional Task ID';
+    linkedTask.setAttribute('aria-label', 'Optional linked Task ID');
+    const add = document.createElement('button');
+    add.type = 'submit';
+    add.textContent = 'Add milestone';
+    const feedback = document.createElement('span');
+    feedback.className = 'inline-feedback';
+    form.append(name, targetDate, description, linkedTask, add, feedback);
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      add.disabled = true;
+      try {
+        await request(api + '/' + encodeURIComponent(project.project_id) + '/milestones', { method: 'POST', body: JSON.stringify({ name: name.value.trim(), target_date: targetDate.value, description: description.value.trim(), linked_task_id: linkedTask.value.trim() }) });
+        await refresh();
+      } catch (error) {
+        feedback.className = 'inline-feedback error';
+        feedback.textContent = error.message;
+      } finally {
+        add.disabled = false;
+      }
+    });
+    section.append(heading, list, form);
+    return section;
   }
 
   function renderTaskMetadata(task, refresh) {
@@ -812,7 +1017,7 @@
     return form;
   }
 
-  function renderExecutionTree(tree, summary, attention, notes, events, pipelines, drafts, refresh) {
+  function renderExecutionTree(tree, milestones, summary, attention, notes, events, pipelines, drafts, refresh) {
     const root = document.createElement('div');
     root.className = 'tree';
 
@@ -821,6 +1026,8 @@
     headerSection.className = 'tree-section';
     headerSection.append(renderProjectStatus(tree.project, refresh));
     headerSection.append(renderProjectMetadata(tree.project, refresh));
+    headerSection.append(renderProjectSchedule(tree.project, refresh));
+    headerSection.append(renderProjectMilestones(tree.project, milestones, refresh));
     headerSection.append(renderOperationalSummary(summary));
     headerSection.append(renderProjectAttention(attention));
     headerSection.append(renderPlanningDrafts(tree.project.project_id, pipelines, drafts, refresh));
@@ -982,16 +1189,17 @@
     button.disabled = true;
     target.textContent = 'Loading execution tree…';
     try {
-      const [tree, summary, attention, noteResponse, eventResponse, pipelineResponse, draftResponse] = await Promise.all([
+      const [tree, summary, attention, noteResponse, eventResponse, pipelineResponse, draftResponse, milestones] = await Promise.all([
         request(api + '/' + encodeURIComponent(projectID) + '/execution-tree'),
         request(api + '/' + encodeURIComponent(projectID) + '/operational-summary'),
         request(api + '/' + encodeURIComponent(projectID) + '/attention'),
         request(api + '/' + encodeURIComponent(projectID) + '/notes'),
         request(api + '/' + encodeURIComponent(projectID) + '/events'),
         request('/api/v1/llm-pipelines'),
-        request(api + '/' + encodeURIComponent(projectID) + '/planning-drafts')
+        request(api + '/' + encodeURIComponent(projectID) + '/planning-drafts'),
+        request(api + '/' + encodeURIComponent(projectID) + '/milestones')
       ]);
-      target.replaceChildren(renderExecutionTree(tree, summary, attention.items || [], noteResponse.items || [], eventResponse.items || [], pipelineResponse.items || [], draftResponse.items || [], () => refreshExecutionTreeAndPulse(projectID, target, button)));
+      target.replaceChildren(renderExecutionTree(tree, milestones || [], summary, attention.items || [], noteResponse.items || [], eventResponse.items || [], pipelineResponse.items || [], draftResponse.items || [], () => refreshExecutionTreeAndPulse(projectID, target, button)));
     } catch (error) {
       console.error('Execution tree loading failed', error);
       target.textContent = error.message;
@@ -1008,6 +1216,59 @@
       console.error('Execution tree refresh failed', error);
       target.textContent = error.message;
     }
+  }
+
+  function renderProjectDeadlineWatch(watch, target = deadlineWatch, projectList = projects) {
+    if (!target) return;
+    target.replaceChildren();
+    if (!watch || !Array.isArray(watch.items)) {
+      target.className = 'deadline-watch empty warning';
+      target.textContent = 'Deadline watch unavailable.';
+      return;
+    }
+    const items = watch.items;
+    if (!items.length) {
+      target.className = 'deadline-watch empty';
+      target.textContent = 'No Projects or milestones due soon.';
+      return;
+    }
+    target.className = 'deadline-watch';
+    const heading = document.createElement('div');
+    heading.className = 'deadline-watch-heading';
+    heading.textContent = 'Deadline watch · ' + items.length + ' due soon or overdue';
+    const list = document.createElement('ul');
+    list.className = 'deadline-watch-list';
+    for (const item of items) {
+      const row = document.createElement('li');
+      row.className = 'deadline-watch-item ' + (item.deadline_state === 'overdue' ? 'overdue' : 'due-soon');
+      const label = document.createElement('strong');
+      label.textContent = item.name;
+      const state = document.createElement('span');
+      state.className = 'deadline-watch-state';
+      state.textContent = item.deadline_state === 'overdue' ? 'OVERDUE' : 'DUE SOON';
+      const details = document.createElement('span');
+      details.className = 'deadline-watch-details';
+      const days = Number(item.days_to_deadline);
+      const relative = days < 0 ? Math.abs(days) + 'd overdue' : days === 0 ? 'due today' : 'in ' + days + 'd';
+      details.textContent = item.project_name + ' · ' + item.entity_type + ' · ' + item.target_date + ' · ' + relative;
+      const inspect = document.createElement('button');
+      inspect.type = 'button';
+      inspect.className = 'deadline-watch-open';
+      inspect.textContent = 'Inspect';
+      inspect.setAttribute('aria-label', 'Inspect ' + item.project_name + ' for ' + item.name);
+      inspect.addEventListener('click', () => {
+        const card = Array.from(projectList?.querySelectorAll('.project-card') || []).find(candidate => candidate.dataset.projectId === item.project_id);
+        if (!card) return;
+        card.hidden = false;
+        const tree = card.querySelector('.tree');
+        const inspectButton = card.querySelector('.project-card-actions button');
+        if (tree?.style.display === 'none') inspectButton?.click();
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+      row.append(label, state, details, inspect);
+      list.append(row);
+    }
+    target.append(heading, list);
   }
 
   function filterProjectCards() {
@@ -1033,6 +1294,7 @@
     for (const item of items) {
       const card = document.createElement('div');
       card.className = 'project-card';
+      card.dataset.projectId = item.project_id;
 
       const header = document.createElement('div');
       header.className = 'project-card-header';
@@ -1044,7 +1306,7 @@
       name.textContent = item.project_name;
       const meta = document.createElement('div');
       meta.className = 'project-card-meta';
-      meta.textContent = item.project_id + ' · ' + item.item_address;
+      meta.textContent = item.project_id + ' · ' + item.item_address + (item.target_end_date ? ' · Due ' + item.target_end_date + ' (' + (item.deadline_state || 'scheduled') + ')' : ' · ' + (item.deadline_state || 'unscheduled'));
       info.append(name, meta);
 
       const status = document.createElement('span');
@@ -1157,6 +1419,91 @@
     } catch (error) {
       guardianTarget.className = 'empty error';
       guardianTarget.textContent = error.message;
+    }
+  }
+
+  // Plugin Store: the registry is optional and deliberately disabled unless
+  // -plugin-store-root is set. A 503 means "not configured", which is a
+  // different fact from "configured but empty" (200 with zero plugins), so the
+  // two states are never collapsed into one "0 plugins" message.
+  async function loadPluginStore() {
+    const storeStatus = document.querySelector('#store-status');
+    const navStoreCount = document.querySelector('#nav-store-count');
+    const storeTarget = document.querySelector('#store');
+    if (!storeTarget) return;
+    try {
+      const response = await fetch('/api/v1/plugins');
+      const data = await response.json().catch(() => null);
+      if (response.status === 503) {
+        if (storeStatus) storeStatus.textContent = 'Not configured';
+        if (navStoreCount) navStoreCount.textContent = '';
+        storeTarget.className = 'empty warning';
+        storeTarget.textContent = 'The plugin store is not configured. Start the server with -plugin-store-root <dir> (or TIMEKEEPER_PLUGIN_STORE_ROOT) to expose locally installed plugins.';
+        return;
+      }
+      if (!response.ok) throw new Error(data?.error?.message || 'Request failed (' + response.status + ')');
+
+      const plugins = Array.isArray(data?.plugins) ? data.plugins : [];
+      if (navStoreCount) navStoreCount.textContent = plugins.length ? String(plugins.length) : '';
+      if (storeStatus) storeStatus.textContent = plugins.length + (plugins.length === 1 ? ' plugin' : ' plugins');
+      storeTarget.className = 'store-list';
+      storeTarget.replaceChildren();
+      if (!plugins.length) {
+        storeTarget.className = 'empty';
+        storeTarget.textContent = 'No plugins installed. Each plugin needs its own directory with a valid plugin.json.';
+        return;
+      }
+      const list = document.createElement('div');
+      list.className = 'store-items';
+      for (const plugin of plugins) {
+        const item = document.createElement('div');
+        item.className = 'store-item';
+        const heading = document.createElement('div');
+        heading.className = 'store-item-heading';
+        const name = document.createElement('strong');
+        name.textContent = plugin.name || plugin.id;
+        const version = document.createElement('span');
+        version.className = 'badge-soft';
+        version.textContent = plugin.version || '—';
+        heading.append(name, version);
+        item.append(heading);
+        const meta = document.createElement('div');
+        meta.className = 'store-item-meta';
+        meta.textContent = [plugin.id, plugin.runtime, plugin.protocol].filter(Boolean).join(' · ');
+        item.append(meta);
+        if (plugin.description) {
+          const description = document.createElement('div');
+          description.className = 'store-item-description';
+          description.textContent = plugin.description;
+          item.append(description);
+        }
+        const capabilities = Array.isArray(plugin.capabilities) ? plugin.capabilities : [];
+        if (capabilities.length) {
+          const tags = document.createElement('div');
+          tags.className = 'store-item-tags';
+          for (const capability of capabilities.slice(0, 8)) {
+            const tag = document.createElement('span');
+            tag.className = 'badge-soft';
+            tag.textContent = capability;
+            tags.append(tag);
+          }
+          item.append(tags);
+        }
+        if (plugin.artifact) {
+          const link = document.createElement('a');
+          link.className = 'store-item-artifact';
+          link.href = '/api/v1/plugins/' + encodeURIComponent(plugin.id) + '/artifact';
+          link.textContent = 'Download ' + plugin.artifact;
+          item.append(link);
+        }
+        list.append(item);
+      }
+      storeTarget.append(list);
+    } catch (error) {
+      if (storeStatus) storeStatus.textContent = 'Unavailable';
+      if (navStoreCount) navStoreCount.textContent = '';
+      storeTarget.className = 'empty error';
+      storeTarget.textContent = error.message;
     }
   }
 
@@ -1584,11 +1931,12 @@
   async function load() {
     void loadPulse();
     void loadGuardianStatus();
+    void loadPluginStore();
     try {
       const data = await request(api);
       const items = data.items || [];
       render(items);
-      const [summaries, usageSummaries, events] = await Promise.all([
+      const [summaries, usageSummaries, events, deadlineResponse] = await Promise.all([
         Promise.all(items.map(item => requestOptional(api + '/' + encodeURIComponent(item.project_id) + '/operational-summary', 'Project operational summary unavailable'))),
         Promise.all(items.map(item => requestOptional(api + '/' + encodeURIComponent(item.project_id) + '/usage-summary', 'Project usage summary unavailable'))),
         // Pull the most recent event per project for the focus row
@@ -1597,8 +1945,10 @@
         // A null item is tolerated (caught, returned as null) so a
         // project with no events does not fail the whole fetch.
         Promise.all(items.map(item => requestOptional(api + '/' + encodeURIComponent(item.project_id) + '/events?limit=1', 'Project activity unavailable'))),
+        requestOptional('/api/v1/project-deadlines', 'Project deadline watch unavailable'),
         loadRecentActivity(items)
       ]);
+      renderProjectDeadlineWatch(deadlineResponse, deadlineWatch);
       statActive.textContent = summaries.reduce((total, summary) => total + (summary?.active_sprints || 0), 0);
       renderFocus(items, summaries, events);
       renderUsage(usageSummaries.map((summary, index) => ({summary, projectName: items[index].project_name || items[index].project_id})));
@@ -1609,6 +1959,7 @@
       console.error('Dashboard load failed', error);
       projects.textContent = error.message;
       projects.className = 'empty';
+      renderProjectDeadlineWatch(null, deadlineWatch);
       activityTarget.className = 'activity-list empty error';
       activityTarget.textContent = 'Activity unavailable.';
       focusTarget.className = 'focus-list empty error';
@@ -1629,7 +1980,7 @@
     message.textContent = 'Creating…';
     const fields = new FormData(form);
     try {
-      await request(api, { method: 'POST', body: JSON.stringify({ name: fields.get('name'), goal: fields.get('goal'), description: fields.get('description') }) });
+      await request(api, { method: 'POST', body: JSON.stringify({ name: fields.get('name'), goal: fields.get('goal'), description: fields.get('description'), planned_start_date: fields.get('planned_start_date') || '', target_end_date: fields.get('target_end_date') || '' }) });
       form.reset();
       message.textContent = 'Project created.';
       await load();

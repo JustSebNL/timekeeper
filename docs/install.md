@@ -33,9 +33,9 @@ Useful options are:
 
 - `--no-service` builds and stages the app without installing or starting a service.
 - `--with-port` selects the loopback port for the optional friendly-URL proxy.
-- `--without-proxy` disables that proxy; the canonical `127.0.0.1:1618` address remains available.
+- `--without-proxy` disables the friendly browser entry point; select it only when you intentionally do not need the hostname-based dashboard URL.
 
-The proxy/host setup is optional. Writing `/etc/hosts` may require elevated permission; a failed host-file update is reported, but does not invalidate a healthy canonical listener. A port-80 conflict can also prevent the friendly URL from working. See [Friendly local URLs](friendly-url.md).
+The proxy/host setup is optional. Writing `/etc/hosts` may require elevated permission; if that update fails, the friendly hostname may not resolve. Run `tk doctor` and `tk hosts status` to diagnose the configured entry point before changing service configuration. A port-80 conflict can also prevent the friendly URL from working. See [Friendly local URLs](friendly-url.md).
 
 If you used `--no-service`, start the server manually from the repository root:
 
@@ -55,11 +55,11 @@ From the repository root, run in PowerShell or Command Prompt:
 
 The installer builds the server and CLI, stages the dashboard, and uses Bend2Will's `obey` command to install the Windows service when a local Bend2Will checkout or `obey.exe` is available. In this workspace, the sibling `Bend2Will` repository is detected automatically. Elsewhere, set `TIMEKEEPER_BEND2WILL_ROOT` to that source checkout or `TIMEKEEPER_OBEY` to a trusted executable. The service install requests Administrator approval through UAC. NSSM remains a compatibility fallback when Bend2Will is unavailable; replacing an existing NSSM service requires the explicit `-MigrateFromNssm` option. The source changes do not alter the running service until an installer action is run and health-checked.
 
-The CLI is `.\.timekeeper\app\bin\tk.exe`. The Windows installer builds the checked-out source directly; review the checkout before approving the elevated install. Friendly hostnames may still be unavailable if the proxy cannot bind its configured port. The canonical loopback address remains the fallback.
+The CLI is `.\.timekeeper\app\bin\tk.exe`. The Windows installer builds the checked-out source directly; review the checkout before approving the elevated install. `http://timekeeper.local/` is the normal browser and agent entry point; run `tk doctor` if it is unavailable.
 
 ## macOS
 
-The shell installer can build a macOS binary, but the service manager does not currently install a launchd service. An open support decision is recorded in the local TimeKeeper backlog; until it is resolved, the documented path is build-only. If you choose to build from source, use the shell installer with `--no-service`; the verified-checkout requirements above still apply. Start the resulting `.timekeeper/app/timekeeper` manually from the repository root and stop it in that terminal when finished. No launchd plist or automated macOS service setup is provided here.
+The shell installer can build a macOS binary, but automated launchd installation is an explicit non-goal for this release. If you choose to build from source, use the shell installer with `--no-service`; the verified-checkout requirements above still apply. Start the resulting `.timekeeper/app/timekeeper` manually from the repository root and stop it in that terminal when finished. No launchd plist or automated macOS service setup is provided here. A future proposal would need a separate design for user/agent service scope, logs, permissions, rollback, and platform verification.
 
 ## Verify and open TimeKeeper
 
@@ -70,14 +70,14 @@ Linux / WSL: ./.timekeeper/app/tk doctor
 Windows:     .\.timekeeper\app\bin\tk.exe doctor
 ```
 
-Open the dashboard using the canonical loopback address:
+Open the dashboard through the standard TimeKeeper entry point:
 
 ```text
-Linux / WSL: ./.timekeeper/app/tk open --ip
-Windows:     .\.timekeeper\app\bin\tk.exe open --ip
+Linux / WSL: ./.timekeeper/app/tk open
+Windows:     .\.timekeeper\app\bin\tk.exe open
 ```
 
-You can also browse directly to `http://127.0.0.1:1618/`. `tk open` uses the friendlier local hostname when it is available; `tk open --ip` avoids hosts-file and proxy setup. Check `tk hosts status` and `tk doctor` if a friendly URL does not work.
+The dashboard entry point is `http://timekeeper.local/`. If it does not open, check `tk hosts status` and `tk doctor`, then repair the friendly hostname or proxy configuration. Keep project links and agent instructions on the friendly hostname.
 
 When `INSTALLATION.env` is present beside the CLI, `tk doctor` also reports the install target, source commit, and any saved proxy choice. If that metadata file is absent, its informational install check is skipped without failing the health check.
 
@@ -95,7 +95,7 @@ The commands above are the quick path. These notes explain what the platform scr
 2. Rejects a dirty working tree when no previous `.timekeeper/app` install exists. With an existing app it can proceed, but still archives and builds the committed `HEAD`; local edits are not included.
 3. Uses `git archive` to stage that commit and runs Go with module downloading disabled. Build dependencies therefore need to be available locally.
 4. Builds the `timekeeper`, `tk`, and `guardian` binaries, stages the dashboard, and writes local launchers plus `INSTALLATION.env` under `.timekeeper/app/`.
-5. Refreshes the app directory while preserving its existing `state` directory. The SQLite database is stored outside the replaceable app directory at `.timekeeper/timekeeper.db`.
+5. Refreshes the app directory while preserving its existing `state` directory. The SQLite database is stored outside the replaceable app directory at `.timekeeper/timekeeper.db`; the generated launcher passes that existing state directory to the server so the canonical Guardian recovery route can write artifacts. It does not start the duplicate 1619 artifact receiver unless `TIMEKEEPER_GUARDIAN_COMPAT_RECEIVER=1` is set for migration compatibility.
 6. Attempts to add the managed local host entries. If the hosts-file write is denied, the canonical API can still work; the friendly names will not.
 7. Installs and starts a systemd user service unless `--no-service` was selected.
 
@@ -104,6 +104,8 @@ The installer does not add the CLI to `PATH`, fetch application source, or turn 
 ### Windows service installer
 
 `install/install.bat` delegates to the repository's `install.bat`, which invokes `scripts/service/install-windows.ps1` with build and elevation enabled. It compiles `timekeeper.exe` and `tk.exe` from the checked-out source, builds `obey.exe` from the local Bend2Will source when available, stages the dashboard, and prepares `.timekeeper/`. Bend2Will registers the TimeKeeper service as `LocalService`, with delayed automatic startup and SCM restart-on-failure. Windows setup requests UAC approval instead of silently skipping elevated work.
+
+For a test/build candidate without installing or changing the service, use [Build a Windows candidate without installing](build-windows-candidate.md).
 
 The PowerShell installer looks for a sibling `Bend2Will` checkout by default. If it is elsewhere, set `TIMEKEEPER_BEND2WILL_ROOT` or pass `-Bend2WillRoot`; a trusted prebuilt binary can be supplied with `TIMEKEEPER_OBEY` or `-ObeyPath`. Preview the selected path and service settings without changing the service:
 
@@ -117,9 +119,9 @@ An existing NSSM service is not silently replaced. First review the plan and con
 .\install\install.bat -MigrateFromNssm
 ```
 
-The installer checks that NSSM's configured application is this repository's `timekeeper.exe`, saves its settings, and only then replaces the service. If the Bend2Will service fails its ownership/health check, the installer attempts to restore the previous NSSM setup, replaced binaries, and the backed-up dashboard assets. During an existing-service migration, it leaves hosts-file entries unchanged unless `-UpdateHosts` is supplied and retains the legacy scheduled task by default; `-RetireLegacyLauncher` explicitly removes that task after health verification. Unknown service managers and services pointing at another executable are left untouched. The Windows service path does not perform the Linux installer's Git-origin/`origin/main` validation, so review the checkout before approving the build.
+The installer checks that NSSM's configured application is this repository's `timekeeper.exe`, saves its settings, and only then replaces the service. If the Bend2Will service fails its ownership/health check, the installer attempts to restore the previous NSSM setup, replaced binaries, and the backed-up dashboard assets. During an existing-service migration, it leaves hosts-file entries unchanged unless `-UpdateHosts` is supplied; `-UpdateHosts` refreshes the managed block, including the `vite.timekeeper.local` development alias. It retains the legacy scheduled task by default; `-RetireLegacyLauncher` explicitly removes that task after health verification. Unknown service managers and services pointing at another executable are left untouched. The Windows service path does not perform the Linux installer's Git-origin/`origin/main` validation, so review the checkout before approving the build.
 
-The Bend2Will service runs as `LocalService`, uses delayed automatic startup, and asks the SCM to restart its supervisor after failure with a five-second delay. Bend2Will captures supervisor and child output in `.timekeeper/log/service.log`, rotates at 10 MiB, and retains one `.1` backup. `tk service logs` shows recent output. The running service is not changed by source edits or by `-Plan`; migration happens only when an install action is explicitly run.
+The Bend2Will service runs as `LocalService`, uses delayed automatic startup, and asks the SCM to restart its supervisor after failure with a five-second delay. Bend2Will captures supervisor and child output in `.timekeeper/log/service.log`, rotates at 10 MiB, and retains one `.1` backup. New service definitions also pass `.timekeeper/app/state` as the private Guardian recovery directory. `tk service logs` shows recent output. The running service is not changed by source edits or by `-Plan`; migration happens only when an install action is explicitly run.
 
 ### Linux service, logs, and proxy choice
 
@@ -159,7 +161,7 @@ tk service uninstall
 
 The installer also writes service logs under `.timekeeper/` or the configured Linux log directory. `tk service uninstall` removes the OS service; it does not delete the database or the rest of `.timekeeper/`.
 
-If host-file setup was skipped or failed, `tk hosts status` shows the current entries. `tk hosts add` and `tk hosts remove` change the operating-system hosts file and may need Administrator/root permission.
+If host-file setup was skipped or failed, `tk hosts status` shows the current entries. The managed block includes `timekeeper.local`, `api.timekeeper.local`, `guardian.local`, and `vite.timekeeper.local`; `tk hosts add` and `tk hosts remove` manage the block and may need Administrator/root permission.
 
 ## Uninstall and keep your data
 
@@ -180,8 +182,8 @@ If the command could not edit the hosts file because it lacked permission, check
 | Go is missing or the build fails | Install Go and confirm `go version`. On Linux/WSL, also make sure required Go modules are already cached. |
 | Linux/WSL reports the wrong origin, revision, or a dirty checkout | The shell installer accepts a verified committed source revision, not arbitrary local edits. Check the remote and `HEAD`; do not expect uncommitted changes to be built. |
 | Windows service setup does not start | Approve the UAC request. If Bend2Will cannot be found, set `TIMEKEEPER_BEND2WILL_ROOT` to its source checkout or `TIMEKEEPER_OBEY` to a trusted `obey.exe`; NSSM remains the fallback when available. Existing NSSM migration requires `-MigrateFromNssm`. Then run `tk service status` and `tk service logs`. |
-| `127.0.0.1:1618` works but a friendly URL does not | Run `tk hosts status` and `tk doctor`. A missing hosts entry or unavailable proxy port affects the friendly name, not the canonical address. See [Friendly local URLs](friendly-url.md#if-the-friendly-url-does-not-open). |
-| Port 80 is already in use | Do not stop an unrelated service just to get a shorter URL. Use `tk open --ip`, or choose a supported proxy option for your platform in the install guide. |
+| Friendly hostname does not open | Run `tk hosts status` and `tk doctor`, then repair the managed host mapping or proxy. Keep the friendly hostname as the entry point. See [Friendly local URLs](friendly-url.md#if-the-friendly-url-does-not-open). |
+| Port 80 is already in use | Do not stop an unrelated service just to get a shorter URL. Repair or select a supported friendly proxy configuration as described in the install guide. |
 | The server is not healthy | Run `tk doctor`, then check service status and logs. Do not start a second server or database to work around an unhealthy install. |
 
 For API, security, and agent integration details, see the [documentation index](README.md).

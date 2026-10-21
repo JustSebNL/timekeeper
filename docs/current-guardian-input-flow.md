@@ -159,9 +159,11 @@ Content-Type: application/json
 {
   "active_sprint_id": "SP-...",
   "lease_duration_seconds": 300,
-  "guardian_url": "http://127.0.0.1:1619/v1/recover"
+  "guardian_url": "http://guardian.local:1618/api/v1/guardian/recover"
 }
 ```
+
+Existing migration-era registrations may still point at `http://127.0.0.1:1619/v1/recover`; Core keeps them readable and retryable while the staged listener migration completes.
 
 Fields may be omitted according to the API contract when the caller wants to preserve an existing Sprint or callback association. The lease is not a generic health check. It is an assertion by the agent that it is making meaningful progress on active work and will renew that assertion before the deadline.
 
@@ -261,17 +263,17 @@ Without that header, Core treats delivery as unconfirmed.
 
 The HTTP client has a three-second timeout and does not follow redirects. Failed callbacks remain eligible for retry. The delivery-attempt record increments regardless of success, while `delivered_at` is set only after an accepted callback.
 
-The legacy/reference receiver in `internal/guardian/receiver.go` is intentionally constrained. It:
+The legacy/reference receiver in `internal/guardian/receiver.go` and the canonical `POST /api/v1/guardian/recover` route share the same intentionally constrained recovery handler. It:
 
-1. accepts only `POST /v1/recover`;
-2. limits the body to 64 KiB;
+1. accepts only `POST` requests;
+2. requires `application/json` and limits the body to 64 KiB;
 3. validates the signal format and action;
 4. validates that the nudge ID and agent ID exist;
 5. writes a local recovery artifact;
-6. acknowledges through the TimeKeeper API;
+6. acknowledges through the configured TimeKeeper boundary;
 7. returns the accepted header only after those operations succeed.
 
-That receiver does not execute arbitrary commands and does not mutate the Store directly. It is a narrow recovery surface.
+That path does not execute arbitrary commands. The standalone receiver acknowledges through the TimeKeeper HTTP API; the canonical route acknowledges through its owning Store after writing the artifact. It is a narrow recovery surface.
 
 For the currently configured `xatia` deployment, the canonical active path is the agent-side API poller. The old `1619` callback registration was removed to avoid two independent owners competing for the same wake. The callback mechanism remains part of the runtime-neutral Core contract for other integrations and controlled migrations.
 
@@ -717,7 +719,7 @@ A developer debugging the complete path should verify each boundary independentl
 1. Confirm Core is healthy:
 
    ```text
-   GET http://127.0.0.1:1618/health
+   GET http://timekeeper.local/health
    ```
 
 2. Confirm the agent has a progress lease:

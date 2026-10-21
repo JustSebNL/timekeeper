@@ -12,6 +12,14 @@ test('editor bundle declares common language packages and lint support', () => {
   assert.match(source, /linter\(/);
 });
 
+test('MergeView is exposed as a read-only comparison editor', () => {
+  assert.match(source, /@codemirror\/merge/);
+  assert.match(source, /new MergeView\(/);
+  assert.match(source, /export function mountMerge\(/);
+  assert.match(source, /EditorView\.editable\.of\(false\)/);
+  assert.match(source, /EditorState\.readOnly\.of\(true\)/);
+});
+
 test('CodeMirror forwards document changes to the file-history callback', () => {
   assert.match(source, /if \(update\.docChanged\) options\.onChange\(update\.state\.doc\.toString\(\)\)/);
 });

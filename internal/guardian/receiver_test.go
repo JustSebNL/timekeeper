@@ -131,6 +131,26 @@ func TestReceiverAcceptsSignalWritesArtifactAndAcks(t *testing.T) {
 	}
 }
 
+func TestReceiverRejectsNonJSONContentType(t *testing.T) {
+	receiver, err := guardian.NewReceiver(guardian.ReceiverConfig{
+		BindAddr:          "127.0.0.1:0",
+		TimeKeeperBaseURL: "http://127.0.0.1:1618",
+		StateDir:          newTestStateDir(t),
+		Action:            guardian.RecoveryActionLocalArtifact,
+		PolicyLabel:       "local-artifact",
+	})
+	if err != nil {
+		t.Fatalf("create receiver: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/recover", strings.NewReader(`{"format":"timekeeper-pulse-guardian/v1"}`))
+	req.Header.Set("Content-Type", "text/plain")
+	response := httptest.NewRecorder()
+	receiver.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415 for non-JSON content type, got %d", response.Code)
+	}
+}
+
 func TestReceiverRejectsBadFormat(t *testing.T) {
 	stateDir := newTestStateDir(t)
 	receiver, err := guardian.NewReceiver(guardian.ReceiverConfig{

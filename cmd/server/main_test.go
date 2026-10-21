@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/JustSebNL/timekeeper/internal/model"
 	"github.com/JustSebNL/timekeeper/internal/store"
@@ -304,8 +307,11 @@ func TestRunBackupCreatesSnapshotAndReportsPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run backup: %v", err)
 	}
-	if message != "Time Keeper backup created: "+destination {
+	if message != "Time Keeper backup created and integrity-verified: "+destination {
 		t.Fatalf("message = %q", message)
+	}
+	if err := store.CheckDatabaseFileIntegrity(ctx, destination); err != nil {
+		t.Fatalf("backup candidate integrity: %v", err)
 	}
 	copy, err := store.Open(destination)
 	if err != nil {
@@ -368,6 +374,231 @@ func TestDashboardServesCurrentFrameworkNeutralUI(t *testing.T) {
 	}
 }
 
+func TestDashboardServesListedHarnessFromFriendlyQueryLink(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"harness/SKILL.md":                   "# Contract\n",
+		"harness/manifest.yaml":              "version: 1\nskills:\n  - harness/skills/bug-hunter/SKILL.md\n",
+		"harness/skills/bug-hunter/SKILL.md": "# Bug hunter\nTrace it.\n",
+		"docs/HARNESS.md":                    "# First use\n",
+		"docs/agent.md":                      "# Agent router\n",
+		"web/index.html":                     "<html>dashboard</html>",
+	}
+	for name, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TIMEKEEPER_REPO", root)
+	handler := dashboard(filepath.Join(root, "web", "index.html"))
+
+	for _, test := range []struct {
+		url  string
+		want string
+	}{
+		{"/?bug-hunter.md", "# Bug hunter\nTrace it.\n"},
+		{"/?harness=agent-router", "# Agent router\n"},
+	} {
+		request := httptest.NewRequest(http.MethodGet, test.url, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/markdown; charset=utf-8" || response.Body.String() != test.want {
+			t.Fatalf("GET %s status=%d content-type=%q body=%q", test.url, response.Code, response.Header().Get("Content-Type"), response.Body.String())
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/?manifest.yaml", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/yaml; charset=utf-8" || !strings.Contains(response.Body.String(), "harness/skills/bug-hunter/SKILL.md") {
+		t.Fatalf("YAML link status=%d content-type=%q body=%q", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+
+	for _, test := range []struct {
+		url    string
+		method string
+		status int
+	}{
+		{"/?not-listed.md", http.MethodGet, http.StatusNotFound},
+		{"/?../../secret.md", http.MethodGet, http.StatusNotFound},
+		{"/?bug-hunter.md", http.MethodPost, http.StatusMethodNotAllowed},
+	} {
+		request := httptest.NewRequest(test.method, test.url, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != test.status {
+			t.Errorf("%s %s status=%d want=%d", test.method, test.url, response.Code, test.status)
+		}
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/?tab=projects", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "dashboard") {
+		t.Fatalf("ordinary dashboard query status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestDashboardServesHTMLHarnessReaderToBrowsers(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"harness/SKILL.md":                   "# Contract\n",
+		"harness/manifest.yaml":              "version: 1\nskills:\n  - harness/skills/bug-hunter/SKILL.md\n",
+		"harness/skills/bug-hunter/SKILL.md": "# Bug hunter\nTrace <it> & \"copy\".\n",
+		"docs/HARNESS.md":                    "# First use\n",
+		"docs/agent.md":                      "# Agent router\n",
+		"web/index.html":                     "<html>dashboard</html>",
+	}
+	for name, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TIMEKEEPER_REPO", root)
+	handler := dashboard(filepath.Join(root, "web", "index.html"))
+
+	// A browser Accept header (any Accept containing text/html) gets the
+	// shared HTML viewer preselected to the linked harness ID.
+	request := httptest.NewRequest(http.MethodGet, "/harness.html?item=bug-hunter", nil)
+	request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusOK {
+		t.Fatalf("HTML reader status=%d", response.Code)
+	}
+	if got := response.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("HTML reader content-type=%q", got)
+	}
+	for _, marker := range []string{
+		`<ul class="harness-menu" id="harness-menu" role="listbox">`,
+		`<textarea class="harness-source" id="harness-source" readonly`,
+		`<script src="/harness-viewer.js"></script>`,
+		`<link rel="stylesheet" href="/harness.css">`,
+		`<body data-selected-id="bug-hunter">`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("HTML reader missing marker %q in body=%q", marker, body)
+		}
+	}
+	// The source is fetched into textarea.value by the viewer script, never
+	// interpolated into the HTML shell.
+	if strings.Contains(body, "Trace <it>") || strings.Contains(body, "Trace &lt;it&gt;") {
+		t.Fatal("HTML shell must not embed harness source; it is loaded as text content")
+	}
+	// No raw-markdown fallback headers on the HTML path.
+	if got := response.Header().Get("Content-Disposition"); got != "" {
+		t.Fatalf("HTML reader must not set Content-Disposition, got %q", got)
+	}
+
+	// The YAML manifest also gets the HTML reader when a browser asks.
+	request = httptest.NewRequest(http.MethodGet, "/?manifest.yaml", nil)
+	request.Header.Set("Accept", "text/html,*/*;q=0.8")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/html; charset=utf-8" || !strings.Contains(response.Body.String(), `data-selected-id="manifest"`) {
+		t.Fatalf("YAML HTML reader status=%d content-type=%q body=%q", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+
+	// */* and text/markdown Accept headers keep receiving the raw bytes so
+	// API clients never need to parse the reader page.
+	for _, test := range []struct {
+		accept      string
+		contentType string
+	}{
+		{"*/*", "text/markdown; charset=utf-8"},
+		{"text/markdown", "text/markdown; charset=utf-8"},
+		{"application/yaml, */*", "application/yaml; charset=utf-8"},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/?bug-hunter.md", nil)
+		if test.accept != "application/yaml, */*" {
+			request.Header.Set("Accept", test.accept)
+		} else {
+			request = httptest.NewRequest(http.MethodGet, "/?manifest.yaml", nil)
+			request.Header.Set("Accept", test.accept)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != test.contentType {
+			t.Errorf("Accept %q status=%d content-type=%q want=%d/%q", test.accept, response.Code, response.Header().Get("Content-Type"), http.StatusOK, test.contentType)
+		}
+	}
+
+	// No Accept header (curl-style) keeps the raw markdown bytes.
+	request = httptest.NewRequest(http.MethodGet, "/?bug-hunter.md", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/markdown; charset=utf-8" || response.Body.String() != "# Bug hunter\nTrace <it> & \"copy\".\n" {
+		t.Fatalf("no-Accept status=%d content-type=%q body=%q", response.Code, response.Header().Get("Content-Type"), response.Body.String())
+	}
+}
+
+func TestHarnessViewerCatalogAndContentAreDirectoryDriven(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"harness/SKILL.md":              "# Contract\n",
+		"harness/manifest.yaml":         "version: 1\nskills:\n  - harness/skills/alpha/SKILL.md\n  - harness/skills/beta/SKILL.md\n",
+		"harness/skills/alpha/SKILL.md": "---\ndescription: Alpha harness\n---\n# Alpha body\n",
+		"harness/skills/beta/SKILL.md":  "---\ndescription: Beta harness\n---\n# Beta body\n",
+		"harness/extra-guide.md":        "# Auto-discovered guide\n",
+		"docs/HARNESS.md":               "# Getting started\n",
+		"docs/agent.md":                 "# Router\n",
+		"web/index.html":                "<html>dashboard</html>",
+	}
+	for name, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TIMEKEEPER_REPO", root)
+	handler := dashboard(filepath.Join(root, "web", "index.html"))
+
+	request := httptest.NewRequest(http.MethodGet, "/harness.html", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `id="harness-menu"`) || !strings.Contains(response.Body.String(), `id="harness-source"`) {
+		t.Fatalf("viewer status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/harness/catalog", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ID":"alpha"`) || !strings.Contains(response.Body.String(), `"ID":"beta"`) || !strings.Contains(response.Body.String(), `"ID":"extra-guide"`) {
+		t.Fatalf("catalog status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/harness/content?id=beta", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "---\ndescription: Beta harness\n---\n# Beta body\n" {
+		t.Fatalf("content status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	// A removed/renamed file left behind in the manifest must not break the
+	// viewer catalog; the directory is the inventory authority.
+	if err := os.Remove(filepath.Join(root, "harness/skills/beta/SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/harness/catalog", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"ID":"beta"`) || !strings.Contains(response.Body.String(), `"ID":"extra-guide"`) {
+		t.Fatalf("catalog after removal status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 func TestDashboardProvidesRecentActivityPanel(t *testing.T) {
 	html, err := os.ReadFile(filepath.Join("..", "..", "web", "index.html"))
 	if err != nil {
@@ -403,5 +634,208 @@ func TestKeepAliveOnceUsesHealthEndpoint(t *testing.T) {
 	keepAliveOnce(context.Background(), server.Client(), strings.TrimPrefix(server.URL, "http://"))
 	if !called {
 		t.Fatal("keep-alive did not call /health")
+	}
+}
+
+func TestWatchParentInputStopsOnEOF(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	stopped := make(chan struct{})
+	watchParentInput(ctx, reader, true, func() {
+		close(stopped)
+		cancel()
+	})
+	select {
+	case <-stopped:
+		t.Fatal("parent-close watcher stopped before stdin EOF")
+	case <-time.After(25 * time.Millisecond):
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("stdin EOF did not request shutdown")
+	}
+}
+
+func TestWatchParentInputDisabledIgnoresEOF(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	watchParentInput(ctx, reader, false, cancel)
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("disabled parent-close watcher observed stdin EOF")
+	case <-time.After(40 * time.Millisecond):
+	}
+}
+
+func TestServeShutdownClosesPrimaryAndProxy(t *testing.T) {
+	primaryListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primaryListener.Close()
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxyListener.Close()
+	primary := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })}
+	proxy := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() {
+		finished <- serveUntilShutdown(ctx, primary, primaryListener, proxy, proxyListener)
+	}()
+	waitForServer(t, primaryListener.Addr().String())
+	waitForServer(t, proxyListener.Addr().String())
+	cancel()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("serveUntilShutdown() = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("serveUntilShutdown did not return after cancellation")
+	}
+	assertServerStopped(t, primaryListener.Addr().String())
+	assertServerStopped(t, proxyListener.Addr().String())
+}
+
+func TestServeShutdownStopsBothListenersBeforeDraining(t *testing.T) {
+	primaryListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primaryListener.Close()
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxyListener.Close()
+
+	started := make(chan string, 4)
+	release := make(chan struct{})
+	releaseRequests := func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}
+	defer releaseRequests()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- r.URL.Path
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	})
+	primary := &http.Server{Handler: handler}
+	proxy := &http.Server{Handler: handler}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() {
+		finished <- serveUntilShutdown(ctx, primary, primaryListener, proxy, proxyListener)
+	}()
+	requestDone := make(chan struct{}, 2)
+	for _, target := range []struct {
+		addr string
+		path string
+	}{{primaryListener.Addr().String(), "/primary"}, {proxyListener.Addr().String(), "/proxy"}} {
+		go func(target struct{ addr, path string }) {
+			resp, err := http.Get("http://" + target.addr + target.path)
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			if err != nil {
+				t.Errorf("active request %s: %v", target.path, err)
+			}
+			requestDone <- struct{}{}
+		}(target)
+	}
+	seen := map[string]bool{}
+	for len(seen) != 2 {
+		select {
+		case path := <-started:
+			seen[path] = true
+		case <-time.After(time.Second):
+			t.Fatalf("active requests did not start on both listeners: %v", seen)
+		}
+	}
+	cancel()
+
+	probeDone := make(chan error, 1)
+	go func() {
+		client := http.Client{Timeout: time.Second}
+		resp, err := client.Get("http://" + proxyListener.Addr().String() + "/probe")
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		probeDone <- err
+	}()
+	select {
+	case path := <-started:
+		if path == "/probe" {
+			t.Fatal("proxy listener accepted new work while the primary listener was draining")
+		}
+	case err := <-probeDone:
+		if err == nil {
+			t.Fatal("probe unexpectedly received a response from the proxy during shutdown")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("proxy listener shutdown was not observable")
+	}
+	releaseRequests()
+	for range 2 {
+		select {
+		case <-requestDone:
+		case <-time.After(time.Second):
+			t.Fatal("active request did not drain")
+		}
+	}
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("serveUntilShutdown() = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("serveUntilShutdown did not return after active requests drained")
+	}
+}
+
+func waitForServer(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		client := &http.Client{Timeout: 100 * time.Millisecond}
+		resp, err := client.Get("http://" + addr + "/")
+		if err == nil {
+			_ = resp.Body.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("server at %s did not start", addr)
+}
+
+func assertServerStopped(t *testing.T, addr string) {
+	t.Helper()
+	client := &http.Client{Timeout: 100 * time.Millisecond, Transport: &http.Transport{DisableKeepAlives: true}}
+	resp, err := client.Get("http://" + addr + "/")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if err == nil {
+		t.Fatalf("server at %s accepted a request after shutdown", addr)
 	}
 }

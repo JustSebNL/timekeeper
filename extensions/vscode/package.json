@@ -20,6 +20,13 @@
     "onCommand:timekeeper.holdSprint",
     "onCommand:timekeeper.resumeSprint",
     "onCommand:timekeeper.completeSprint",
+    "onCommand:timekeeper.copyEditorReference",
+    "onCommand:timekeeper.createTaskFromSelection",
+    "onCommand:timekeeper.showProjectContext",
+    "onCommand:timekeeper.showGitStatus",
+    "onCommand:timekeeper.browseFileHistory",
+    "onCommand:timekeeper.restoreFileHistoryVersion",
+    "onCommand:timekeeper.captureFileHistorySnapshot",
     "onCommand:timekeeper.openDashboard"
   ],
   "contributes": {
@@ -41,6 +48,13 @@
       { "command": "timekeeper.holdSprint", "title": "Time Keeper: Hold Sprint" },
       { "command": "timekeeper.resumeSprint", "title": "Time Keeper: Resume Sprint" },
       { "command": "timekeeper.completeSprint", "title": "Time Keeper: Complete Sprint" },
+      { "command": "timekeeper.copyEditorReference", "title": "Time Keeper: Copy Editor Reference" },
+      { "command": "timekeeper.createTaskFromSelection", "title": "Time Keeper: Create Task from Selection" },
+      { "command": "timekeeper.showProjectContext", "title": "Time Keeper: Show Project Context" },
+      { "command": "timekeeper.showGitStatus", "title": "Time Keeper: Show Git Status" },
+      { "command": "timekeeper.browseFileHistory", "title": "Time Keeper: Browse File History" },
+      { "command": "timekeeper.restoreFileHistoryVersion", "title": "Time Keeper: Restore File History Version" },
+      { "command": "timekeeper.captureFileHistorySnapshot", "title": "Time Keeper: Capture File History Snapshot" },
       { "command": "timekeeper.openDashboard", "title": "Time Keeper: Open Dashboard" }
     ],
     "views": {
@@ -53,18 +67,27 @@
         { "command": "timekeeper.connect", "when": "view == timekeeper.projects", "group": "navigation@1" },
         { "command": "timekeeper.selectProject", "when": "view == timekeeper.projects", "group": "navigation@2" },
         { "command": "timekeeper.refresh", "when": "view == timekeeper.projects", "group": "navigation@3" },
-        { "command": "timekeeper.openDashboard", "when": "view == timekeeper.projects", "group": "navigation@4" }
+        { "command": "timekeeper.openDashboard", "when": "view == timekeeper.projects", "group": "navigation@4" },
+        { "command": "timekeeper.showProjectContext", "when": "view == timekeeper.projects", "group": "navigation@5" },
+        { "command": "timekeeper.showGitStatus", "when": "view == timekeeper.projects", "group": "navigation@6" },
+        { "command": "timekeeper.browseFileHistory", "when": "view == timekeeper.projects", "group": "navigation@7" },
+        { "command": "timekeeper.restoreFileHistoryVersion", "when": "view == timekeeper.projects", "group": "navigation@8" },
+        { "command": "timekeeper.captureFileHistorySnapshot", "when": "view == timekeeper.projects", "group": "navigation@9" }
       ],
       "view/item/context": [
         { "command": "timekeeper.startSprint", "when": "view == timekeeper.projects && viewItem == timekeeper.sprint.open", "group": "inline@1" },
         { "command": "timekeeper.holdSprint", "when": "view == timekeeper.projects && viewItem == timekeeper.sprint.active", "group": "inline@2" },
         { "command": "timekeeper.resumeSprint", "when": "view == timekeeper.projects && viewItem == timekeeper.sprint.on-hold", "group": "inline@3" },
         { "command": "timekeeper.completeSprint", "when": "view == timekeeper.projects && viewItem == timekeeper.sprint.active", "group": "inline@4" }
+      ],
+      "editor/context": [
+        { "command": "timekeeper.copyEditorReference", "when": "editorTextFocus", "group": "timekeeper@1" },
+        { "command": "timekeeper.createTaskFromSelection", "when": "editorHasSelection", "group": "timekeeper@2" }
       ]
     }
   },
   "scripts": {
-    "lint": "node --check extension.js && node --check lib/client.js && node --check lib/tree.js",
+    "lint": "node --check extension.js && node --check lib/client.js && node --check lib/context.js && node --check lib/editor.js && node --check lib/git.js && node --check lib/history.js && node --check lib/history-commands.js && node --check lib/tree.js",
     "test": "node --test test/*.test.js"
   }
 }

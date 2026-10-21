@@ -56,8 +56,8 @@ TimeKeeper API :1618 (canonical control-plane port)
   |
   +-- Guardian recovery route :1618/api/v1/guardian/recover
   |     validates signal
-  |     invokes the configured agent-side adapter
-  |     confirms worker admission before return
+  |     writes a durable local recovery artifact
+  |     acknowledges the nudge only after artifact write
   |
   +-- ntfy notification -> supervised ntfy subscriber
   |                          runs `tk guardian wake --agent <id> --adapter <trusted-adapter>`
@@ -331,7 +331,7 @@ not fooled by optimistic timestamps forever.
 tk doctor
 tk agent status example-agent
 tk agent nudges example-agent
-curl -sS http://127.0.0.1:1618/api/v1/guardian/status
+curl -sS http://timekeeper.local/api/v1/guardian/status
 ```
 
 Then check:

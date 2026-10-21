@@ -84,3 +84,57 @@ func TestSubprocessLauncherRequiresIDAndPath(t *testing.T) {
 		t.Fatal("expected error launching without exec path, got nil")
 	}
 }
+
+func TestSubprocessLauncherRejectsOutsideSandboxRoot(t *testing.T) {
+	execPath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("failed to resolve executable path: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	launcher := plugin.NewLauncher(tempDir)
+
+	config := plugin.LaunchConfig{
+		ID:       "outside-plugin",
+		Name:     "Outside Plugin",
+		ExecPath: execPath,
+	}
+
+	_, err = launcher.Launch(context.Background(), config)
+	if err == nil {
+		t.Fatal("expected error launching executable outside sandbox root, got nil")
+	}
+}
+
+func TestSubprocessLauncherOfflineModeInjectsNetworkBlockingEnv(t *testing.T) {
+	execPath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("failed to resolve executable path: %v", err)
+	}
+
+	launcher := plugin.NewLauncher()
+	config := plugin.LaunchConfig{
+		ID:       "offline-plugin",
+		Name:     "Offline Plugin",
+		ExecPath: execPath,
+		Args:     []string{"version"},
+		Offline:  true,
+	}
+
+	proc, err := launcher.Launch(context.Background(), config)
+	if err != nil {
+		t.Fatalf("failed to launch offline plugin: %v", err)
+	}
+	defer func() { _ = launcher.Stop("offline-plugin") }()
+
+	foundOfflineMarker := false
+	for _, env := range proc.Env {
+		if env == "TIMEKEEPER_OFFLINE=true" {
+			foundOfflineMarker = true
+			break
+		}
+	}
+	if !foundOfflineMarker {
+		t.Fatal("expected TIMEKEEPER_OFFLINE=true in offline plugin environment")
+	}
+}

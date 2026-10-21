@@ -68,6 +68,7 @@ func TestCLIJSONOutputFlag(t *testing.T) {
 	})
 
 	t.Run("tk t new --json", func(t *testing.T) {
+		t.Setenv("TIMEKEEPER_STORE_STATE_DIR", t.TempDir())
 		var stdout, stderr bytes.Buffer
 		code := cli.Run([]string{"t", "new", project.ProjectID, category.CategoryID, "JSON Task", "30m", "--json"}, &stdout, &stderr, server.URL)
 		if code != 0 {

@@ -3,6 +3,11 @@
 'use strict';
 
 const { TimeKeeperClient } = require('./lib/client');
+const { summarizeProject, renderProjectContext } = require('./lib/context');
+const { editorReference, formatEditorReference, taskDescription } = require('./lib/editor');
+const { repositoryStatus, formatRepositoryStatus } = require('./lib/git');
+const { createHistoryDocumentProvider } = require('./lib/history');
+const { createHistoryCommands } = require('./lib/history-commands');
 const { executionNodes } = require('./lib/tree');
 
 function statusContext(status) {
@@ -76,6 +81,11 @@ class TimeKeeperTreeProvider {
     this.cache.set(projectID, executionNodes(tree));
   }
 
+  async categories(projectID) {
+    await this.loadProject(projectID);
+    return (this.cache.get(projectID) || []).filter(node => node.kind === 'category');
+  }
+
   projectIDFor(node) {
     if (node.kind === 'project') return node.id;
     for (const [projectID, nodes] of this.cache.entries()) {
@@ -101,7 +111,17 @@ function activate(context) {
     return state.client;
   };
   const provider = new TimeKeeperTreeProvider(vscode, getClient, () => state.selectedProjectID);
+  const historyDocuments = createHistoryDocumentProvider(vscode);
+  const historyDocumentRegistration = vscode.workspace.registerTextDocumentContentProvider('timekeeper-history', historyDocuments);
   const reportError = error => vscode.window.showErrorMessage(`Time Keeper: ${error.message}`);
+  const historyCommands = createHistoryCommands({
+    vscode,
+    getClient,
+    getSelectedProjectID: () => state.selectedProjectID,
+    historyDocuments,
+    refreshTree: () => provider.refresh(),
+    reportError,
+  });
   const setConnected = suffix => {
     statusBar.text = `$(check) Time Keeper${suffix ? `: ${suffix}` : ': connected'}`;
   };
@@ -137,6 +157,120 @@ function activate(context) {
     }
   }
 
+  async function showProjectContext() {
+    if (!state.selectedProjectID) {
+      vscode.window.showErrorMessage('Time Keeper: select a Project first.');
+      return;
+    }
+    try {
+      const [tree, agentFiles, harnessFiles, devinFiles, agentsFiles, harnessDocs] = await Promise.all([
+        getClient().projectTree(state.selectedProjectID),
+        vscode.workspace.findFiles('AGENTS.md', null, 10),
+        vscode.workspace.findFiles('harness/**/SKILL.md', null, 50),
+        vscode.workspace.findFiles('.devin/**/SKILL.md', null, 50),
+        vscode.workspace.findFiles('.agents/**/SKILL.md', null, 50),
+        vscode.workspace.findFiles('docs/HARNESS.md', null, 10),
+      ]);
+      const paths = [...new Set([...agentFiles, ...harnessFiles, ...devinFiles, ...agentsFiles, ...harnessDocs]
+        .map(uri => vscode.workspace.asRelativePath(uri, false)))].sort();
+      const panel = vscode.window.createWebviewPanel(
+        'timekeeper.projectContext',
+        `Time Keeper: ${state.selectedProjectID}`,
+        vscode.ViewColumn.Beside,
+        { enableScripts: false },
+      );
+      panel.webview.html = renderProjectContext(summarizeProject(tree), paths);
+    } catch (error) {
+      reportError(error);
+    }
+  }
+
+  async function showGitStatus() {
+    try {
+      const gitExtension = vscode.extensions.getExtension('vscode.git');
+      const api = gitExtension?.exports?.getAPI?.(1);
+      if (!api) {
+        vscode.window.showErrorMessage('Time Keeper: the built-in VS Code Git extension is unavailable.');
+        return;
+      }
+      const activeURI = vscode.window.activeTextEditor?.document?.uri;
+      const folder = activeURI ? vscode.workspace.getWorkspaceFolder(activeURI) : vscode.workspace.workspaceFolders?.[0];
+      const repository = folder?.uri && typeof api.getRepository === 'function' ? api.getRepository(folder.uri) : api.repositories?.[0];
+      const status = repositoryStatus(repository);
+      if (!status) {
+        vscode.window.showErrorMessage('Time Keeper: no Git repository is available for this workspace.');
+        return;
+      }
+      const message = `Time Keeper Git status: ${formatRepositoryStatus(status)}`;
+      const choice = await vscode.window.showInformationMessage(message, 'Copy');
+      if (choice === 'Copy') {
+        await vscode.env.clipboard.writeText(message);
+      }
+    } catch (error) {
+      reportError(error);
+    }
+  }
+
+  async function copyEditorReference() {
+    const reference = editorReference(vscode, vscode.window.activeTextEditor);
+    if (!reference) {
+      vscode.window.showErrorMessage('Time Keeper: open a text editor first.');
+      return;
+    }
+    await vscode.env.clipboard.writeText(formatEditorReference(reference));
+    vscode.window.showInformationMessage('Time Keeper copied the editor reference.');
+  }
+
+  async function createTaskFromSelection() {
+    const reference = editorReference(vscode, vscode.window.activeTextEditor);
+    if (!reference) {
+      vscode.window.showErrorMessage('Time Keeper: open a text editor first.');
+      return;
+    }
+    if (!state.selectedProjectID) {
+      vscode.window.showErrorMessage('Time Keeper: select a Project first.');
+      return;
+    }
+    try {
+      const categories = await provider.categories(state.selectedProjectID);
+      if (categories.length === 0) {
+        vscode.window.showErrorMessage('Time Keeper: the selected Project has no Category for the new Task.');
+        return;
+      }
+      const name = await vscode.window.showInputBox({
+        prompt: 'Name the Time Keeper Task for this editor selection',
+        value: formatEditorReference(reference),
+        ignoreFocusOut: true,
+      });
+      if (!name?.trim()) return;
+      const category = await vscode.window.showQuickPick(categories.map(node => ({
+        label: node.label,
+        description: node.id,
+        categoryID: node.id,
+      })), { placeHolder: 'Choose the Category for this Task', ignoreFocusOut: true });
+      if (!category) return;
+      const estimate = await vscode.window.showQuickPick([
+        { label: '15 minutes', seconds: 15 * 60 },
+        { label: '30 minutes', seconds: 30 * 60 },
+        { label: '1 hour', seconds: 60 * 60 },
+        { label: '2 hours', seconds: 2 * 60 * 60 },
+      ], { placeHolder: 'Choose an initial Task estimate', ignoreFocusOut: true });
+      if (!estimate) return;
+      const task = await getClient().createTask(state.selectedProjectID, {
+        category_id: category.categoryID,
+        name: name.trim(),
+        description: taskDescription(reference),
+        goal: `Review the selected code at ${formatEditorReference(reference)}.`,
+        priority: 'Normal',
+        estimated_duration_seconds: estimate.seconds,
+      });
+      provider.refresh();
+      vscode.window.showInformationMessage(`Time Keeper created ${task.task_id}.`);
+    } catch (error) {
+      reportError(error);
+    }
+  }
+
   async function sprintAction(action, node) {
     if (!node?.id || node.kind !== 'sprint') {
       vscode.window.showErrorMessage('Time Keeper: select a Sprint first.');
@@ -154,6 +288,8 @@ function activate(context) {
   context.subscriptions.push(
     statusBar,
     provider,
+    historyDocuments,
+    historyDocumentRegistration,
     vscode.window.registerTreeDataProvider('timekeeper.projects', provider),
     vscode.commands.registerCommand('timekeeper.connect', connect),
     vscode.commands.registerCommand('timekeeper.selectProject', selectProject),
@@ -162,6 +298,13 @@ function activate(context) {
     vscode.commands.registerCommand('timekeeper.holdSprint', node => sprintAction('hold', node)),
     vscode.commands.registerCommand('timekeeper.resumeSprint', node => sprintAction('resume', node)),
     vscode.commands.registerCommand('timekeeper.completeSprint', node => sprintAction('complete', node)),
+    vscode.commands.registerCommand('timekeeper.copyEditorReference', copyEditorReference),
+    vscode.commands.registerCommand('timekeeper.createTaskFromSelection', createTaskFromSelection),
+    vscode.commands.registerCommand('timekeeper.showProjectContext', showProjectContext),
+    vscode.commands.registerCommand('timekeeper.showGitStatus', showGitStatus),
+    vscode.commands.registerCommand('timekeeper.browseFileHistory', historyCommands.browseFileHistory),
+    vscode.commands.registerCommand('timekeeper.restoreFileHistoryVersion', historyCommands.restoreFileHistoryVersion),
+    vscode.commands.registerCommand('timekeeper.captureFileHistorySnapshot', historyCommands.captureFileHistorySnapshot),
     vscode.commands.registerCommand('timekeeper.openDashboard', () => vscode.env.openExternal(vscode.Uri.parse(`${getClient().serverURL}/`))),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('timekeeper.serverUrl')) {

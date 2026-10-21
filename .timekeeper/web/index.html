@@ -1,0 +1,269 @@
+<!doctype html>
+<!-- Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved. -->
+<html lang="en" data-timekeeper-ui="v2">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Time Keeper · Project operations</title>
+  <link rel="stylesheet" href="/vendor/bootstrap-5.3.8.min.css">
+  <link rel="stylesheet" href="/timekeeper.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true">TK</div>
+        <div>
+          <div class="brand-name">TIME KEEPER</div>
+          <div class="brand-caption">PROJECT OPERATIONS</div>
+        </div>
+      </div>
+
+      <div class="workspace-switcher">
+        <span class="workspace-dot"></span>
+        <span class="workspace-copy"><strong>Local workspace</strong><small>SQLite memory</small></span>
+        <span class="workspace-chevron" aria-hidden="true">⌄</span>
+      </div>
+
+      <div class="nav-label">Workspace</div>
+      <nav class="nav-list">
+        <a class="nav-item active" href="#overview"><span class="nav-icon">⌂</span><span>Overview</span><span class="nav-key">1</span></a>
+        <a class="nav-item" href="#projects-panel"><span class="nav-icon">▦</span><span>Projects</span><span class="nav-count" id="nav-project-count">0</span></a>
+        <a class="nav-item" href="#pulse-card"><span class="nav-icon">◒</span><span>Pulse</span><span class="nav-count attention-count" id="nav-attention-count">0</span></a>
+        <a class="nav-item" href="#store-card"><span class="nav-icon">🛒</span><span>Plugin Store</span><span class="nav-count" id="nav-store-count"></span></a>
+        <a class="nav-item" href="#guardian-card"><span class="nav-icon">◈</span><span>Guardian</span></a>
+        <a class="nav-item" href="#usage-card"><span class="nav-icon">▥</span><span>Usage</span></a>
+        <a class="nav-item" href="#admin-card" id="admin-nav" hidden><span class="nav-icon">⚿</span><span>Administrator</span><span class="nav-count" id="nav-admin-count">0</span></a>
+      </nav>
+
+      <div class="nav-label nav-label-spaced">Manage</div>
+      <nav class="nav-list">
+        <a class="nav-item" href="#new-project"><span class="nav-icon">＋</span><span>New project</span></a>
+        <a class="nav-item" href="#activity-card"><span class="nav-icon">◌</span><span>Activity</span></a>
+      </nav>
+
+      <div class="sidebar-spacer"></div>
+      <div class="system-status">
+        <div class="system-status-heading"><span class="live-dot"></span> System status</div>
+        <div class="system-status-row"><span>API</span><strong id="sidebar-api-status">Checking</strong></div>
+        <div class="system-status-row"><span>Storage</span><strong>SQLite</strong></div>
+      </div>
+      <div class="sidebar-footer"><span class="avatar">S</span><span><strong>Seb</strong><small>Local operator</small></span><span class="footer-more">•••</span></div>
+    </aside>
+
+    <main class="main-content container-fluid" id="overview">
+      <header class="topbar">
+        <div class="breadcrumbs"><span>Workspace</span><b>/</b><strong>Overview</strong></div>
+        <div class="topbar-actions">
+          <label class="search-box" for="project-filter"><span aria-hidden="true">⌕</span><input class="form-control" id="project-filter" type="search" placeholder="Search projects…" autocomplete="off"><kbd>/</kbd></label>
+          <button class="icon-button" type="button" title="Refresh dashboard" id="refresh-dashboard">↻</button>
+          <div class="connection-chip"><span class="live-dot"></span><span id="connection">Connecting…</span></div>
+        </div>
+      </header>
+
+      <section class="page-heading">
+        <div>
+          <p class="eyebrow">Tuesday, local time</p>
+          <h1>Good to see you, Seb <span aria-hidden="true">✦</span></h1>
+          <p class="page-subtitle">A focused view of the work that matters now.</p>
+        </div>
+        <a class="primary-action" href="#new-project"><span>＋</span> New project</a>
+      </section>
+
+      <section class="metric-grid" aria-label="Workspace summary">
+        <article class="metric-card metric-purple"><div class="metric-top"><span class="metric-label">Total projects</span><span class="metric-icon">▦</span></div><strong class="metric-value" id="stat-projects">—</strong><span class="metric-foot">Tracked in this workspace</span></article>
+        <article class="metric-card metric-cyan"><div class="metric-top"><span class="metric-label">Open projects</span><span class="metric-icon">◉</span></div><strong class="metric-value" id="stat-open">—</strong><span class="metric-foot">Ready for execution</span></article>
+        <article class="metric-card metric-green"><div class="metric-top"><span class="metric-label">Active focus</span><span class="metric-icon">◒</span></div><strong class="metric-value" id="stat-active">—</strong><span class="metric-foot">Sprints currently running</span></article>
+        <article class="metric-card metric-amber"><div class="metric-top"><span class="metric-label">Needs attention</span><span class="metric-icon">!</span></div><strong class="metric-value" id="stat-attention">—</strong><span class="metric-foot">Pulse items to review</span></article>
+      </section>
+
+      <div class="dashboard-grid">
+        <section class="panel panel-create" id="new-project">
+          <div class="panel-heading"><div><p class="eyebrow">Quick action</p><h2>Create project</h2></div><span class="panel-menu">•••</span></div>
+          <p class="panel-description">Start a new execution memory with a clear goal and context.</p>
+          <form id="project-form">
+            <label for="name">Project name</label><input class="form-control" id="name" name="name" required maxlength="200" autocomplete="off" placeholder="e.g. Product launch">
+            <label for="goal">Goal <span class="optional">optional</span></label><input class="form-control" id="goal" name="goal" maxlength="1000" placeholder="What does success look like?">
+            <label for="description">Description <span class="optional">optional</span></label><textarea class="form-control" id="description" name="description" maxlength="10000" placeholder="Add useful context for future-you…"></textarea>
+            <label for="planned-start-date">Planned start <span class="optional">optional</span></label><input class="form-control" id="planned-start-date" name="planned_start_date" type="date">
+            <label for="target-end-date">Target end / deadline <span class="optional">optional</span></label><input class="form-control" id="target-end-date" name="target_end_date" type="date">
+            <button class="btn btn-primary form-submit" id="submit" type="submit">Create project <span>→</span></button>
+          </form>
+          <div id="message" role="status"></div>
+        </section>
+
+        <section class="panel panel-projects" id="projects-panel">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Execution memory</p><h2>Projects</h2></div><span class="panel-link">View all <span>→</span></span></div>
+          <div class="table-head"><span>Project</span><span>Status</span><span>Progress</span><span></span></div>
+          <div id="projects" class="project-list empty">Loading projects…</div>
+          <div id="deadline-watch" class="deadline-watch empty" aria-live="polite">Checking Project deadlines…</div>
+        </section>
+
+        <section class="panel panel-pulse" id="pulse-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Live monitoring</p><h2>Pulse</h2></div><span class="pulse-orb" aria-hidden="true">◒</span></div>
+          <p class="panel-description">Work that has moved beyond its declared Sprint plan.</p>
+          <div id="pulse" class="empty">Checking attention…</div>
+        </section>
+
+        <section class="panel panel-activity" id="activity-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Audit trail</p><h2>Recent activity</h2></div><span class="panel-link">Live <span class="live-dot"></span></span></div>
+          <p class="panel-description">Immutable changes recorded across the workspace.</p>
+          <div id="activity" class="activity-list empty">Loading activity…</div>
+        </section>
+
+        <section class="panel panel-usage" id="usage-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Agent telemetry</p><h2>Token usage</h2></div><span class="panel-link" id="usage-coverage">Awaiting data</span></div>
+          <p class="panel-description">Recorded usage from connected agent sessions. Unknown pricing is never guessed.</p>
+          <div class="usage-summary-grid">
+            <div class="usage-stat"><span>Tokens</span><strong id="usage-tokens">—</strong></div>
+            <div class="usage-stat"><span>Sessions</span><strong id="usage-sessions">—</strong></div>
+            <div class="usage-stat"><span>Input</span><strong id="usage-input">—</strong></div>
+            <div class="usage-stat"><span>Output</span><strong id="usage-output">—</strong></div>
+            <div class="usage-stat"><span>Cost</span><strong id="usage-cost">—</strong></div>
+          </div>
+          <div class="usage-breakdown" aria-label="Token type breakdown"><div class="usage-breakdown-bar" id="usage-breakdown-bar"></div><div class="usage-legend" id="usage-legend"></div></div>
+          <div class="usage-timeline"><div class="usage-subheading"><span>Usage over time</span><small>Daily recorded deltas</small></div><div id="usage-timeline" class="usage-days"></div></div>
+          <div class="usage-owner-grid">
+            <div><div class="usage-subheading"><span>By agent</span><small>Latest cumulative totals</small></div><div class="usage-owner-list" id="usage-agents"></div></div>
+            <div><div class="usage-subheading"><span>By model</span><small>Latest cumulative totals</small></div><div class="usage-owner-list" id="usage-models"></div></div>
+          </div>
+          <div class="usage-projects" id="usage-projects"><div class="empty">Loading token usage…</div></div>
+          <div class="usage-sessions"><div class="usage-subheading"><span>Top sessions</span><small>Latest cumulative totals</small></div><div id="usage-session-list" class="usage-session-list"></div></div>
+        </section>
+
+        <section class="panel panel-guardian" id="guardian-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Safety layer</p><h2>Pulse Guardian</h2></div><span class="guardian-shield" aria-hidden="true">◇</span></div>
+          <p class="panel-description">Independent local recovery leases and callbacks.</p>
+          <div id="guardian" class="empty">Checking Guardian…</div>
+        </section>
+
+        <section class="panel panel-store" id="store-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Extensions</p><h2>Plugin Store</h2></div><span class="panel-link" id="store-status">Checking…</span></div>
+          <p class="panel-description">Read-only registry of locally installed plugins, verified against their manifest checksums.</p>
+          <div id="store" class="store-list empty">Loading plugin registry…</div>
+        </section>
+
+        <section class="panel panel-admin" id="admin-card" aria-live="polite" hidden>
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Access control</p><h2>Administrator</h2></div><span class="panel-link" id="admin-identity">Resolving identity…</span></div>
+          <p class="panel-description">Manage enabled accounts, security groups, and the information each group can influence. The API enforces these decisions; this panel is not the security boundary.</p>
+          <div id="admin-feedback" class="inline-feedback" role="status"></div>
+          <div class="admin-columns">
+            <div class="admin-block"><div class="admin-block-heading"><h3>User accounts</h3><span id="admin-user-count" class="badge-soft">0</span></div><div id="admin-users" class="admin-list empty">Loading accounts…</div></div>
+            <div class="admin-block"><div class="admin-block-heading"><h3>Security groups</h3><span id="admin-group-count" class="badge-soft">0</span></div><div id="admin-groups" class="admin-list empty">Loading groups…</div></div>
+          </div>
+          <form id="admin-group-form" class="admin-group-form" hidden>
+            <h3>Create security group</h3>
+            <div class="admin-form-grid"><input id="admin-group-slug" required maxlength="64" pattern="[a-z][a-z0-9_-]{1,63}" placeholder="group-slug" aria-label="Group slug"><input id="admin-group-name" required maxlength="128" placeholder="Group name" aria-label="Group name"><input id="admin-group-description" maxlength="2000" placeholder="Description" aria-label="Group description"></div>
+            <div id="admin-permissions" class="admin-permissions"></div>
+            <button class="btn btn-primary" type="submit">Create group</button>
+          </form>
+          <div class="admin-note">Built-in groups are protected. Account changes and denied access are recorded in the administrator audit trail.</div>
+          <div class="admin-audit-block"><div class="admin-block-heading"><h3>Recent administrator audit</h3><span class="badge-soft">last 20</span></div><div id="admin-audit" class="admin-list empty">Loading audit trail…</div></div>
+        </section>
+
+        <section class="panel panel-focus" id="focus-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Execution overview</p><h2>Focus overview</h2></div><span class="panel-link">Project health <span>→</span></span></div>
+          <p class="panel-description">A compact view of where planned work stands against recorded execution.</p>
+          <div id="focus" class="focus-list empty">Loading project focus…</div>
+        </section>
+
+        <section class="panel panel-messages" id="messages-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Project memory</p><h2>Trail of Thought Board</h2></div><span class="panel-link" id="messages-project-label">No project selected</span></div>
+          <p class="panel-description">Short durable notes for reasoning, discoveries, decisions, and lessons. Keep the compact M-ID in agent context; fetch the thread when needed.</p>
+          <div class="messages-toolbar">
+            <select id="messages-project" class="messages-project" aria-label="Message board project"></select>
+            <input type="search" id="messages-search" class="messages-search" placeholder="Search project memory…" aria-label="Search project messages" />
+            <select id="messages-kind" class="messages-kind" aria-label="Filter by kind">
+              <option value="">All kinds</option>
+              <option value="note">Note</option>
+              <option value="decision">Decision</option>
+              <option value="observation">Observation</option>
+              <option value="link">Link</option>
+              <option value="lesson">Lesson</option>
+              <option value="question">Question</option>
+              <option value="answer">Answer</option>
+            </select>
+          </div>
+          <form id="message-compose-form" class="message-compose">
+            <div class="message-compose-heading"><strong id="message-compose-title">Post to the board</strong><button type="button" id="message-compose-cancel" class="message-compose-cancel" hidden>Cancel</button></div>
+            <textarea id="message-compose-body" maxlength="1000" required placeholder="What should survive the next context compaction?" aria-label="Memory post"></textarea>
+            <div class="message-compose-fields">
+              <select id="message-compose-kind" aria-label="Memory kind">
+                <option value="note">Note</option><option value="decision">Decision</option><option value="observation">Observation</option><option value="link">Link</option><option value="lesson">Lesson</option><option value="question">Question</option><option value="answer">Answer</option>
+              </select>
+              <input id="message-compose-tags" maxlength="240" placeholder="tags: queue, discovery" aria-label="Memory tags" />
+              <input id="message-compose-link" type="url" placeholder="Optional source link" aria-label="Source link" />
+              <span id="message-compose-count" class="message-compose-count">0 / 1000</span>
+              <button type="submit" class="primary" id="message-compose-submit">Post memory</button>
+            </div>
+            <div id="message-compose-context" class="message-compose-context" hidden></div>
+            <div id="message-compose-feedback" class="inline-feedback" role="status"></div>
+          </form>
+          <div id="messages-list" class="messages-list empty">Select a project to load its message board.</div>
+        </section>
+
+        <section class="panel panel-file-history" id="file-history-card" aria-live="polite">
+          <div class="panel-heading panel-heading-row"><div><p class="eyebrow">Tracked project files</p><h2>File history &amp; editor</h2></div><span class="panel-link" id="file-history-status">History disabled</span></div>
+          <p class="panel-description">Browse tracked files by project and inspect every recorded revision. Only captured files appear here; external edits need a snapshot to enter history.</p>
+          <div class="file-history-layout">
+            <aside class="file-explorer" aria-label="Project files">
+              <label class="file-explorer-label" for="file-history-project">Project</label>
+              <select id="file-history-project" class="form-control"><option value="">Loading projects…</option></select>
+              <label class="file-explorer-label" for="file-history-root-path">Source folder on this TimeKeeper host</label>
+              <input id="file-history-root-path" class="form-control" type="text" placeholder="Absolute local folder path" aria-label="Project source root path">
+              <div class="file-root-actions">
+                <button id="file-history-set-root" class="btn btn-outline-secondary" type="button">Set source folder</button>
+                <button id="file-history-scan" class="btn btn-primary" type="button" disabled>Scan and index</button>
+              </div>
+              <small id="file-history-root-status" class="file-root-status">No project source folder set.</small>
+              <input id="file-history-filter" class="form-control" type="search" placeholder="Filter project files" aria-label="Filter project files">
+              <div id="file-history-files" class="file-explorer-list empty" role="listbox">Select a project to browse tracked files.</div>
+            </aside>
+            <div class="file-history-main">
+              <form id="file-history-load-form" class="file-history-toolbar">
+                <input id="file-history-id" class="form-control" required placeholder="Tracked file ID" aria-label="Tracked file ID">
+                <button class="btn btn-primary" type="submit">Load file</button>
+              </form>
+              <div id="file-history-meta" class="file-history-meta empty">Select a tracked file or enter its ID.</div>
+              <div class="file-history-workspace">
+                <div id="file-editor-host" class="file-editor-host" aria-label="Code editor"></div>
+                <textarea id="file-editor-fallback" class="file-editor-fallback" hidden aria-label="Code editor fallback"></textarea>
+              </div>
+              <div class="file-history-actions">
+                <label class="file-history-change-label" for="file-history-change-kind">Change type</label>
+                <select id="file-history-change-kind" aria-label="Change type"></select>
+                <button id="file-history-save" class="btn btn-primary" type="button" disabled>Save step now</button>
+                <select id="file-history-version" aria-label="Restore version" disabled></select>
+                <button id="file-history-restore" class="btn btn-outline-secondary" type="button" disabled>Restore selected</button>
+                <select id="file-history-compare-from" aria-label="Compare from version" disabled></select>
+                <select id="file-history-compare-to" aria-label="Compare to version" disabled></select>
+                <button id="file-history-compare" class="btn btn-outline-secondary" type="button" disabled>Compare</button>
+              </div>
+              <div id="file-history-legend" class="file-history-legend" aria-label="Timeline change type legend"></div>
+              <div id="file-history-timeline" class="file-history-timeline" role="list" aria-label="Complete version history"></div>
+              <pre id="file-history-preview" class="file-history-preview" hidden></pre>
+              <pre id="file-history-diff" class="file-history-diff" hidden></pre>
+              <div id="file-history-feedback" class="inline-feedback" role="status"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script src="/vendor/codemirror-editor.js"></script>
+  <script src="/timekeeper.js"></script>
+  <script src="/file-editor.js"></script>
+  <footer class="version-footer" aria-label="Version info" style="padding:0.5rem 1rem;font-size:0.75rem;color:#777;text-align:center;border-top:1px solid #e5e5e5;margin-top:2rem;">
+    <span id="tk-version">Loading version…</span>
+  </footer>
+  <script>
+  (function() {
+    fetch('/api/v1/version').then(r => r.ok ? r.json() : Promise.reject()).then(j => {
+      document.getElementById('tk-version').textContent = (j.display || (j.version + ' · ' + (j.commit || '').slice(0,7))) + ' · ' + (j.build_date || 'unknown');
+    }).catch(function() {
+      document.getElementById('tk-version').textContent = 'TimeKeeper · version unavailable (offline)';
+    });
+  })();
+  </script>
+</body>
+</html>

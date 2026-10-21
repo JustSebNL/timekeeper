@@ -58,3 +58,92 @@ func TestCreateTasksBatchStore(t *testing.T) {
 		t.Fatalf("expected ListTasks to return 3 items, got %d", len(allTasks))
 	}
 }
+
+func TestValidateTasksBatchRequiresOpenProjectAndCategory(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(filepath.Join(t.TempDir(), "validation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	project, err := database.CreateProject(ctx, model.CreateProjectInput{Name: "Open target"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	category, err := database.CreateCategory(ctx, project.ProjectID, model.CreateCategoryInput{Name: "Open category"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []model.CreateTaskInput{{CategoryID: category.CategoryID, Name: "Task"}}
+
+	if _, err := database.UpdateProjectStatus(ctx, project.ProjectID, model.UpdateProjectStatusInput{Status: "On Hold"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := database.ValidateTasksBatch(ctx, project.ProjectID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Valid || !hasBatchIssueCode(result.Issues, "closed_project") {
+		t.Fatalf("closed Project must fail task batch preflight: %#v", result)
+	}
+
+	if _, err := database.UpdateProjectStatus(ctx, project.ProjectID, model.UpdateProjectStatusInput{Status: "Open"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.UpdateCategoryStatus(ctx, category.CategoryID, model.UpdateCategoryStatusInput{Status: "On Hold"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err = database.ValidateTasksBatch(ctx, project.ProjectID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Valid || !hasBatchIssueCode(result.Issues, "closed_category") {
+		t.Fatalf("closed Category must fail task batch preflight: %#v", result)
+	}
+}
+
+func TestCreateTasksBatchRevalidatesOpenProjectAndCategory(t *testing.T) {
+	for _, closed := range []string{"project", "category"} {
+		t.Run(closed, func(t *testing.T) {
+			ctx := context.Background()
+			database, err := store.Open(filepath.Join(t.TempDir(), "apply.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			project, err := database.CreateProject(ctx, model.CreateProjectInput{Name: "Apply target"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			category, err := database.CreateCategory(ctx, project.ProjectID, model.CreateCategoryInput{Name: "Apply category"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if closed == "project" {
+				_, err = database.UpdateProjectStatus(ctx, project.ProjectID, model.UpdateProjectStatusInput{Status: "On Hold"})
+			} else {
+				_, err = database.UpdateCategoryStatus(ctx, category.CategoryID, model.UpdateCategoryStatusInput{Status: "On Hold"})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = database.CreateTasksBatch(ctx, project.ProjectID, []model.CreateTaskInput{{CategoryID: category.CategoryID, Name: "Must not write"}})
+			if err == nil {
+				t.Fatal("batch apply should revalidate that Project and Category remain Open")
+			}
+			tasks, listErr := database.ListTasks(ctx, project.ProjectID)
+			if listErr != nil || len(tasks) != 0 {
+				t.Fatalf("invalid batch wrote Tasks=%d err=%v", len(tasks), listErr)
+			}
+		})
+	}
+}
+
+func hasBatchIssueCode(issues []model.ValidationIssue, want string) bool {
+	for _, issue := range issues {
+		if issue.Code == want {
+			return true
+		}
+	}
+	return false
+}

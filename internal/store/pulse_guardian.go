@@ -63,8 +63,13 @@ func (s *Store) GetAgentProgress(ctx context.Context, agentID string) (model.Age
 	if err != nil {
 		return model.AgentPulseProgress{}, fmt.Errorf("read agent progress: %w", err)
 	}
-	progress.LastProgressAt, _ = time.Parse(time.RFC3339, lastProgress)
-	progress.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	var parseErr error
+	if progress.LastProgressAt, parseErr = time.Parse(time.RFC3339Nano, lastProgress); parseErr != nil {
+		return model.AgentPulseProgress{}, fmt.Errorf("parse agent progress timestamp: %w", parseErr)
+	}
+	if progress.UpdatedAt, parseErr = time.Parse(time.RFC3339Nano, updatedAt); parseErr != nil {
+		return model.AgentPulseProgress{}, fmt.Errorf("parse agent progress update timestamp: %w", parseErr)
+	}
 	return progress, nil
 }
 

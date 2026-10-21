@@ -69,5 +69,31 @@ func (s *Store) populateFASEProfile(ctx context.Context, p *model.FASEProfile) e
 	} else if !errors.Is(e, ErrNotFound) {
 		return e
 	}
+	// Attempt to fetch token usage for this agent from usage sessions
+	tokenSummary, err := s.fetchAgentTokenUsage(ctx, p.Identity.AgentID)
+	if err == nil {
+		p.TokenSummary = tokenSummary
+	}
 	return nil
+}
+
+func (s *Store) fetchAgentTokenUsage(ctx context.Context, agentID string) (*model.FASETokens, error) {
+	rows, e := s.db.QueryContext(ctx, `SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(cache_creation_tokens),0), MIN(created_at) FROM usage_sessions WHERE agent_id=?`, agentID)
+	if e != nil {
+		return nil, e
+	}
+	var input, output, cached int64
+	var createdAt int64
+	rows.Next()
+	if e = rows.Scan(&input, &output, &cached, &createdAt); e != nil {
+		rows.Close()
+		return nil, e
+	}
+	rows.Close()
+	return &model.FASETokens{
+		InputTokens:  input,
+		OutputTokens: output,
+		CachedTokens: cached,
+		CreatedAt:    createdAt,
+	}, nil
 }

@@ -30,9 +30,13 @@ PROXY_ADDR_DEFAULT="127.0.0.1:80"
 PROXY_ADDR="${TIMEKEEPER_PROXY_ADDR:-$PROXY_ADDR_DEFAULT}"
 DB_PATH="$STATE_ROOT/timekeeper.db"
 UI_PATH="$REPO/.timekeeper/web/index.html"
+SHADOW_COPY_DIR="${TIMEKEEPER_SHADOW_COPY_DIR:-$STATE_ROOT/recovery/sqlite-shadow}"
+SHADOW_COPY_INTERVAL="${TIMEKEEPER_SHADOW_COPY_INTERVAL:-5m}"
+if [[ "${TIMEKEEPER_SHADOW_COPY_DISABLED:-}" == "1" ]]; then SHADOW_COPY_INTERVAL="0"; fi
 GUARDIAN_ADDR="${TIMEKEEPER_GUARDIAN_RECEIVER_ADDR:-127.0.0.1:1619}"
 GUARDIAN_AGENT="${TIMEKEEPER_GUARDIAN_RECEIVER_AGENT:-xatia}"
 GUARDIAN_INTERVAL="${TIMEKEEPER_PULSE_GUARDIAN_INTERVAL:-5m}"
+GUARDIAN_STATE_DIR="${TIMEKEEPER_GUARDIAN_STATE_DIR:-$STATE_ROOT/app/state}"
 SERVICE_NAME="TimeKeeper"
 
 # Source the port-check library so tk_resolve_proxy_addr / tk_probe_loopback_port
@@ -43,7 +47,8 @@ if [[ -f "$SCRIPT_LIB" ]]; then
   source "$SCRIPT_LIB"
 fi
 
-mkdir -p "$SERVICE_DIR"
+mkdir -p "$SERVICE_DIR" "$GUARDIAN_STATE_DIR"
+chmod 700 "$GUARDIAN_STATE_DIR" 2>/dev/null || true
 if ! mkdir -p "$LOG_DIR"; then
   if [[ -n "${TIMEKEEPER_LOG_DIR:-}" ]]; then
     echo "[service:err] TIMEKEEPER_LOG_DIR is not writable: $LOG_DIR" >&2
@@ -151,7 +156,7 @@ win_install() {
   # Compose the desired service parameters. Keeping this in one
   # variable is what makes the idempotent check below possible:
   # compare it byte-for-byte against the live NSSM value.
-  local desired_app_parameters="-addr $ADDR -db .timekeeper/timekeeper.db -ui .timekeeper/web/index.html -pulse-guardian-interval $GUARDIAN_INTERVAL -proxy-addr=$PROXY_ADDR"
+  local desired_app_parameters="-addr $ADDR -db .timekeeper/timekeeper.db -ui .timekeeper/web/index.html -pulse-guardian-interval $GUARDIAN_INTERVAL -guardian-state-dir $GUARDIAN_STATE_DIR -shadow-copy-dir \"$SHADOW_COPY_DIR\" -shadow-copy-interval $SHADOW_COPY_INTERVAL -proxy-addr=$PROXY_ADDR"
   local desired_app_directory="$REPO"
   local desired_display_name="TimeKeeper — Project Execution Memory"
   local desired_description="Local project execution memory for AI agents. Runs on loopback $ADDR."
@@ -269,7 +274,7 @@ StartLimitBurst=5
 [Service]
 Type=simple
 WorkingDirectory=$REPO
-ExecStart=$BIN -addr $ADDR -db $DB_PATH -ui $UI_PATH -pulse-guardian-interval $GUARDIAN_INTERVAL -proxy-addr=$PROXY_ADDR
+ExecStart=$BIN -addr $ADDR -db $DB_PATH -ui $UI_PATH -pulse-guardian-interval $GUARDIAN_INTERVAL -guardian-state-dir $GUARDIAN_STATE_DIR -shadow-copy-dir "$SHADOW_COPY_DIR" -shadow-copy-interval $SHADOW_COPY_INTERVAL -proxy-addr=$PROXY_ADDR
 ExecStop=/bin/kill -SIGTERM \$MAINPID
 Restart=on-failure
 RestartSec=5

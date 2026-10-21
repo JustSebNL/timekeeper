@@ -1,5 +1,5 @@
 @echo off
-REM restart.bat — notify all active agents, countdown 30s, then restart TimeKeeper.
+REM restart.bat - notify all active agents, countdown 30s, then restart TimeKeeper.
 REM Usage: restart.bat [message]
 REM Example: restart.bat "Scheduled maintenance"
 

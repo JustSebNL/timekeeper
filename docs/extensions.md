@@ -13,7 +13,7 @@ How a Store plugin is developed and connected without changing Core:
 
 ## Examples of possible extensions
 
-The entries below are illustrative plugin areas, not an available catalogue or a committed roadmap. No optional Store package is currently offered by this repository's checked-in client; some examples have separate implementation projects or partial provider code. When a specific optional feature is approved, track it as a Store plugin with a named owner and acceptance criteria rather than silently expanding Core. Candidate triage is recorded in the current TimeKeeper project as T-10476.
+The entries below are illustrative plugin areas, not an available catalogue or a committed roadmap. No optional Store package is currently offered by this repository's checked-in client; some examples have separate implementation projects or partial provider code. When a specific optional feature is approved, track it as a Store plugin with a named owner and acceptance criteria rather than silently expanding Core. The current approval/deferral decisions are recorded in [plugin-candidate-triage.md](plugin-candidate-triage.md).
 
 ```
 Memory Galaxy          cross-project knowledge graph

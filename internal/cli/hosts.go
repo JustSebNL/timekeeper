@@ -20,10 +20,12 @@ import (
 // The block is delimited by sentinel comments so re-running is safe and
 // the lines are easy to spot in the file:
 //
-//   # >>> timekeeper begin
-//   127.0.0.1 timekeeper.local
-//   127.0.0.1 api.timekeeper.local
-//   # <<< timekeeper end
+//	# >>> timekeeper begin
+//	127.0.0.1 timekeeper.local
+//	127.0.0.1 api.timekeeper.local
+//	127.0.0.1 guardian.local
+//	127.0.0.1 vite.timekeeper.local
+//	# <<< timekeeper end
 func hostsSubcommand(args []string, out, errOut io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(errOut, "usage: tk hosts <add|remove|status>")
@@ -67,6 +69,7 @@ const (
 	hostsEntry1 = "127.0.0.1 timekeeper.local"
 	hostsEntry2 = "127.0.0.1 api.timekeeper.local"
 	hostsEntry3 = "127.0.0.1 guardian.local"
+	hostsEntry4 = "127.0.0.1 vite.timekeeper.local"
 )
 
 func hostsAdd(path string, out, errOut io.Writer) int {
@@ -75,11 +78,11 @@ func hostsAdd(path string, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "could not read %s: %v\n", path, err)
 		return 1
 	}
-	if hostsBlockExists(string(body)) && hasHostMapping(string(body), "timekeeper.local") && hasHostMapping(string(body), "api.timekeeper.local") && hasHostMapping(string(body), "guardian.local") {
+	if hostsBlockExists(string(body)) && hasHostMapping(string(body), "timekeeper.local") && hasHostMapping(string(body), "api.timekeeper.local") && hasHostMapping(string(body), "guardian.local") && hasHostMapping(string(body), "vite.timekeeper.local") {
 		fmt.Fprintf(out, "Hosts entries already present in %s; nothing to do.\n", path)
 		return 0
 	}
-	block := strings.Join([]string{"", hostsBegin, hostsEntry1, hostsEntry2, hostsEntry3, hostsEnd, ""}, "\n")
+	block := strings.Join([]string{"", hostsBegin, hostsEntry1, hostsEntry2, hostsEntry3, hostsEntry4, hostsEnd, ""}, "\n")
 	base, _ := stripHostsBlock(string(body))
 	newBody := base + block
 	if err := os.WriteFile(path, []byte(newBody), 0o644); err != nil {
@@ -133,7 +136,7 @@ func hostsStatus(path string, out, errOut io.Writer) int {
 		return 1
 	}
 	complete := true
-	for _, name := range []string{"timekeeper.local", "api.timekeeper.local", "guardian.local"} {
+	for _, name := range []string{"timekeeper.local", "api.timekeeper.local", "guardian.local", "vite.timekeeper.local"} {
 		if hasHostMapping(string(body), name) {
 			fmt.Fprintf(out, "found: 127.0.0.1 %s\n", name)
 		} else {

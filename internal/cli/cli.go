@@ -26,7 +26,28 @@ import (
 	"github.com/JustSebNL/timekeeper/internal/version"
 )
 
-const defaultBaseURL = "http://127.0.0.1:1618"
+// Default endpoints, in priority order.
+//
+// timekeeper.local is the point of contact: it is the name the friendly-URL
+// proxy was configured to serve, and it is what a human should see first.
+// 127.0.0.1:1618 stays as the loopback fallback for machines without the hosts
+// entry (and for tools that must not depend on name resolution).
+//
+// Resolution order for a request: explicit --url, then TIMEKEEPER_URL, then
+// the first reachable of preferred/fallback.
+const (
+	// The friendly URL is the advertised/default contact point. The numeric
+	// loopback listener remains the implementation and diagnostic fallback.
+	preferredBaseURL = "http://timekeeper.local"
+	fallbackBaseURL  = "http://127.0.0.1:1618"
+)
+
+// defaultBaseURL is the first candidate. Kept as the historical name because
+// callers and tests reference the concept, not the literal.
+const defaultBaseURL = preferredBaseURL
+
+// defaultBaseURLs is the full fallback chain, preferred first.
+func defaultBaseURLs() []string { return []string{preferredBaseURL, fallbackBaseURL} }
 
 // extractVerboseFlag pulls -v/--verbose/--debug from the front of args.
 // Returned args are the remaining positional args. Returned mode is the
@@ -89,17 +110,29 @@ func ensureCLILogger(mode logging.Mode) {
 // positive integers interpreted as seconds ("3600" -> 1h). This keeps CLI
 // estimates consistent across t new, sp new, and sp extend.
 func parseDuration(s string) (time.Duration, error) {
-	d, err := time.ParseDuration(s)
-	if err == nil && d > 0 {
-		return d, nil
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("duration is required")
 	}
-	// If standard parse fails with "missing unit", try bare integer (seconds).
-	if strings.Contains(err.Error(), "missing unit") {
-		if sec, perr := strconv.ParseInt(s, 10, 64); perr == nil && sec > 0 {
-			return time.Duration(sec) * time.Second, nil
+	if d, err := time.ParseDuration(s); err == nil {
+		if d > 0 {
+			return d, nil
 		}
+		return 0, fmt.Errorf("duration must be positive")
 	}
-	return 0, err
+
+	// A unitless integer is a seconds shorthand. Keep the conversion bounded;
+	// otherwise a large valid int64 can overflow time.Duration and become a
+	// negative duration after multiplication.
+	sec, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || sec <= 0 {
+		return 0, fmt.Errorf("invalid duration %q: use 30m, 2h, or positive seconds", s)
+	}
+	const maxSeconds = int64(^uint64(0)>>1) / int64(time.Second)
+	if sec > maxSeconds {
+		return 0, fmt.Errorf("duration %q is too large", s)
+	}
+	return time.Duration(sec) * time.Second, nil
 }
 
 // runCommand wraps a CLI subcommand so its start/duration/result are logged
@@ -138,27 +171,45 @@ func init() {
 }
 
 // ResolveBaseURL extracts an optional explicit endpoint before dispatching a CLI command.
+//
+// Precedence: an explicit --url wins, then TIMEKEEPER_URL, then the first
+// reachable default endpoint (timekeeper.local, else 127.0.0.1:1618). Only the
+// default path is probed; an operator-supplied address is used verbatim.
 func ResolveBaseURL(args []string, environmentURL string) (string, []string, error) {
-	baseURL := strings.TrimSpace(environmentURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	if len(args) == 0 {
-		return baseURL, args, nil
-	}
-	if args[0] == "--url" {
+	// Parse --url before probing defaults. An explicit endpoint is an operator
+	// instruction and must never incur a probe or be silently redirected.
+	if len(args) > 0 && args[0] == "--url" {
 		if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
 			return "", nil, fmt.Errorf("--url requires an API base URL")
 		}
 		return strings.TrimSpace(args[1]), args[2:], nil
 	}
-	if value, ok := strings.CutPrefix(args[0], "--url="); ok {
-		if strings.TrimSpace(value) == "" {
-			return "", nil, fmt.Errorf("--url requires an API base URL")
+	if len(args) > 0 {
+		if value, ok := strings.CutPrefix(args[0], "--url="); ok {
+			if strings.TrimSpace(value) == "" {
+				return "", nil, fmt.Errorf("--url requires an API base URL")
+			}
+			return strings.TrimSpace(value), args[1:], nil
 		}
-		return strings.TrimSpace(value), args[1:], nil
+	}
+
+	baseURL := strings.TrimSpace(environmentURL)
+	if baseURL == "" {
+		if isLocalHarnessCommand(args) {
+			// Harness documents are bundled local files; do not make their
+			// listing or display depend on the API or an endpoint probe.
+			baseURL = preferredBaseURL
+		} else {
+			baseURL = resolvePreferredBaseURL()
+		}
 	}
 	return baseURL, args, nil
+}
+
+func isLocalHarnessCommand(args []string) bool {
+	normalized, _ := extractVerboseFlag(args)
+	normalized, _ = extractJSONFlag(normalized)
+	return len(normalized) > 0 && normalized[0] == "harness"
 }
 
 // Run executes a framework-neutral Time Keeper CLI command.
@@ -167,9 +218,15 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 	args, mode := extractVerboseFlag(args)
 	ensureCLILogger(mode)
 	args, jsonOutputEnabled = extractJSONFlag(args)
+	defer func() { jsonOutputEnabled = false }()
 
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		_, _ = fmt.Fprint(out, "Usage: tk [--url <api-base-url>] <command>\n\nCommands:\n  list                                        List projects\n  tree <project-id>                           Show an executable hierarchy\n  export <project-id>                         Print a portable Project snapshot as JSON\n  summary <project-id>                        Show a durable Sprint operational snapshot\n  usage <project-id>                          Show recorded agent token usage\n  usage record <project-id> <session-id> <agent-id> <model> <turn> <input> <output> [cache-write] [cache-read] [messages] [sprint-id]\n  usage ingest <project-id> <envelope.json>    Ingest a redaction-verified harness usage snapshot\n  supervise --project P --sprint SP --agent ID --model MODEL --state-dir DIR -- PROMPT\n                                              Run a bounded Codex CLI worker (supervise --help)\n  outcomes <project-id>                        Compare reviewed coding runs\n  outcomes record <project-id> <review.json>    Record evidence-linked review\n  pulse                                       Show local Sprint attention needing follow-up\n  agent identity                              Print the resolved agent/session identity\n  agent state [agent-id]                      Show one agent's derived work state\n  agent states                                List all derived agent work states\n  agent work <sprint-id> <lease>              Record active material work for this session\n  agent wait <duration> <reason>              Record an explicit waiting state\n  agent idle [reason]                         Mark this session idle without inventing progress\n  agent stop [reason]                         Stop this session's work tracking\n  agent progress <id> <lease> [sprint-id] [guardian-url]\n                                              Renew an agent material-progress lease and optionally register a numeric-loopback Guardian\n  agent nudges <id>                           List durable unacknowledged Guardian nudges\n  agent history <id>                          List durable Guardian delivery/recovery history\n  agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge and renew the lease\n  events <project-id>                         List immutable Project activity\n  note <project-id> <content>                 Record a Project note\n  notes <project-id>                          List Project notes\n  msg <project-id> add <body>                 Post project memory (use --reply-to M-1 for a reply)\n  msg <project-id> edit M-1 <body>            Edit a message and append a revision\n  msg <project-id> thread M-1                 Read a complete message thread\n  msg <project-id> revisions M-1              Read immutable message revisions\n  msg <project-id> search <query>             Search project memory\n  msg <project-id> list [--kind K] [--limit N] List project memory as JSON\n  msg <project-id> show M-1                   Read one full message body as JSON\n  msg <project-id> context M-1                Read anchor, thread, related and revisions\n  msg <project-id> seed --yes                 Write sample messages (refused without --yes)\n  handoff <project-id>                        Print an agent session handoff snapshot\n  p new <name>                                Create a Project\n  p edit <project-id> <goal> <description>    Update Project context\n  p status <project-id> <status>              Set Project status\n  p alias <project-id> <alias>                Set Project alias\n  p unalias <project-id>                      Clear Project alias\n  aliases                                     List project aliases\n  c new <project-id> <name> [parent-category-id] Create a Category\n  c edit <category-id> <goal> <description>    Update Category context\n  c status <category-id> <status>              Set Category status\n  t edit <task-id> <goal> <description>        Update Task context\n  t new <project-id> <category-id> <name> <estimate> [--no-autoclose]\n                                              Create a Task\n  t status <task-id> <status>                 Set Task status\n  st new <task-id> <name> <estimate>          Create a Subtask\n  st status <subtask-id> <status>              Set Subtask status\n  sp new <task|subtask> <owner-id> <name> <estimate> [buffer-percent]\n                                              Create a Sprint\n  sp <start|hold|resume|complete|cancel> <sprint-id> [reason] Transition a Sprint; hold/cancel require a reason\n  sp reason <sprint-id> <reason>                Update why an already-held Sprint is blocked\n  sp next <project-id>                         Atomically claim the oldest runnable Sprint\n  sp attempts <sprint-id>                      List immutable retrieval-attempt evidence\n  sp attempt <sprint-id> <reason>              Record a failed retrieval attempt (fourth makes TimedOut)\n  sp extend <sprint-id> <duration> <reason>   Record justified additional planned time\n  sp extensions <sprint-id>                   List immutable extension history\n  sp entries <sprint-id>                      List recorded work/hold intervals\n  llm new <name> <provider> <base-url> <model> [system-prompt]\n                                              Register a loopback LLM pipeline\n  plan <generate|apply> <project-id> <pipeline-id|draft-id>\n                                              Generate or apply a reviewed planning draft\n  plan list <project-id>                       List planning drafts\n  doctor                                      Check whether Time Keeper is reachable\n  api-help                                    List all available API routes\n  store status                                Show Store login state and installation id\n  store login <email> --password <password>   Authenticate against the Store (optional)\n  store logout                                Revoke this Store session\n  store catalogue                             List Store extensions\n  store claim <product-id>                    Claim a free extension\n  store install <product-id> [version]        Verify, download and install an extension\n  store list                                  Show this account's entitlements\n  service                                     Manage TimeKeeper OS service (install/uninstall/start/stop/status/logs)\n")
+		_, _ = fmt.Fprint(out, "Usage: tk [--url <api-base-url>] <command>\n\nCommands:\n  list                                        List projects\n  tree <project-id> [--task <T-ID>] [--status S] [--active] [--depth N] [--limit N]  Show full or focused hierarchy\n  export <project-id> [file] [--task T-ID] [--format F]  Export full or task-focused Project snapshot\n  p schedule <project-id> start=... due=...   Set Project dates, timezone, and deadline warning window\n  p phase <project-id> <phase> [reason]        Advance or replan the Project lifecycle\n  p milestones list|add|date|status ...        Manage dated Project checkpoints\n  p deadlines                                List due-soon and overdue Project/milestone items\n  summary <project-id>                        Show a durable Sprint operational snapshot\n  usage <project-id>                          Show recorded agent token usage\n  usage record <project-id> <session-id> <agent-id> <model> <turn> <input> <output> [cache-write] [cache-read] [messages] [sprint-id]\n  usage ingest <project-id> <envelope.json>    Ingest a redaction-verified harness usage snapshot\n  supervise --project P --sprint SP --agent ID --model MODEL --state-dir DIR -- PROMPT\n                                              Run a bounded Codex CLI worker (supervise --help)\n  outcomes <project-id>                        Compare reviewed coding runs\n  outcomes record <project-id> <review.json>    Record evidence-linked review\n  pulse                                       Show local Sprint attention needing follow-up\n  agent identity                              Print the resolved agent/session identity\n  agent state [agent-id]                      Show one agent's derived work state\n  agent states                                List all derived agent work states\n  agent work <sprint-id> <lease>              Record active material work for this session\n  agent wait <duration> <reason>              Record an explicit waiting state\n  agent idle [reason]                         Mark this session idle without inventing progress\n  agent stop [reason]                         Stop this session's work tracking\n  agent progress <id> <lease> [sprint-id] [guardian-url]\n                                              Renew an agent material-progress lease and optionally register a numeric-loopback Guardian\n  agent nudges <id>                           List durable unacknowledged Guardian nudges\n  agent history <id>                          List durable Guardian delivery/recovery history\n  agent ack <id> <nudge-id>                   Acknowledge a Guardian nudge and renew the lease\n  events <project-id>                         List immutable Project activity\n  note <project-id> <content>                 Record a Project note\n  notes <project-id>                          List Project notes\n  msg <project-id> add <body>                 Post project memory (use --reply-to M-1 for a reply)\n  msg <project-id> edit M-1 <body>            Edit a message and append a revision\n  msg <project-id> thread M-1                 Read a complete message thread\n  msg <project-id> revisions M-1              Read immutable message revisions\n  msg <project-id> search <query>             Search project memory\n  msg <project-id> list [--kind K] [--limit N] List project memory as JSON\n  msg <project-id> show M-1                   Read one full message body as JSON\n  msg <project-id> context M-1                Read anchor, thread, related and revisions\n  msg <project-id> seed --yes                 Write sample messages (refused without --yes)\n  handoff <project-id>                        Print an agent session handoff snapshot\n  p new <name>                                Create a Project\n  p edit <project-id> <goal> <description>    Update Project context\n  p status <project-id> <status> [reason]        Set Project status; completion/cancellation needs evidence\n  p alias <project-id> <alias>                Set Project alias\n  p unalias <project-id>                      Clear Project alias\n  aliases                                     List project aliases\n  c new <project-id> <name> [parent-category-id] Create a Category\n  c edit <category-id> <goal> <description>    Update Category context\n  c status <category-id> <status>              Set Category status\n  t show <task-id> [--json]                   Show Task context, children and completion blockers\n  t edit <task-id> <goal> <description>        Update Task context\n  t new <project-id> <category-id> <name> <estimate> [--no-autoclose]\n                                              Create a Task\n  t status <task-id> <status>                 Set Task status\n  t batch <project-id> <file>                 Batch-create tasks from a file (JSON, CSV, TSV, XLSX, YAML, SQL)\n  st show <subtask-id> [--json]                Show Subtask context and Sprints\n  st new <task-id> <name> <estimate>          Create a Subtask\n  st status <subtask-id> <status>              Set Subtask status\n  sp new <task|subtask> <owner-id> <name> <estimate> [buffer-percent]\n                                              Create a Sprint\n  sp <start|hold|resume|complete|cancel> <sprint-id> [reason] Transition a Sprint; hold/cancel require a reason\n  sp reason <sprint-id> <reason>                Update why an already-held Sprint is blocked\n  sp next <project-id>                         Atomically claim the oldest runnable Sprint\n  sp attempts <sprint-id>                      List immutable retrieval-attempt evidence\n  sp attempt <sprint-id> <reason>              Record a failed retrieval attempt (fourth makes TimedOut)\n  sp extend <sprint-id> <duration> <reason>   Record justified additional planned time\n  sp extensions <sprint-id>                   List immutable extension history\n  sp entries <sprint-id>                      List recorded work/hold intervals\n  llm new <name> <provider> <base-url> <model> [system-prompt]\n                                              Register a loopback LLM pipeline\n  plan <generate|apply> <project-id> <pipeline-id|draft-id>\n                                              Generate or apply a reviewed planning draft\n  plan list <project-id>                       List planning drafts\n  commit [message] [-a|--all]                 Create an attributed commit and post to Project messages\n  sync                                        Sync repo with remote and log event\n  git status (or status)                      Show repo and sprint status\n  doctor                                      Check whether Time Keeper is reachable\n  api-help                                    List all available API routes\n  store status                                Show Store login state and installation id\n  store login <email> --password <password>   Authenticate against the Store (optional)\n  store logout                                Revoke this Store session\n  store catalogue                             List Store extensions\n  store claim <product-id>                    Claim a free extension\n  store install <product-id> [version]        Verify, download and install an extension\n  store list                                  Show this account's entitlements\n  service                                     Manage TimeKeeper OS service (install/uninstall/start/stop/status/logs)\n")
+		_, _ = fmt.Fprintln(out, "  harness list/show <item>                   List and read bundled harness guidance")
+		_, _ = fmt.Fprintln(out, "  queue list|show|flush [--limit N]               Inspect the local outbox or deliver queued registrations")
+		_, _ = fmt.Fprintln(out, "  search <query...> [--projects|--tasks|--messages] [--project P-ID] [--limit N] [--kind K] [--tags T1,T2] [--after DATE] [--before DATE]  Search across projects, tasks, and messages")
+		_, _ = fmt.Fprintln(out, "  tc add|attach|edit|lookup|list|show|pin|unpin|delete|restore|categories|revisions <project>  Manage project Treasure Chest gems")
+		_, _ = fmt.Fprintln(out, "  t batch <project-id> <file> [--format format] [--check-only]  Smoke-test first; nested JSON/YAML applies atomically")
 		return 0
 	}
 	setActiveCommand(args)
@@ -184,6 +241,8 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return runCommand("category", func() int { return category(args[1:], out, errOut, baseURL) })
 	case "t":
 		return task(args[1:], out, errOut, baseURL)
+	case "queue":
+		return runRegistrationQueueCommand(args[1:], out, errOut, baseURL)
 	case "st":
 		return subtask(args[1:], out, errOut, baseURL)
 	case "sp":
@@ -192,10 +251,26 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return note(args[1:], out, errOut, baseURL)
 	case "export":
 		return exportProject(args[1:], out, errOut, baseURL)
+	case "import":
+		return importProject(args[1:], out, errOut, baseURL)
 	case "summary":
 		return summary(args[1:], out, errOut, baseURL)
-	case "handoff":
+	case "handoff", "context":
 		return handoffCLI(args[1:], out, errOut, baseURL)
+	case "lease":
+		return runCommand("lease", func() int { return leaseCommand(args[1:], out, errOut, baseURL) })
+	case "checkpoint":
+		return runCommand("checkpoint", func() int { return checkpointCommand(args[1:], out, errOut, baseURL) })
+	case "watch", "stream":
+		return runCommand("watch", func() int { return watchCommand(args[1:], out, errOut, baseURL) })
+	case "connect":
+		return runCommand("connect", func() int { return connectCommand(args[1:], out, errOut, baseURL) })
+	case "connector":
+		if len(args) > 1 && (args[1] == "create" || args[1] == "new") {
+			return runCommand("connector", func() int { return connectorCreateCommand(args[2:], out, errOut, baseURL) })
+		}
+		fmt.Fprintln(errOut, "unknown connector command")
+		return 1
 	case "supervise":
 		return supervise(args[1:], out, errOut, baseURL)
 	case "outcomes":
@@ -205,10 +280,16 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 	case "pulse":
 		return pulse(args[1:], out, errOut, baseURL)
 	case "agent":
+		if len(args) > 1 && args[1] == "bootstrap" {
+			return runCommand("agent", func() int { return agentBootstrap(out, errOut) })
+		}
 		return agentPulse(args[1:], out, errOut, baseURL)
 	case "agents":
 		return agentsCommand(args[1:], out, errOut, baseURL)
 	case "init":
+		if len(args) > 1 && args[1] == "--agent" {
+			return runCommand("init", func() int { return agentBootstrap(out, errOut) })
+		}
 		return tkInit(args[1:], out, errOut, baseURL)
 	case "guardian":
 		if len(args) > 1 && args[1] == "wake" {
@@ -221,6 +302,10 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return notes(args[1:], out, errOut, baseURL)
 	case "msg", "messages":
 		return messages(args[1:], out, errOut, baseURL)
+	case "tc":
+		return treasureChest(args[1:], out, errOut, baseURL)
+	case "search":
+		return globalSearchCLI(args[1:], out, errOut, baseURL)
 	case "list":
 		return list(out, errOut, baseURL)
 	case "tree":
@@ -237,6 +322,8 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 		return listAliases(out, errOut, baseURL)
 	case "api-help":
 		return apiHelp(out, errOut, baseURL)
+	case "harness":
+		return harnessCommand(args[1:], out, errOut)
 	case "version":
 		_, _ = fmt.Fprintln(out, version.String())
 		return 0
@@ -245,7 +332,20 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 	case "service":
 		return serviceManager(args[1:], out, errOut, baseURL)
 	case "store":
+		if len(args) > 1 && (args[1] == "search" || args[1] == "install" || args[1] == "list" || args[1] == "pack" || args[1] == "publish") {
+			return runCommand("store", func() int { return storeConnectors(args[1:], out, errOut, baseURL) })
+		}
 		return runCommand("store", func() int { return storeCommand(args[1:], out, errOut, baseURL) })
+	case "wt", "worktree":
+		return runCommand("worktree", func() int { return worktreeCLI(args[1:], out, errOut, baseURL) })
+	case "commit":
+		return runCommand("commit", func() int { return gitCommitCLI(args[1:], out, errOut, baseURL) })
+	case "sync":
+		return runCommand("sync", func() int { return gitSyncCLI(args[1:], out, errOut, baseURL) })
+	case "git":
+		return runCommand("git", func() int { return gitCLI(args[1:], out, errOut, baseURL) })
+	case "status":
+		return runCommand("git", func() int { return gitCLI([]string{"status"}, out, errOut, baseURL) })
 	default:
 		_, _ = fmt.Fprintf(errOut, "unknown command %q\n", args[0])
 		if suggestion := suggestCommand(args[0]); suggestion != "" {
@@ -259,11 +359,11 @@ func Run(args []string, out, errOut io.Writer, baseURL string) int {
 // topLevelCommands lists the verbs Run dispatches on. It is the single source
 // used to suggest a correction instead of only saying "unknown command".
 var topLevelCommands = []string{
-	"agent", "agents", "aliases", "api-help", "c", "doctor", "events", "export",
-	"guardian", "handoff", "hosts", "init", "list", "llm", "msg", "messages",
+	"agent", "agents", "aliases", "api-help", "c", "commit", "doctor", "events", "export",
+	"git", "guardian", "handoff", "harness", "hosts", "init", "list", "llm", "msg", "messages",
 	"note", "notes", "ntfy", "open", "outcomes", "p", "plan", "pulse", "service",
-	"sp", "st", "store", "summary", "supervise", "t", "tree", "uninstall",
-	"usage", "version",
+	"sp", "st", "status", "store", "summary", "supervise", "sync", "t", "tree", "uninstall",
+	"usage", "version", "worktree", "wt",
 }
 
 // routedCommands maps words that belong to a subcommand onto the full route
@@ -468,8 +568,11 @@ func llmPipeline(args []string, out, errOut io.Writer, baseURL string) int {
 }
 
 func exportProject(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) >= 2 {
+		return projectExportMulti(args, out, errOut, baseURL)
+	}
 	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
-		_, _ = fmt.Fprintln(errOut, "usage: tk export <project-id>")
+		_, _ = fmt.Fprintln(errOut, "usage: tk export <project-id> [file] [--task <T-ID>] [--format F]")
 		return 2
 	}
 	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + args[0] + "/export"
@@ -498,6 +601,10 @@ func exportProject(args []string, out, errOut io.Writer, baseURL string) int {
 }
 
 func summary(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		_, _ = fmt.Fprintln(out, "usage: tk summary <project-id>")
+		return 0
+	}
 	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
 		_, _ = fmt.Fprintln(errOut, "usage: tk summary <project-id>")
 		return 2
@@ -696,14 +803,11 @@ func agentSessions(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintln(errOut, "usage: tk agent sessions <agent-id>")
 		return 2
 	}
-	// Use the usage-summary endpoint filtered by agent — but since there's
-	// no direct "by agent" endpoint, we fetch all projects' summaries.
-	// This is a known limitation; a dedicated /api/v1/agents/{id}/sessions
-	// endpoint would be the right long-term fix.
-	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/projects"
+	agentID := strings.TrimSpace(args[0])
+	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/agents/" + url.PathEscape(agentID) + "/sessions"
 	response, err := newHTTPClient(10 * time.Second).Get(endpoint)
 	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", endpoint, err)
+		_, _ = fmt.Fprintf(errOut, "TimeKeeper API unavailable at %s: %v\n", endpoint, err)
 		return 1
 	}
 	defer response.Body.Close()
@@ -711,53 +815,30 @@ func agentSessions(args []string, out, errOut io.Writer, baseURL string) int {
 		reportHTTPStatus(errOut, "list agent sessions", response)
 		return 1
 	}
-	var projects struct {
+	var payload struct {
 		Items []struct {
-			ProjectID string `json:"project_id"`
+			ProjectID      string `json:"project_id"`
+			SessionID      string `json:"session_id"`
+			AgentID        string `json:"agent_id"`
+			Model          string `json:"model"`
+			TurnSeq        int64  `json:"turn_seq"`
+			InputTokens    int64  `json:"input_tokens"`
+			OutputTokens   int64  `json:"output_tokens"`
+			Messages       int64  `json:"messages"`
+			LastActivityAt string `json:"last_activity_at"`
 		} `json:"items"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&projects); err != nil {
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		_, _ = fmt.Fprintf(errOut, "TimeKeeper API returned invalid JSON: %v\n", err)
 		return 1
 	}
-	found := false
-	for _, p := range projects.Items {
-		usageEndpoint := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + p.ProjectID + "/usage-summary"
-		resp, err := newHTTPClient(10 * time.Second).Get(usageEndpoint)
-		if err != nil {
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			continue
-		}
-		var summary struct {
-			Sessions []struct {
-				SessionID      string `json:"session_id"`
-				AgentID        string `json:"agent_id"`
-				Model          string `json:"model"`
-				TurnSeq        int64  `json:"turn_seq"`
-				InputTokens    int64  `json:"input_tokens"`
-				OutputTokens   int64  `json:"output_tokens"`
-				Messages       int64  `json:"messages"`
-				LastActivityAt string `json:"last_activity_at"`
-			} `json:"sessions"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&summary); err != nil {
-			resp.Body.Close()
-			continue
-		}
-		resp.Body.Close()
-		for _, s := range summary.Sessions {
-			if s.AgentID == args[0] {
-				_, _ = fmt.Fprintf(out, "%s\t%s\t%s\tturn=%d\tinput=%d\toutput=%d\tmessages=%d\tlast=%s\n",
-					p.ProjectID, s.SessionID, s.Model, s.TurnSeq, s.InputTokens, s.OutputTokens, s.Messages, s.LastActivityAt)
-				found = true
-			}
-		}
+	if len(payload.Items) == 0 {
+		_, _ = fmt.Fprintf(out, "no sessions found for agent %s\n", agentID)
+		return 0
 	}
-	if !found {
-		_, _ = fmt.Fprintf(out, "no sessions found for agent %s\n", args[0])
+	for _, s := range payload.Items {
+		_, _ = fmt.Fprintf(out, "%s\t%s\t%s\tturn=%d\tinput=%d\toutput=%d\tmessages=%d\tlast=%s\n",
+			s.ProjectID, s.SessionID, s.Model, s.TurnSeq, s.InputTokens, s.OutputTokens, s.Messages, s.LastActivityAt)
 	}
 	return 0
 }
@@ -1424,6 +1505,11 @@ func sprintAction(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 	_, _ = fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", sprint.SprintID, sprint.Status, sprint.Name, sprint.ItemAddress)
+
+	if action == "start" || action == "complete" {
+		performAutoGitSync(action, sprint.SprintID, out)
+	}
+
 	return 0
 }
 
@@ -1660,6 +1746,7 @@ func sprintClaimNew(args []string, out, errOut io.Writer, baseURL string) int {
 	if err != nil {
 		return 1
 	}
+	claimReq.Header.Set("Content-Type", "application/json")
 	claimResp, err := newHTTPClient(10 * time.Second).Do(claimReq)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "claim sprint: %v\n", err)
@@ -1767,22 +1854,10 @@ func sprint(args []string, out, errOut io.Writer, baseURL string) int {
 	if args[1] == "subtask" {
 		ownerPath = "subtasks"
 	}
-	url := strings.TrimRight(baseURL, "/") + "/api/v1/" + ownerPath + "/" + args[2] + "/sprints"
-	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "create sprint request: %v\n", err)
-		return 1
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := newHTTPClient(10 * time.Second).Do(request)
-	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
-		return 1
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusCreated {
-		reportHTTPStatus(errOut, "create sprint", response)
-		return 1
+	submitPath := "/api/v1/" + ownerPath + "/" + args[2] + "/sprints"
+	_, state, code := submitSingleRegistrationOffer("", "sprint", submitPath, "create sprint", body, baseURL, out, errOut)
+	if code != 0 || state.Status != registrationOutboxRegistered {
+		return code
 	}
 	var sprint struct {
 		SprintID    string `json:"sprint_id"`
@@ -1790,7 +1865,7 @@ func sprint(args []string, out, errOut io.Writer, baseURL string) int {
 		ItemAddress string `json:"item_address"`
 		Status      string `json:"status"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&sprint); err != nil {
+	if err := json.Unmarshal(state.Result, &sprint); err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
 		return 1
 	}
@@ -1799,6 +1874,9 @@ func sprint(args []string, out, errOut io.Writer, baseURL string) int {
 }
 
 func subtask(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) > 0 && args[0] == "show" {
+		return subtaskShow(args[1:], out, errOut, baseURL)
+	}
 	if len(args) == 3 && args[0] == "status" {
 		return subtaskStatus(args[1], args[2], out, errOut, baseURL)
 	}
@@ -1816,29 +1894,17 @@ func subtask(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintf(errOut, "encode subtask input: %v\n", err)
 		return 1
 	}
-	url := strings.TrimRight(baseURL, "/") + "/api/v1/tasks/" + args[1] + "/subtasks"
-	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "create subtask request: %v\n", err)
-		return 1
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := newHTTPClient(10 * time.Second).Do(request)
-	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
-		return 1
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusCreated {
-		reportHTTPStatus(errOut, "create subtask", response)
-		return 1
+	submitPath := "/api/v1/tasks/" + args[1] + "/subtasks"
+	_, state, code := submitSingleRegistrationOffer("", "subtask", submitPath, "create subtask", body, baseURL, out, errOut)
+	if code != 0 || state.Status != registrationOutboxRegistered {
+		return code
 	}
 	var subtask struct {
 		SubtaskID   string `json:"subtask_id"`
 		Name        string `json:"name"`
 		ItemAddress string `json:"item_address"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&subtask); err != nil {
+	if err := json.Unmarshal(state.Result, &subtask); err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
 		return 1
 	}
@@ -1847,14 +1913,17 @@ func subtask(args []string, out, errOut io.Writer, baseURL string) int {
 }
 
 func task(args []string, out, errOut io.Writer, baseURL string) int {
-	if len(args) == 4 && args[0] == "edit" && strings.TrimSpace(args[1]) != "" {
-		return taskEdit(args[1], args[2], args[3], out, errOut, baseURL)
+	if len(args) > 0 && args[0] == "show" {
+		return taskShow(args[1:], out, errOut, baseURL)
+	}
+	if len(args) >= 2 && args[0] == "edit" && strings.TrimSpace(args[1]) != "" {
+		return taskEdit(args[1:], out, errOut, baseURL)
 	}
 	if len(args) == 3 && args[0] == "status" {
 		return taskStatus(args[1], args[2], out, errOut, baseURL)
 	}
-	if len(args) == 3 && args[0] == "batch" && strings.TrimSpace(args[1]) != "" && strings.TrimSpace(args[2]) != "" {
-		return taskBatch(args[1], args[2], out, errOut, baseURL)
+	if len(args) >= 3 && args[0] == "batch" && strings.TrimSpace(args[1]) != "" && strings.TrimSpace(args[2]) != "" {
+		return taskBatch(args[1], args[2:], out, errOut, baseURL)
 	}
 	noAutoClose := false
 	filtered := make([]string, 0, len(args))
@@ -1887,29 +1956,17 @@ func task(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintf(errOut, "encode task input: %v\n", err)
 		return 1
 	}
-	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + filtered[1] + "/tasks"
-	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "create task request: %v\n", err)
-		return 1
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := newHTTPClient(10 * time.Second).Do(request)
-	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
-		return 1
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusCreated {
-		reportHTTPStatus(errOut, "create task", response)
-		return 1
+	submitPath := "/api/v1/projects/" + filtered[1] + "/tasks"
+	_, state, code := submitSingleRegistrationOffer(filtered[1], "task", submitPath, "create task", body, baseURL, out, errOut)
+	if code != 0 || state.Status != registrationOutboxRegistered {
+		return code
 	}
 	var task struct {
 		TaskID      string `json:"task_id"`
 		Name        string `json:"name"`
 		ItemAddress string `json:"item_address"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&task); err != nil {
+	if err := json.Unmarshal(state.Result, &task); err != nil {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
 		return 1
 	}
@@ -1921,55 +1978,8 @@ func task(args []string, out, errOut io.Writer, baseURL string) int {
 	return 0
 }
 
-func taskBatch(projectID, filePath string, out, errOut io.Writer, baseURL string) int {
-	var bodyBytes []byte
-	var err error
-	if filePath == "-" {
-		bodyBytes, err = io.ReadAll(os.Stdin)
-	} else {
-		bodyBytes, err = os.ReadFile(filePath)
-	}
-	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "read tasks batch file: %v\n", err)
-		return 1
-	}
-
-	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/tasks/batch"
-	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
-	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "create task batch request: %v\n", err)
-		return 1
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := newHTTPClient(10 * time.Second).Do(request)
-	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
-		return 1
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusCreated {
-		reportHTTPStatus(errOut, "create tasks in batch", response)
-		return 1
-	}
-	var res struct {
-		Tasks []struct {
-			TaskID      string `json:"task_id"`
-			Name        string `json:"name"`
-			ItemAddress string `json:"item_address"`
-		} `json:"tasks"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&res); err != nil {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
-		return 1
-	}
-	if jsonOutputEnabled {
-		writeJSONResponse(out, res)
-		return 0
-	}
-	for _, t := range res.Tasks {
-		_, _ = fmt.Fprintf(out, "%s\t%s\t%s\n", t.TaskID, t.Name, t.ItemAddress)
-	}
-	return 0
+func taskBatch(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
+	return runTaskBatch(projectID, args, out, errOut, baseURL)
 }
 
 func subtaskStatus(subtaskID, status string, out, errOut io.Writer, baseURL string) int {
@@ -1999,10 +2009,90 @@ func subtaskStatus(subtaskID, status string, out, errOut io.Writer, baseURL stri
 	return 0
 }
 
-func taskEdit(taskID, goal, description string, out, errOut io.Writer, baseURL string) int {
-	body, _ := json.Marshal(map[string]string{"goal": goal, "description": description})
-	url := strings.TrimRight(baseURL, "/") + "/api/v1/tasks/" + taskID + "/metadata"
-	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+func taskEdit(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) < 1 {
+		_, _ = fmt.Fprintln(errOut, "usage: tk t edit <task-id> <goal> <description> OR tk t edit <task-id> [--goal G] [--description D] [--description-file F]")
+		return 2
+	}
+	taskID := args[0]
+	rest := args[1:]
+
+	var goal *string
+	var description *string
+	usePatch := false
+
+	if len(rest) == 2 && !strings.HasPrefix(rest[0], "--") {
+		// Legacy positional syntax
+		g := rest[0]
+		d := rest[1]
+		goal = &g
+		description = &d
+	} else {
+		usePatch = true
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case "--goal":
+				if i+1 < len(rest) {
+					g := rest[i+1]
+					goal = &g
+					i++
+				}
+			case "--description":
+				if i+1 < len(rest) {
+					d := rest[i+1]
+					description = &d
+					i++
+				}
+			case "--description-file":
+				if i+1 < len(rest) {
+					filePath := rest[i+1]
+					content, err := os.ReadFile(filePath)
+					if err != nil {
+						_, _ = fmt.Fprintf(errOut, "read description file %q: %v\n", filePath, err)
+						return 1
+					}
+					d := string(content)
+					description = &d
+					i++
+				}
+			}
+		}
+	}
+
+	if goal == nil && description == nil {
+		_, _ = fmt.Fprintln(errOut, "usage: tk t edit <task-id> <goal> <description> OR tk t edit <task-id> [--goal G] [--description D] [--description-file F]")
+		return 2
+	}
+
+	var method string
+	var url string
+	var body []byte
+
+	if usePatch {
+		method = http.MethodPatch
+		url = strings.TrimRight(baseURL, "/") + "/api/v1/tasks/" + taskID + "/metadata"
+		payload := map[string]*string{}
+		if goal != nil {
+			payload["goal"] = goal
+		}
+		if description != nil {
+			payload["description"] = description
+		}
+		body, _ = json.Marshal(payload)
+	} else {
+		method = http.MethodPost
+		url = strings.TrimRight(baseURL, "/") + "/api/v1/tasks/" + taskID + "/metadata"
+		gVal, dVal := "", ""
+		if goal != nil {
+			gVal = *goal
+		}
+		if description != nil {
+			dVal = *description
+		}
+		body, _ = json.Marshal(map[string]string{"goal": gVal, "description": dVal})
+	}
+
+	request, err := http.NewRequest(method, url, bytes.NewReader(body))
 	if err != nil {
 		return 1
 	}
@@ -2014,6 +2104,7 @@ func taskEdit(taskID, goal, description string, out, errOut io.Writer, baseURL s
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		reportHTTPStatus(errOut, "update task context", response)
+		return 1
 	}
 	var task struct {
 		TaskID      string `json:"task_id"`
@@ -2022,6 +2113,10 @@ func taskEdit(taskID, goal, description string, out, errOut io.Writer, baseURL s
 	}
 	if err := json.NewDecoder(response.Body).Decode(&task); err != nil {
 		return 1
+	}
+	if jsonOutputEnabled {
+		writeJSONResponse(out, task)
+		return 0
 	}
 	_, _ = fmt.Fprintf(out, "%s\t%s\t%s\n", task.TaskID, task.Goal, task.Description)
 	return 0
@@ -2162,17 +2257,23 @@ func category(args []string, out, errOut io.Writer, baseURL string) int {
 }
 
 func project(args []string, out, errOut io.Writer, baseURL string) int {
+	if len(args) > 0 && (args[0] == "schedule" || args[0] == "phase" || args[0] == "milestones" || args[0] == "deadlines") {
+		return projectLifecycleCommand(args, out, errOut, baseURL)
+	}
 	if len(args) == 4 && args[0] == "edit" && strings.TrimSpace(args[1]) != "" {
 		return projectEdit(args[1], args[2], args[3], out, errOut, baseURL)
 	}
-	if len(args) == 3 && args[0] == "status" && strings.TrimSpace(args[1]) != "" && strings.TrimSpace(args[2]) != "" {
-		return projectStatus(args[1], args[2], out, errOut, baseURL)
+	if len(args) >= 3 && args[0] == "status" && strings.TrimSpace(args[1]) != "" && strings.TrimSpace(args[2]) != "" {
+		return projectStatus(args[1], args[2], strings.TrimSpace(strings.Join(args[3:], " ")), out, errOut, baseURL)
 	}
 	if len(args) == 3 && args[0] == "alias" && strings.TrimSpace(args[1]) != "" {
 		return projectAlias(args[1:], out, errOut, baseURL)
 	}
 	if len(args) == 2 && args[0] == "unalias" && strings.TrimSpace(args[1]) != "" {
 		return projectUnalias(args[1:], out, errOut, baseURL)
+	}
+	if len(args) >= 2 && args[0] == "import" && strings.TrimSpace(args[1]) != "" {
+		return importProject(args[1:], out, errOut, baseURL)
 	}
 	if len(args) != 2 || args[0] != "new" || strings.TrimSpace(args[1]) == "" {
 		_, _ = fmt.Fprintln(errOut, "usage: tk p new <project-name>")
@@ -2213,8 +2314,8 @@ func project(args []string, out, errOut io.Writer, baseURL string) int {
 	return 0
 }
 
-func projectStatus(projectID, status string, out, errOut io.Writer, baseURL string) int {
-	body, err := json.Marshal(map[string]string{"status": status})
+func projectStatus(projectID, status, reason string, out, errOut io.Writer, baseURL string) int {
+	body, err := json.Marshal(map[string]string{"status": status, "reason": reason})
 	if err != nil {
 		return 1
 	}
@@ -2715,15 +2816,84 @@ func apiHelp(out, errOut io.Writer, baseURL string) int {
 }
 
 func tree(args []string, out, errOut io.Writer, baseURL string) int {
-	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
-		_, _ = fmt.Fprintln(errOut, "usage: tk tree <project-id>")
+	usage := "usage: tk tree <project-id> [--task <T-ID>] [--status <Task-status>] [--active] [--depth N] [--limit N] [--json]"
+	projectID, taskID, statusFilter := "", "", ""
+	limit, maxDepth := 0, 0
+	activeOnly := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--help", "-h":
+			_, _ = fmt.Fprintln(out, usage)
+			return 0
+		case "--active":
+			activeOnly = true
+		case "--task", "--status", "--depth", "--limit":
+			flag := args[i]
+			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
+				_, _ = fmt.Fprintf(errOut, "%s requires a value\n", flag)
+				return 2
+			}
+			i++
+			switch flag {
+			case "--task":
+				taskID = strings.TrimSpace(args[i])
+			case "--status":
+				statusFilter = strings.TrimSpace(args[i])
+			case "--depth":
+				parsed, err := strconv.Atoi(args[i])
+				if err != nil || parsed < 1 || parsed > 10 {
+					_, _ = fmt.Fprintln(errOut, "--depth must be between 1 and 10")
+					return 2
+				}
+				maxDepth = parsed
+			case "--limit":
+				parsed, err := strconv.Atoi(args[i])
+				if err != nil || parsed < 1 || parsed > 200 {
+					_, _ = fmt.Fprintln(errOut, "--limit must be between 1 and 200")
+					return 2
+				}
+				limit = parsed
+			}
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				_, _ = fmt.Fprintf(errOut, "unknown tree option %q\n", args[i])
+				return 2
+			}
+			if projectID != "" {
+				_, _ = fmt.Fprintln(errOut, usage)
+				return 2
+			}
+			projectID = strings.TrimSpace(args[i])
+		}
+	}
+	if projectID == "" {
+		_, _ = fmt.Fprintln(errOut, usage)
 		return 2
 	}
-	url := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + args[0] + "/execution-tree"
+	query := url.Values{}
+	if taskID != "" {
+		query.Set("task_id", taskID)
+	}
+	if statusFilter != "" {
+		query.Set("status", statusFilter)
+	}
+	if activeOnly {
+		query.Set("active", "true")
+	}
+	if maxDepth > 0 {
+		query.Set("depth", strconv.Itoa(maxDepth))
+	}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	treeURL := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/execution-tree"
+	if encoded := query.Encode(); encoded != "" {
+		treeURL += "?" + encoded
+	}
 	client := newHTTPClient(10 * time.Second)
-	response, err := client.Get(url)
+	response, err := client.Get(treeURL)
 	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", url, err)
+		_, _ = fmt.Fprintf(errOut, "Time Keeper API unavailable at %s: %v\n", treeURL, err)
 		return 1
 	}
 	defer response.Body.Close()
@@ -2736,13 +2906,54 @@ func tree(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintf(errOut, "Time Keeper API returned invalid JSON: %v\n", err)
 		return 1
 	}
+	if taskID != "" || statusFilter != "" {
+		filtered, found := filterExecutionTree(payload, taskID, statusFilter)
+		if !found {
+			if taskID != "" && statusFilter == "" {
+				_, _ = fmt.Fprintf(errOut, "Task %s was not found in Project %s.\n", taskID, projectID)
+			} else {
+				_, _ = fmt.Fprintf(errOut, "No Task matched tree filters in Project %s.\n", projectID)
+			}
+			return 1
+		}
+		payload = filtered
+	}
+	if activeOnly {
+		filtered, found := filterExecutionTreeToActiveSprints(payload)
+		if !found {
+			_, _ = fmt.Fprintf(errOut, "No Active Sprints matched tree filters in Project %s.\n", projectID)
+			return 1
+		}
+		payload = filtered
+	}
+	if maxDepth > 0 {
+		payload = limitExecutionTreeDepth(payload, maxDepth)
+	}
+	totalTasks, shownTasks, truncated := 0, 0, false
+	if limit > 0 {
+		totalTasks = countExecutionTasks(payload)
+		payload, shownTasks, truncated = limitExecutionTreeTasks(payload, limit)
+		if serverTotal, serverShown, serverTruncated, ok := executionTreeLimitMetadata(response.Header, limit); ok {
+			totalTasks, shownTasks, truncated = serverTotal, serverShown, serverTruncated
+		}
+	}
 	if jsonOutputEnabled {
-		writeJSONResponse(out, payload)
+		if limit > 0 {
+			writeJSONResponse(out, map[string]any{
+				"tree": payload, "filters": map[string]any{"task_id": taskID, "status": statusFilter, "active": activeOnly, "depth": maxDepth},
+				"limit": limit, "total_tasks": totalTasks, "shown_tasks": shownTasks, "truncated": truncated,
+			})
+		} else {
+			writeJSONResponse(out, payload)
+		}
 		return 0
 	}
 	_, _ = fmt.Fprintf(out, "%s	%.1f%%	%s\n", payload.Project.ProjectID, payload.Project.CalculatedCompletionPct, payload.Project.ProjectName)
 	for _, category := range payload.Categories {
 		writeCategoryTree(out, category, 1)
+	}
+	if truncated {
+		_, _ = fmt.Fprintf(out, "... truncated: showing first %d of %d Task matches (limit %d)\n", shownTasks, totalTasks, limit)
 	}
 	return 0
 }

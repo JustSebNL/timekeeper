@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -265,6 +266,23 @@ func diagnosticEndpoint(request *http.Request) string {
 	return request.URL.Scheme + "://" + request.URL.Host + request.URL.EscapedPath()
 }
 
+func dialTimeKeeperLocal(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err == nil && (strings.EqualFold(host, "timekeeper.local") || strings.EqualFold(host, "api.timekeeper.local") || strings.EqualFold(host, "guardian.local")) {
+		// Keep the friendly hostname in the URL and Host header, but avoid
+		// requiring permission to edit /etc/hosts in WSL. The service remains
+		// loopback-only; this is a client-side alias, not network exposure.
+		address = net.JoinHostPort("127.0.0.1", port)
+	}
+	return (&net.Dialer{}).DialContext(ctx, network, address)
+}
+
 func newHTTPClient(timeout time.Duration) *http.Client {
-	return &http.Client{Timeout: timeout, Transport: diagnosticTransport{base: http.DefaultTransport}}
+	base := http.DefaultTransport
+	if transport, ok := base.(*http.Transport); ok {
+		transport = transport.Clone()
+		transport.DialContext = dialTimeKeeperLocal
+		base = transport
+	}
+	return &http.Client{Timeout: timeout, Transport: diagnosticTransport{base: base}}
 }

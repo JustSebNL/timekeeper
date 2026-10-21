@@ -4,9 +4,9 @@ This project uses TimeKeeper as its durable execution authority. This file is a 
 
 ## First use
 
-For a new agent, start with [`harness/skills/onboarding/SKILL.md`](harness/skills/onboarding/SKILL.md), then follow [`docs/HARNESS.md`](docs/HARNESS.md) and the operational `harness/SKILL.md` contract. If the server executable is not on `PATH`, use `.timekeeper/app/timekeeper --help` on Linux/WSL or `.timekeeper/app/bin/timekeeper.exe --help` on Windows.
+For a new agent, start with the [onboarding Skill](harness/skills/onboarding/SKILL.md), then use the [Agent Harness Router](docs/agent.md) to choose the role procedure and follow [`docs/HARNESS.md`](docs/HARNESS.md) plus the operational `harness/SKILL.md` contract. If the server executable is not on `PATH`, use `.timekeeper/app/timekeeper --help` on Linux/WSL or `.timekeeper/app/bin/timekeeper.exe --help` on Windows.
 
-1. Run `tk doctor` against `http://127.0.0.1:1618`.
+1. Run `tk doctor`; the advertised/default contact is `http://timekeeper.local/` (the CLI uses loopback only as a fallback).
 2. Inspect or create the Project landscape before changing code.
 3. Work from explicit Project, Category, Task, and Sprint IDs.
 4. Use bounded Sprint estimates. At most three extensions are allowed, totaling no more than the original estimate. Hold and reassess exhausted work; do not evade limits with equivalent replacement Sprints.
@@ -14,7 +14,7 @@ For a new agent, start with [`harness/skills/onboarding/SKILL.md`](harness/skill
 6. Verify changes with tests or an explicit evidence step before completing a Sprint.
 7. Read the tree, summary, and events when resuming after a context window or agent handoff.
 
-Load the relevant project-local Skill from `harness/skills/` before planning, auditing, timeboxing, or troubleshooting.
+Load the relevant project-local Skill from `harness/skills/` before planning, auditing, timeboxing, or troubleshooting. The [autonomous coder Skill](harness/skills/autonomous-coder/SKILL.md) is the execution loop for continuing authorized work until the project's acceptance criteria are verified. The [deep audit/fixer Skill](harness/skills/deep-audit-fixer/SKILL.md) exhaustively traces first-party functions and fixes verified defects while recording coverage in TimeKeeper. Role-specific workflows are indexed in [`docs/HARNESS.md`](docs/HARNESS.md): planner, bug hunter, bug fixer, gem miner, and code reviewer. Each role records progress in the source-owning TimeKeeper Project while work is active.
 
 ## Recovery
 

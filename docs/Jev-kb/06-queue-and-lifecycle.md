@@ -153,8 +153,8 @@ use queue absence as proof of completion
 ```bash
 ./.timekeeper/app/bin/tk pulse
 ./.timekeeper/app/bin/tk tree P-10053
-curl -sS http://127.0.0.1:1618/api/v1/projects/P-10053/attention
-curl -sS http://127.0.0.1:1618/api/v1/projects/P-10053/operational-summary
+curl -sS http://timekeeper.local/api/v1/projects/P-10053/attention
+curl -sS http://timekeeper.local/api/v1/projects/P-10053/operational-summary
 ```
 
 If docs and runtime state disagree, trust the Store/API, capture the discrepancy, and update the knowledge base after the source behavior is understood.

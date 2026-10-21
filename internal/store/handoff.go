@@ -27,7 +27,9 @@ func (s *Store) GetHandoffSnapshot(ctx context.Context, idOrAlias string) (model
 
 	row := s.db.QueryRowContext(ctx, `SELECT project_id, project_number, item_address, project_name,
 		project_description, project_goal, status, priority, palette_id,
-		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias
+		reported_completion_pct, calculated_completion_pct, created_at, updated_at, project_alias,
+		planned_start_date, target_end_date, actual_started_at, completed_at, cancelled_at,
+		lifecycle_phase, schedule_timezone, deadline_warning_days
 		FROM projects WHERE project_id = ?`, projectID)
 	project, err := scanProject(row)
 	if err != nil {
@@ -82,7 +84,7 @@ func (s *Store) GetHandoffSnapshot(ctx context.Context, idOrAlias string) (model
 	allNotes, _ := s.ListProjectNotes(ctx, projectID)
 	var recentNotes []model.ProjectNote
 	if len(allNotes) > 5 {
-		recentNotes = allNotes[len(allNotes)-5:]
+		recentNotes = allNotes[:5]
 	} else {
 		recentNotes = allNotes
 	}

@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -51,74 +53,61 @@ type ReceiverConfig struct {
 	PolicyLabel string
 }
 
-func validateReceiverBindAddr(raw string) error {
-	if raw == "" {
-		return errors.New("guardian receiver bind address is required")
-	}
-	endpoint, err := url.Parse("http://" + raw)
-	if err != nil || endpoint.Hostname() == "" || endpoint.Port() == "" {
-		return errors.New("guardian receiver bind address must be host:port")
-	}
-	host := net.ParseIP(endpoint.Hostname())
-	if host == nil || !host.IsLoopback() {
-		return errors.New("guardian receiver bind address must use a numeric loopback host")
-	}
-	if _, err := strconv.ParseUint(endpoint.Port(), 10, 16); err != nil {
-		return errors.New("guardian receiver bind address must include a valid numeric port")
-	}
-	// Port 0 is allowed: the kernel assigns a free loopback port, which tests
-	// and ad-hoc launchers use before reading the chosen address back.
-	return nil
+// RecoveryHandlerConfig is the reusable, explicit dependency set for a Guardian
+// recovery endpoint. The caller chooses where artifacts are stored and how the
+// nudge is acknowledged; the handler never guesses either boundary.
+type RecoveryHandlerConfig struct {
+	// StateDir holds durable recovery artifacts. It must already exist.
+	StateDir string
+	// Action is the only recovery behaviour the handler is permitted to run.
+	Action RecoveryAction
+	// PolicyLabel is a stable, human-readable description of the recovery policy
+	// shown in status output. It is evidence, not a capability.
+	PolicyLabel string
+	// Acknowledge records the nudge acknowledgement through the caller's
+	// TimeKeeper boundary. The standalone receiver uses the documented HTTP API;
+	// the canonical API can acknowledge directly against its Store.
+	Acknowledge func(context.Context, model.PulseNudge) error
 }
 
-// Receiver accepts local Pulse Guardian recovery signals and performs exactly
-// one configured RecoveryAction. It is intentionally dependency-free from the
-// watched agent's work loop and from Time Keeper's Store.
-type Receiver struct {
-	config ReceiverConfig
-	client *http.Client
+// RecoveryHandler performs the shared validation/action/acknowledgement path
+// used by the legacy loopback receiver and the canonical TimeKeeper API route.
+type RecoveryHandler struct {
+	config RecoveryHandlerConfig
 }
 
-// NewReceiver validates the configuration and returns a ready receiver.
-func NewReceiver(config ReceiverConfig) (*Receiver, error) {
-	if err := validateReceiverBindAddr(config.BindAddr); err != nil {
-		return nil, err
+// NewRecoveryHandler validates the explicit recovery dependency set.
+func NewRecoveryHandler(config RecoveryHandlerConfig) (*RecoveryHandler, error) {
+	if strings.TrimSpace(config.StateDir) == "" {
+		return nil, errors.New("guardian recovery requires a private state directory")
 	}
-	if config.TimeKeeperBaseURL == "" {
-		return nil, errors.New("guardian receiver requires a Time Keeper API base URL")
+	info, err := os.Stat(config.StateDir)
+	if err != nil {
+		return nil, fmt.Errorf("guardian recovery state directory unavailable: %w", err)
 	}
-	if config.StateDir == "" {
-		return nil, errors.New("guardian receiver requires a private state directory")
+	if !info.IsDir() {
+		return nil, errors.New("guardian recovery state path is not a directory")
 	}
 	if config.Action != RecoveryActionLocalArtifact {
 		return nil, fmt.Errorf("unsupported guardian recovery action %q", config.Action)
 	}
 	if config.PolicyLabel == "" {
-		return nil, errors.New("guardian receiver requires a policy label")
+		return nil, errors.New("guardian recovery requires a policy label")
 	}
-	return &Receiver{
-		config: config,
-		client: &http.Client{Timeout: 5 * time.Second},
-	}, nil
+	if config.Acknowledge == nil {
+		return nil, errors.New("guardian recovery requires an acknowledgement function")
+	}
+	return &RecoveryHandler{config: config}, nil
 }
 
-// BindAddr returns the receiver's configured loopback bind address.
-func (r *Receiver) BindAddr() string { return r.config.BindAddr }
-
-// SetBindAddr overrides the loopback bind address. It is used by tests and by
-// callers that resolve a free port before listening.
-func (r *Receiver) SetBindAddr(addr string) { r.config.BindAddr = addr }
-
-// Handler returns the HTTP handler for the loopback recovery endpoint.
-func (r *Receiver) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/recover", r.handleRecover)
-	return mux
-}
-
-func (r *Receiver) handleRecover(w http.ResponseWriter, req *http.Request) {
+func (h *RecoveryHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		http.Error(w, "content type must be application/json", http.StatusUnsupportedMediaType)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(req.Body, 64<<10))
@@ -144,9 +133,9 @@ func (r *Receiver) handleRecover(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	switch r.config.Action {
+	switch h.config.Action {
 	case RecoveryActionLocalArtifact:
-		if err := writeRecoveryArtifact(r.config.StateDir, signal.Nudge); err != nil {
+		if err := writeRecoveryArtifact(h.config.StateDir, signal.Nudge); err != nil {
 			http.Error(w, "record recovery artifact: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -155,7 +144,7 @@ func (r *Receiver) handleRecover(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if err := r.acknowledge(req.Context(), signal.Nudge); err != nil {
+	if err := h.config.Acknowledge(req.Context(), signal.Nudge); err != nil {
 		// The durable artifact already exists; surface the ack failure so the
 		// caller knows the nudge will be retried by the next Guardian tick.
 		http.Error(w, "acknowledge nudge: "+err.Error(), http.StatusBadGateway)
@@ -166,12 +155,80 @@ func (r *Receiver) handleRecover(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"accepted":      true,
-		"action":        string(r.config.Action),
-		"policy":        r.config.PolicyLabel,
+		"action":        string(h.config.Action),
+		"policy":        h.config.PolicyLabel,
 		"nudge_id":      signal.Nudge.NudgeID,
 		"agent_id":      signal.Nudge.AgentID,
 		"active_sprint": signal.Nudge.ActiveSprintID,
 	})
+}
+
+func validateReceiverBindAddr(raw string) error {
+	if raw == "" {
+		return errors.New("guardian receiver bind address is required")
+	}
+	endpoint, err := url.Parse("http://" + raw)
+	if err != nil || endpoint.Hostname() == "" || endpoint.Port() == "" {
+		return errors.New("guardian receiver bind address must be host:port")
+	}
+	host := net.ParseIP(endpoint.Hostname())
+	if host == nil || !host.IsLoopback() {
+		return errors.New("guardian receiver bind address must use a numeric loopback host")
+	}
+	if _, err := strconv.ParseUint(endpoint.Port(), 10, 16); err != nil {
+		return errors.New("guardian receiver bind address must include a valid numeric port")
+	}
+	// Port 0 is allowed: the kernel assigns a free loopback port, which tests
+	// and ad-hoc launchers use before reading the chosen address back.
+	return nil
+}
+
+// Receiver accepts local Pulse Guardian recovery signals and performs exactly
+// one configured RecoveryAction. It is intentionally dependency-free from the
+// watched agent's work loop and from Time Keeper's Store.
+type Receiver struct {
+	config   ReceiverConfig
+	client   *http.Client
+	recovery *RecoveryHandler
+}
+
+// NewReceiver validates the configuration and returns a ready receiver.
+func NewReceiver(config ReceiverConfig) (*Receiver, error) {
+	if err := validateReceiverBindAddr(config.BindAddr); err != nil {
+		return nil, err
+	}
+	if config.TimeKeeperBaseURL == "" {
+		return nil, errors.New("guardian receiver requires a Time Keeper API base URL")
+	}
+	receiver := &Receiver{
+		config: config,
+		client: &http.Client{Timeout: 5 * time.Second},
+	}
+	recovery, err := NewRecoveryHandler(RecoveryHandlerConfig{
+		StateDir:    config.StateDir,
+		Action:      config.Action,
+		PolicyLabel: config.PolicyLabel,
+		Acknowledge: receiver.acknowledge,
+	})
+	if err != nil {
+		return nil, err
+	}
+	receiver.recovery = recovery
+	return receiver, nil
+}
+
+// BindAddr returns the receiver's configured loopback bind address.
+func (r *Receiver) BindAddr() string { return r.config.BindAddr }
+
+// SetBindAddr overrides the loopback bind address. It is used by tests and by
+// callers that resolve a free port before listening.
+func (r *Receiver) SetBindAddr(addr string) { r.config.BindAddr = addr }
+
+// Handler returns the HTTP handler for the loopback recovery endpoint.
+func (r *Receiver) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("POST /v1/recover", r.recovery)
+	return mux
 }
 
 func (r *Receiver) acknowledge(ctx context.Context, nudge model.PulseNudge) error {

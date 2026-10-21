@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/JustSebNL/timekeeper/internal/model"
 	"github.com/JustSebNL/timekeeper/internal/store"
@@ -269,15 +270,52 @@ func getProjectMessageThread(database *store.Store) http.HandlerFunc {
 func searchProjectMessages(database *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectID := r.PathValue("projectID")
-		q := r.URL.Query().Get("q")
+		query := r.URL.Query()
+		q := query.Get("q")
 		limit := 0
-		if l := r.URL.Query().Get("limit"); l != "" {
-			n, err := strconv.Atoi(l)
-			if err != nil || n < 0 {
-				writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be a non-negative integer.")
+		if rawLimit := query.Get("limit"); rawLimit != "" {
+			n, err := strconv.Atoi(rawLimit)
+			if err != nil || n < 0 || n > model.MaxGlobalSearchLimit {
+				writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be between 0 and 200.")
 				return
 			}
 			limit = n
+		}
+		tags := make([]string, 0)
+		for _, raw := range query["tags"] {
+			for _, tag := range strings.Split(raw, ",") {
+				if tag = strings.TrimSpace(tag); tag != "" {
+					tags = append(tags, tag)
+				}
+			}
+		}
+		after, err := parseGlobalSearchDate(query.Get("after"), false)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_search_date", "after must be an ISO date or RFC3339 timestamp.")
+			return
+		}
+		before, err := parseGlobalSearchDate(query.Get("before"), true)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_search_date", "before must be an ISO date or RFC3339 timestamp.")
+			return
+		}
+		kind := strings.TrimSpace(query.Get("kind"))
+		if kind != "" || len(tags) > 0 || after != nil || before != nil {
+			hits, total, effectiveLimit, err := database.SearchProjectMessagesFiltered(r.Context(), projectID, q, model.ProjectMessageSearchFilter{Limit: limit, Kind: kind, Tags: tags, After: after, Before: before})
+			if err != nil {
+				if errors.Is(err, store.ErrNotFound) {
+					writeError(w, http.StatusNotFound, "project_not_found", "Project was not found.")
+					return
+				}
+				if errors.Is(err, store.ErrValidation) {
+					writeError(w, http.StatusBadRequest, "invalid_search", err.Error())
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "search_project_messages_failed", "Could not search project messages.")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"items": hits, "query": q, "total": total, "limit": effectiveLimit, "has_more": total > len(hits)})
+			return
 		}
 		hits, err := database.SearchProjectMessages(r.Context(), projectID, q, limit)
 		if err != nil {

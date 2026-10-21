@@ -13,10 +13,9 @@ description: Use when recovering TimeKeeper service availability safely.
    - Windows: `scripts\\service\\kick-server.bat`
 4. Run `tk doctor` once more. The kick is a failure-only recovery action, not a
    timer, poller, or second server.
-5. Verify both the canonical API (`127.0.0.1:1618`) and the friendly health
-   routes when configured. Health must be checked after the recovery action.
-6. If the second check fails, stop retrying, inspect service logs, and record a
-   bounded blocker in the owning Task/Sprint. Do not bypass the durable record.
+5. Verify the normal entry point (`http://timekeeper.local/`) with `tk doctor` and the friendly health routes when configured. Health must be checked after the recovery action.
+6. If server startup reports an existing instance, inspect the service/PID and database target; do not launch a second Core. Never delete the persistent `.instance.lock` file because the OS, not file existence, determines lock ownership.
+7. If the second check fails, stop retrying, inspect service logs, and record a bounded blocker in the owning Task/Sprint. Do not bypass the durable record.
 
 ## Ownership and safety
 

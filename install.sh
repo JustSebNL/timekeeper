@@ -31,6 +31,7 @@ Options:
                             Only the canonical 127.0.0.1:1618 address will work.
                             Persisted to INSTALLATION.env.
   --no-service             Build only; do not install or start a service.
+                           Required on macOS, which has no launchd installer.
   -h, --help                Show this help.
 USAGE
 }
@@ -178,7 +179,8 @@ ROOT="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd -P)"
 ADDR="\${TIMEKEEPER_ADDR:-127.0.0.1:1618}"
 DB_PATH="\${TIMEKEEPER_DB:-\$ROOT/../timekeeper.db}"
 UI_PATH="\${TIMEKEEPER_UI:-\$ROOT/../web/index.html}"
-PULSE_GUARDIAN_INTERVAL="\${TIMEKEEPER_PULSE_GUARDIAN_INTERVAL:-5m}"
+PULSE_GUARDIAN_INTERVAL="\${TIMEKEEPER_PULSE_GUARDIAN_INTERVAL-5m}"
+GUARDIAN_COMPAT_RECEIVER="\${TIMEKEEPER_GUARDIAN_COMPAT_RECEIVER:-0}"
 GUARDIAN_RECEIVER_ADDR="\${TIMEKEEPER_GUARDIAN_RECEIVER_ADDR:-127.0.0.1:1619}"
 GUARDIAN_RECEIVER_AGENT="\${TIMEKEEPER_GUARDIAN_RECEIVER_AGENT:-xatia}"
 TARGET_GOOS='$GOOS'
@@ -186,11 +188,11 @@ if [[ "\$TARGET_GOOS" == 'windows' && -x "\$(command -v wslpath || true)" ]]; th
   DB_PATH="\$(wslpath -w "\$DB_PATH")"
   UI_PATH="\$(wslpath -w "\$UI_PATH")"
 fi
-server_args=( -addr "\$ADDR" -db "\$DB_PATH" -ui "\$UI_PATH" )
-if [[ -n "\$PULSE_GUARDIAN_INTERVAL" ]]; then
+server_args=( -addr "\$ADDR" -db "\$DB_PATH" -ui "\$UI_PATH" -guardian-state-dir "\$ROOT/state" )
+if [[ -n "\$PULSE_GUARDIAN_INTERVAL" && "\$PULSE_GUARDIAN_INTERVAL" != "0" ]]; then
   server_args+=( -pulse-guardian-interval "\$PULSE_GUARDIAN_INTERVAL" )
 fi
-if [[ -n "\$PULSE_GUARDIAN_INTERVAL" ]]; then
+if [[ -n "\$PULSE_GUARDIAN_INTERVAL" && "\$PULSE_GUARDIAN_INTERVAL" != "0" && "\$GUARDIAN_COMPAT_RECEIVER" == "1" ]]; then
   guardian_binary="\$ROOT/bin/$(basename "$guardian_binary")"
   "\$guardian_binary" -addr "\$GUARDIAN_RECEIVER_ADDR" -state-dir "\$ROOT/state" -timekeeper-url "http://\$ADDR" -agent "\$GUARDIAN_RECEIVER_AGENT" &
 fi
@@ -258,7 +260,11 @@ rmdir "$STAGE"
 printf 'Source commit: %s\n' "$COMMIT"
 printf 'Run: ./.timekeeper/app/timekeeper\n'
 printf 'Then use: ./.timekeeper/app/tk list\n'
-printf 'Run as OS service: ./.timekeeper/app/tk service install\n'
+if [[ "$GOOS" == 'darwin' ]]; then
+  printf 'macOS service install is not supported; run the app manually or provide your own launchd setup.\n'
+else
+  printf 'Run as OS service: ./.timekeeper/app/tk service install\n'
+fi
 
 # Linux unprivileged port 80: if the user is root, grant the timekeeper
 # binary the CAP_NET_BIND_SERVICE capability so the friendly-URL proxy
@@ -281,9 +287,10 @@ if [[ "$GOOS" == "linux" ]]; then
   fi
 fi
 
-# Write the friendly-URL hosts entries. Best-effort: if the user does
-# not have permission to edit the hosts file, the install still
-# succeeds and `tk doctor` will report the friendly URLs as failed.
+# Write the managed TimeKeeper and Vite development hosts aliases through the
+# shared `tk hosts add` helper. Best-effort: if the user does not have permission
+# to edit the hosts file, the install still succeeds and `tk doctor` will report
+# the friendly URLs as failed.
 # The user can re-run the installer from an elevated context, or edit
 # the hosts file manually (the README documents the manual step).
 "$DESTINATION/bin/$(basename "$cli_binary")" hosts add || printf 'Time Keeper install: could not write friendly-URL hosts entries (run as Administrator / with sudo, or edit %s manually)\n' "/etc/hosts"

@@ -30,6 +30,9 @@ var trackedRunMu sync.Mutex
 // RunTracked is the shipped executable boundary. Run remains the internal
 // command dispatcher, allowing isolated command tests without fake enrollment.
 func RunTracked(args []string, out, errOut io.Writer, baseURL string) int {
+	if isLocalHarnessCommand(args) {
+		return Run(args, out, errOut, baseURL)
+	}
 	trackedRunMu.Lock()
 	defer trackedRunMu.Unlock()
 	resumeAgent, resumeSession := strings.TrimSpace(os.Getenv("TIMEKEEPER_AGENT_ID")), strings.TrimSpace(os.Getenv("TIMEKEEPER_SESSION_ID"))

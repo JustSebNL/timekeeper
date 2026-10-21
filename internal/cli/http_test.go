@@ -3,8 +3,10 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,6 +40,34 @@ func TestFormatConnectionFailureIncludesOperationEndpointAndCause(t *testing.T) 
 		if !strings.Contains(got, want) {
 			t.Fatalf("formatted connection failure %q does not contain %q", got, want)
 		}
+	}
+}
+
+func TestDialTimeKeeperLocalMapsFriendlyAliasesToLoopback(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{})
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			close(accepted)
+			_ = conn.Close()
+		}
+	}()
+
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+	conn, err := dialTimeKeeperLocal(context.Background(), "tcp", net.JoinHostPort("timekeeper.local", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("friendly alias did not reach loopback listener")
 	}
 }
 

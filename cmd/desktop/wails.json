@@ -1,0 +1,10 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "TimeKeeper",
+  "outputfilename": "TimeKeeper",
+  "frontend:dir": "../../frontend",
+  "frontend:install": "npm ci --include=optional",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev -- --host 127.0.0.1",
+  "frontend:dev:serverUrl": "http://127.0.0.1:5173"
+}

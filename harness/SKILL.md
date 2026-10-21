@@ -6,7 +6,7 @@ description: Use when an AI coder must plan and execute long-horizon work throug
 # TimeKeeper agent harness
 
 This file is the compact operational contract for agents using TimeKeeper.
-For a soft first-use path, read the [onboarding Skill](skills/onboarding/SKILL.md) and [agent quick start](../docs/HARNESS.md). This file remains the operational contract.
+For a soft first-use path, read the [onboarding Skill](skills/onboarding/SKILL.md) and [agent quick start](../docs/HARNESS.md). Use the [Agent Harness Router](../docs/agent.md) to choose the right role Skill for the work. This file remains the operational contract. Use `tk harness list` to enumerate the dynamically discovered bundled items and their direct `.html` links, or open the [Harness Viewer](http://timekeeper.local/harness.html). Its menu is discovered from supported files under `harness/` at request time; direct links select a file in the same HTML viewer. Use `tk harness show <id>` to retrieve the original file contents in the terminal.
 
 ## Session start
 
@@ -28,6 +28,34 @@ continuous poller. If the second health check fails, inspect `/data/logs/`
 and preserve the blocker in the current Task/Sprint record. Do not create a
 second server or silently continue without durable TimeKeeper state.
 
+## Build a Windows candidate without installing
+
+When the assignment requires compiling the current checkout from WSL but Windows
+interop cannot launch `go.exe`, run `dev-ops\build-windows-candidate.bat`
+from the checkout containing the intended edits. It tests and builds that local checkout, stages binaries and isolated test state under `dev-ops/builds/`, and writes logs under `dev-ops/logs/`. It performs no remote fetch or push. The staged build needs no service stop. Before a later installed-binary swap, stop TimeKeeper through its supported service manager and verify it is stopped.
+See `docs/build-windows-candidate.md`. Do not use `install.bat` as a build-only
+workaround: that path can alter the service and requests elevation.
+
+## Contact point and duplicate-instance protection
+
+Announce and use `http://timekeeper.local/` as the normal local entry point.
+The CLI selects this friendly hostname by default. If it is unavailable, run
+`tk doctor` and follow the failure-only recovery procedure below; do not replace
+it in agent instructions with an implementation address.
+The VS Code companion has a separate origin-allowlist requirement; follow its
+own client documentation.
+
+Core takes one installation-scoped lock before touching the database, so a second
+server from the same TimeKeeper installation is rejected with `tk is already
+running`, even if it requests another database or listener. Short-lived `tk`
+commands are clients and remain callable while Core is running. The primary
+listener and database locks remain additional safeguards. If startup says another
+instance is active, run `tk doctor` and inspect the service/process state; do not
+start another database/server to route around it. The `.instance.lock` file is
+persistent by design; the kernel lock is released on process exit, so do not
+delete the file to "clear" a stale lock. Stop/restart only through the service
+manager after identifying the owning service.
+
 ## Execution loop
 
 1. Create or identify a Project and landscape.
@@ -36,6 +64,49 @@ second server or silently continue without durable TimeKeeper state.
 4. Record notes for decisions, discoveries, blockers, and handoffs.
 5. Verify behavior, then complete the Sprint and read back events.
 6. On context loss, resume from the tree, summary, notes, and events—not memory guesses.
+
+## Role-specific Skills
+
+Choose the local Skill for the active role; combine roles only when the task actually assigns them:
+
+| Role | Load |
+|---|---|
+| Autonomous coder (continue authorized work to verified completion) | `harness/skills/autonomous-coder/SKILL.md` |
+| Project planner | `harness/skills/project-planner/SKILL.md` |
+| Bug hunter (diagnose, do not patch) | `harness/skills/bug-hunter/SKILL.md` |
+| Bug fixer (verified root-cause change) | `harness/skills/bug-fixer/SKILL.md` |
+| Deep audit/fixer (full coverage and defect repair) | `harness/skills/deep-audit-fixer/SKILL.md` |
+| Gem miner (external source study and target handoff) | `harness/skills/gem-mining/SKILL.md` |
+| Code reviewer (independent review, findings only) | `harness/skills/code-reviewer/SKILL.md` |
+
+A role Skill guides workflow; it does not create another worker, change permissions, or choose a different source-owning Project. Gem mining studies source repositories from `/mnt/h/dev/repos/` and tracks findings in the target Project under `/mnt/d/dev/codebase/dev/`.
+
+## Record durable work in the owning Project
+
+Project selection follows implementation ownership, not convenience. Use the source-owning Project's own Task/Sprint; choose the right durable store for each kind of content.
+
+### Treasure Chest: reusable gems
+
+The Treasure Chest is a dedicated, project-scoped store for reusable, source-backed mechanisms found through gem-hunting. Use it for named gems organized by category and optional subcategory—not progress notes or general handoffs. The first gem using a label makes that category path available. Keep gem content focused and evidence-backed, cite its source, and stay within Core's 20,000-character content limit; never store secrets, private prompts, or raw repository dumps. Confirm the installed build exposes `tk tc --help` before use, and read back each stored gem with its returned `G-` reference.
+
+```bash
+tk tc add <project-id> <category> <gem-name> <content...> [--subcategory <name>] [--source <repo/path>]
+tk tc attach <project-id> <G-id> <gem-name> <content...>
+tk tc lookup <project-id> <query...> [--category <name>]
+tk tc show <project-id> <G-id>
+```
+
+### Trail of Thought: general working context
+
+Trail of Thought (ToTb) is a separate, project-scoped message board for progress, decisions, blockers, and handoffs; each entry is limited to 1,000 Unicode characters. Save useful context-menu selections as ToTb messages and keep the returned `M-` reference so later turns can retrieve that content without carrying it in the active context or deleting it just to make room. Split longer notes into linked messages, or keep the full handoff in a project document and post a short pointer. Exclude credentials and private prompts.
+
+```bash
+tk msg <project-id> add --kind observation --tags <topic> "<evidence-backed update>"
+tk msg <project-id> add --kind decision "<choice and rationale>"
+tk msg <project-id> show <M-id>
+```
+
+Start a Sprint before execution and complete it only after real verification; use On Hold with a reason for blockers. See `harness/skills/gem-mining/SKILL.md` for the full mining workflow and evidence requirements.
 
 ## Agent first-use contract (for "Use TimeKeeper")
 

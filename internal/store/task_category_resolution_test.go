@@ -4,6 +4,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -62,15 +63,13 @@ func TestCreateTaskCategoryResolutionAndFallback(t *testing.T) {
 		t.Errorf("expected CategoryID %s, got %s", cat.CategoryID, task2.CategoryID)
 	}
 
-	// 4. Create a task with non-existent category name -> should fallback to default category C-00000
-	task3, err := st.CreateTask(ctx, p.ProjectID, model.CreateTaskInput{
+	// 4. An unknown category must be rejected instead of silently moving the task
+	// into the default category.
+	_, err = st.CreateTask(ctx, p.ProjectID, model.CreateTaskInput{
 		Name:       "Task with Nonexistent Category",
 		CategoryID: "NonExistentCategoryName",
 	})
-	if err != nil {
-		t.Fatalf("CreateTask non-existent category failed: %v", err)
-	}
-	if task3.CategoryID != "C-00000" {
-		t.Errorf("expected fallback CategoryID C-00000, got %s", task3.CategoryID)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected unknown category to be rejected as not found, got %v", err)
 	}
 }

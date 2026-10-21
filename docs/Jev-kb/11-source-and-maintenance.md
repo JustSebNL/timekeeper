@@ -29,11 +29,11 @@ docs/jev-category-sprint-decision-protocol.md
 Use the live API when possible:
 
 ```text
-GET http://127.0.0.1:1618/health
-GET http://127.0.0.1:1618/api/help
-GET http://127.0.0.1:1618/api/v1/projects/{projectID}/execution-tree
-GET http://127.0.0.1:1618/api/v1/projects/{projectID}/operational-summary
-GET http://127.0.0.1:1618/api/v1/projects/{projectID}/attention
+GET http://timekeeper.local/health
+GET http://timekeeper.local/api/help
+GET http://timekeeper.local/api/v1/projects/{projectID}/execution-tree
+GET http://timekeeper.local/api/v1/projects/{projectID}/operational-summary
+GET http://timekeeper.local/api/v1/projects/{projectID}/attention
 ```
 
 ## Update rules

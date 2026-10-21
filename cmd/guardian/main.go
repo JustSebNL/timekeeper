@@ -10,14 +10,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -30,7 +35,7 @@ func main() {
 	stateDir := flag.String("state-dir", "", "private state directory that already holds recoverable Time Keeper state (required)")
 	timekeeperURL := flag.String("timekeeper-url", "http://127.0.0.1:1618", "Time Keeper loopback API base URL used to acknowledge nudges")
 	agentID := flag.String("agent", "xatia", "agent id whose progress lease this receiver recovers")
-	register := flag.Bool("register", true, "register this receiver's loopback URL as the agent's Guardian callback on startup")
+	register := flag.Bool("register", true, "register the advertised canonical recovery URL, or this receiver's compatibility URL, on startup")
 	flag.Parse()
 
 	if *stateDir == "" {
@@ -56,7 +61,11 @@ func main() {
 	}
 
 	if *register {
-		guardianURL := "http://" + *bindAddr + "/v1/recover"
+		client := &http.Client{Timeout: 3 * time.Second}
+		guardianURL, discoveryErr := recoveryRegistrationURL(client, *timekeeperURL, *bindAddr)
+		if discoveryErr != nil {
+			log.Printf("canonical Guardian recovery callback unavailable; using compatibility receiver registration: %v", discoveryErr)
+		}
 		registered := false
 		for attempt := 1; attempt <= 10; attempt++ {
 			if regErr := registerGuardianURL(*timekeeperURL, *agentID, guardianURL); regErr != nil {
@@ -79,6 +88,63 @@ func main() {
 	if runErr := receiver.Run(ctx); runErr != nil {
 		log.Fatalf("guardian recovery receiver: %v", runErr)
 	}
+}
+
+// recoveryRegistrationURL prefers the canonical in-process recovery route when
+// the API advertises it. The returned error is diagnostic only: the receiver can
+// still register its compatibility listener for older Cores and existing agents.
+func recoveryRegistrationURL(client *http.Client, baseURL, bindAddr string) (string, error) {
+	legacyURL := "http://" + bindAddr + "/v1/recover"
+	canonicalURL, err := discoverCanonicalRecoveryURL(client, baseURL)
+	if err != nil {
+		return legacyURL, err
+	}
+	if canonicalURL != "" {
+		return canonicalURL, nil
+	}
+	return legacyURL, nil
+}
+
+func discoverCanonicalRecoveryURL(client *http.Client, baseURL string) (string, error) {
+	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/guardian/status"
+	response, err := client.Get(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("read Guardian status: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
+		return "", nil
+	}
+	var status struct {
+		GuardianRecoveryURL string `json:"guardian_recovery_url"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&status); err != nil {
+		return "", fmt.Errorf("decode Guardian status: %w", err)
+	}
+	if status.GuardianRecoveryURL == "" {
+		return "", nil
+	}
+	if err := validateCanonicalRecoveryURL(status.GuardianRecoveryURL); err != nil {
+		return "", fmt.Errorf("invalid canonical Guardian recovery URL: %w", err)
+	}
+	return status.GuardianRecoveryURL, nil
+}
+
+func validateCanonicalRecoveryURL(raw string) error {
+	endpoint, err := url.Parse(raw)
+	if err != nil || endpoint.Scheme != "http" || endpoint.User != nil || endpoint.Path != "/api/v1/guardian/recover" || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return errors.New("canonical Guardian recovery URL must be the plain http recovery route")
+	}
+	host := net.ParseIP(endpoint.Hostname())
+	if host == nil || !host.IsLoopback() {
+		return errors.New("canonical Guardian recovery URL must use a numeric loopback host")
+	}
+	port, err := strconv.ParseUint(endpoint.Port(), 10, 16)
+	if err != nil || port == 0 {
+		return errors.New("canonical Guardian recovery URL must include a valid numeric port")
+	}
+	return nil
 }
 
 func registerGuardianURL(baseURL, agentID, guardianURL string) error {

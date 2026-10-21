@@ -5,7 +5,7 @@ description: Use when a person or agent is new to TimeKeeper or needs a gentle f
 
 # TimeKeeper onboarding
 
-Use this Skill to help someone get comfortable with TimeKeeper before introducing advanced agent or integration workflows. Keep the first session small: confirm the local service, find the existing work, and make one useful next step. The [harness contract](../../SKILL.md) remains authoritative for recovery and agent safety.
+Use this Skill to help someone get comfortable with TimeKeeper before introducing advanced agent or integration workflows. Keep the first session small: confirm the local service, find the existing work, and make one useful next step. The [harness contract](../../SKILL.md) remains authoritative for recovery and agent safety. When the assignment is to continue an authorized project through completion, also load the [autonomous coder Skill](../autonomous-coder/SKILL.md).
 
 ## What TimeKeeper does
 
@@ -44,7 +44,7 @@ tk tree <project-id>
 tk summary <project-id>
 ```
 
-Choose the Project that actually owns the work. Read its latest events or Trail of Thought messages when a handoff or decision matters. Use IDs returned by TimeKeeper; commands do not retain implicit Project context.
+Choose the Project that actually owns the work. Read its latest events or Trail of Thought messages when a handoff or decision matters. Use IDs returned by TimeKeeper; commands do not retain implicit Project context. For a structured plan, load [`project-planner`](../project-planner/SKILL.md); for a suspected issue, separate [`bug-hunter`](../bug-hunter/SKILL.md) diagnosis from [`bug-fixer`](../bug-fixer/SKILL.md) implementation. Use [`deep-audit-fixer`](../deep-audit-fixer/SKILL.md) when the assignment is a complete function-by-function audit and repair of the whole first-party project.
 
 ### When several agents share a Project
 
@@ -60,7 +60,9 @@ tk sp new task T-10002 "Document the Linux install path" 30m
 tk sp start SP-10003
 ```
 
-The IDs above are examples, not IDs to reuse. Replace each one with the ID returned by your own command. You can also create and browse Projects in the dashboard at `http://127.0.0.1:1618/`.
+The IDs above are examples, not IDs to reuse. Replace each one with the ID returned by your own command. Use `http://timekeeper.local/` as the normal contact point for creating and browsing Projects; the CLI uses that hostname by default.
+
+Use `tk harness list` for the live catalog and direct HTML links (e.g. `http://timekeeper.local/harness.html?item=onboarding`). A browser opens the shared HTML viewer with that harness selected in the dynamic menu and its original file contents in a read-only textarea with a **Copy file** button. The viewer discovers supported files under `harness/`; it does not render Markdown as HTML. Use `tk harness show onboarding` to retrieve the original text in the terminal.
 
 ### 3. Work, record, and verify
 
@@ -94,6 +96,7 @@ A normal human dashboard/CLI session does not require a background worker or a g
 ## Where to go next
 
 - [Agent first-use guide](../../../docs/HARNESS.md) — recovery, handoffs, and the full first-use loop.
+- [Build a Windows candidate without installing](../../../docs/build-windows-candidate.md) — test and stage updated Windows binaries without changing the service.
 - [CLI and API help](../../../HELP.md) — command syntax and examples.
 - [Project landscape Skill](../project-landscape/SKILL.md) — set up a new Project structure.
 - [Timeboxing Skill](../timeboxing/SKILL.md) — estimate and execute Sprints.

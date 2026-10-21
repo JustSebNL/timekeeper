@@ -29,6 +29,11 @@ const (
 	// KindObserver provides an event journal: durable local append,
 	// bounded replay and idempotent acknowledgement.
 	KindObserver Kind = "observer"
+
+	// KindRouting provides confidence-gated work-routing proposals. A routing
+	// provider returns typed decisions only; Core still owns validation and
+	// any later mutation.
+	KindRouting Kind = "routing"
 )
 
 // Descriptor is the core-visible description of a registered plugin.

@@ -45,6 +45,54 @@ class TimeKeeperClient {
     return this.request(`/api/v1/projects/${encodeURIComponent(projectID)}/execution-tree`);
   }
 
+  async projectFileRoot(projectID) {
+    return this.request(`/api/v1/projects/${encodeURIComponent(projectID)}/file-root`);
+  }
+
+  async projectFiles(projectID) {
+    const response = await this.request(`/api/v1/projects/${encodeURIComponent(projectID)}/files`);
+    return { ...response, items: response.items || [] };
+  }
+
+  async fileVersions(fileID) {
+    const response = await this.request(`/api/v1/files/${encodeURIComponent(fileID)}/versions`);
+    return { ...response, items: response.items || [] };
+  }
+
+  async fileVersion(fileID, versionID) {
+    return this.request(`/api/v1/files/${encodeURIComponent(fileID)}/versions/${encodeURIComponent(versionID)}`);
+  }
+
+  async captureFileSnapshot(fileID, input) {
+    if (!['code_start', 'code_end'].includes(input?.phase)) {
+      throw new Error('Snapshot phase must be code_start or code_end.');
+    }
+    return this.request(`/api/v1/files/${encodeURIComponent(fileID)}/snapshots`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  async compareFileVersions(fileID, fromVersionID, toVersionID) {
+    const query = new URLSearchParams({ from: fromVersionID, to: toVersionID });
+    return this.request(`/api/v1/files/${encodeURIComponent(fileID)}/compare?${query}`);
+  }
+
+  async restoreFileVersion(fileID, versionID, expectedCurrentVersionID) {
+    if (!String(expectedCurrentVersionID || '').trim()) throw new Error('Expected current version is required to restore history.');
+    return this.request(`/api/v1/files/${encodeURIComponent(fileID)}/restore`, {
+      method: 'POST',
+      body: JSON.stringify({ version_id: versionID, expected_current_version_id: expectedCurrentVersionID }),
+    });
+  }
+
+  async createTask(projectID, input) {
+    return this.request(`/api/v1/projects/${encodeURIComponent(projectID)}/tasks`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
   async sprintAction(sprintID, action) {
     if (!['start', 'hold', 'resume', 'complete'].includes(action)) {
       throw new Error('Unsupported Sprint action.');

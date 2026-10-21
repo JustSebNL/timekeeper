@@ -111,13 +111,19 @@ func storeRepoRoot() string {
 	return ""
 }
 
-// newStoreClient builds a Store client. An explicit baseURL (from
-// --url or the resolved environment) wins; otherwise the store-specific
-// environment and defaults apply.
-func newStoreClient(baseURL string) (*storeclient.Client, error) {
+// newCoreClient builds the generic HTTP client used by Core API flows such as
+// Guardian wake. The caller supplies the already-resolved TimeKeeper endpoint.
+func newCoreClient(baseURL string) (*storeclient.Client, error) {
 	if strings.TrimSpace(baseURL) != "" {
 		return storeclient.New(strings.TrimSuffix(strings.TrimSpace(baseURL), "/"), storeStateDir())
 	}
+	return storeclient.New(storeBaseURL(), storeStateDir())
+}
+
+// newStoreGatewayClient builds a client for the optional private Store. The
+// global CLI baseURL points at TimeKeeper Core and must never override the
+// separate TIMEKEEPER_STORE_URL gateway.
+func newStoreGatewayClient() (*storeclient.Client, error) {
 	return storeclient.New(storeBaseURL(), storeStateDir())
 }
 
@@ -181,7 +187,7 @@ package signatures.
 }
 
 func storeStatus(out, errOut io.Writer, baseURL string) int {
-	client, err := newStoreClient(baseURL)
+	client, err := newStoreGatewayClient()
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "store: %v\n", err)
 		return 1
@@ -204,7 +210,7 @@ func storeLogin(args []string, out, errOut io.Writer, baseURL string) int {
 		return 2
 	}
 
-	client, err := newStoreClient(baseURL)
+	client, err := newStoreGatewayClient()
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "store: %v\n", err)
 		return 1
@@ -260,7 +266,7 @@ func storeRegister(args []string, out, errOut io.Writer, baseURL string) int {
 	if !ok {
 		return 2
 	}
-	client, err := newStoreClient(baseURL)
+	client, err := newStoreGatewayClient()
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "store: %v\n", err)
 		return 1
@@ -275,7 +281,7 @@ func storeRegister(args []string, out, errOut io.Writer, baseURL string) int {
 }
 
 func storeLogout(out, errOut io.Writer, baseURL string) int {
-	client, err := newStoreClient(baseURL)
+	client, err := newStoreGatewayClient()
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "store: %v\n", err)
 		return 1
@@ -289,7 +295,7 @@ func storeLogout(out, errOut io.Writer, baseURL string) int {
 }
 
 func storeWhoami(out, errOut io.Writer, baseURL string) int {
-	client, err := newStoreClient(baseURL)
+	client, err := newStoreGatewayClient()
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "store: %v\n", err)
 		return 1
@@ -303,7 +309,7 @@ func storeWhoami(out, errOut io.Writer, baseURL string) int {
 }
 
 func storeCatalogue(out, errOut io.Writer, baseURL string) int {
-	client, err := newStoreClient(baseURL)
+	client, err := newStoreGatewayClient()
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "store: %v\n", err)
 		return 1
@@ -336,7 +342,7 @@ func storeClaim(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintln(errOut, "usage: tk store claim <product-id>")
 		return 2
 	}
-	client, err := newStoreClient(baseURL)
+	client, err := newStoreGatewayClient()
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "store: %v\n", err)
 		return 1
@@ -355,7 +361,7 @@ func storeClaim(args []string, out, errOut io.Writer, baseURL string) int {
 }
 
 func storeEntitlements(out, errOut io.Writer, baseURL string) int {
-	client, err := newStoreClient(baseURL)
+	client, err := newStoreGatewayClient()
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "store: %v\n", err)
 		return 1
@@ -380,7 +386,7 @@ func storeEntitlements(out, errOut io.Writer, baseURL string) int {
 }
 
 func storeDevices(out, errOut io.Writer, baseURL string) int {
-	client, err := newStoreClient(baseURL)
+	client, err := newStoreGatewayClient()
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "store: %v\n", err)
 		return 1
@@ -401,7 +407,7 @@ func storeDevices(out, errOut io.Writer, baseURL string) int {
 }
 
 func storeKey(out, errOut io.Writer, baseURL string) int {
-	client, err := newStoreClient(baseURL)
+	client, err := newStoreGatewayClient()
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "store: %v\n", err)
 		return 1
@@ -442,7 +448,7 @@ func storeInstall(args []string, out, errOut io.Writer, baseURL string) int {
 		}
 	}
 
-	client, err := newStoreClient(baseURL)
+	client, err := newStoreGatewayClient()
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "store: %v\n", err)
 		return 1

@@ -20,7 +20,7 @@ A Sprint is one focused piece of work: a manageable next bite, not “finish the
 
 ## A gentle first session
 
-Once TimeKeeper is installed and running, open the dashboard at `http://127.0.0.1:1618/`. Choose an existing Project or create one, pick a small next step, and leave a short note when a decision or handoff will help later. That is enough to begin; you do not need to learn the API or every command first.
+Once TimeKeeper is installed and running, open the dashboard at `http://timekeeper.local/`. This is the normal entry point for people and agents. If it does not load, run `tk doctor` and check `tk hosts status` to diagnose the friendly hostname or proxy. Choose an existing Project or create one, pick a small next step, and leave a short note when a decision or handoff will help later.
 
 The repository is proprietary and currently provides a source-based installation, not a downloadable application package. If you have access to a checkout, the [install guide](docs/install.md) has the platform-specific steps. The installer does not add commands to your `PATH`.
 
@@ -30,7 +30,7 @@ For an AI agent using this repository, the intended first-use phrase is:
 Use TimeKeeper in the terminal and start using the app.
 ```
 
-The [agent onboarding Skill](harness/skills/onboarding/SKILL.md) provides a calm, step-by-step introduction. The repository's `AGENTS.md` and [harness contract](harness/SKILL.md) explain the more detailed agent workflow for tools that read and follow repository instructions.
+The [agent onboarding Skill](harness/skills/onboarding/SKILL.md) provides a calm, step-by-step introduction. The [autonomous coder Skill](harness/skills/autonomous-coder/SKILL.md) defines the bounded continue-until-finished loop for authorized project work. The repository's `AGENTS.md` and [harness contract](harness/SKILL.md) explain the more detailed agent workflow. For role-specific work, the harness includes [project planning](harness/skills/project-planner/SKILL.md), [bug hunting](harness/skills/bug-hunter/SKILL.md), [bug fixing](harness/skills/bug-fixer/SKILL.md), [deep audit and fixing](harness/skills/deep-audit-fixer/SKILL.md), [gem mining](harness/skills/gem-mining/SKILL.md), and [independent code review](harness/skills/code-reviewer/SKILL.md); each records evidence in the owning TimeKeeper Project.
 
 ## One agent, or a swarm
 
@@ -47,8 +47,9 @@ Your Project data stays on this machine; it is not encrypted automatically. Time
 ## Where to go next
 
 - [Getting started](docs/install.md) — install the local app and open the dashboard.
-- [Using TimeKeeper with an agent](harness/skills/onboarding/SKILL.md) — the gentle first-use walkthrough.
-- [Documentation index](docs/README.md) — choose a guide if you need more detail.
+- [Agent onboarding](harness/skills/onboarding/SKILL.md) — the gentle first-use walkthrough.
+- [Agent harness router](docs/agent.md) — select the role harness for the work at hand.
+- [Documentation index](docs/README.md) — browse the linked guides.
 - [Privacy and security](THREAT_REVIEW.md) — what stays local and what the app does not protect.
 
 Detailed command, API, integration, and operator references are currently grouped in the repository's documentation index. A combined documentation and plugin Store portal at `time.mngr.eu.org` is planned, but is not a live documentation link in this checkout. Keep the existing references until the site is published and verified.

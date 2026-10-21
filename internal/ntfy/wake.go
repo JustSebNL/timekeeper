@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -109,12 +110,8 @@ func runWorkCycle(ctx context.Context, baseURL, agentID string) (bool, string) {
 }
 
 func ackNudge(ctx context.Context, baseURL, agentID string, nudgeID int64) error {
-	ackURL := strings.TrimRight(baseURL, "/") + "/api/v1/agents/" + agentID + "/nudges"
-	ackBody, err := json.Marshal(map[string]int64{"nudge_id": nudgeID})
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ackURL, bytes.NewReader(ackBody))
+	ackURL := strings.TrimRight(baseURL, "/") + "/api/v1/agents/" + agentID + "/nudges/" + strconv.FormatInt(nudgeID, 10) + "/ack"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ackURL, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return err
 	}

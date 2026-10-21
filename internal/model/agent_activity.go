@@ -15,7 +15,13 @@ type AgentActivityInput struct {
 	WaitDurationSeconds  int64   `json:"wait_duration_seconds,omitempty"`
 	Reason               string  `json:"reason,omitempty"`
 	GuardianURL          *string `json:"guardian_url,omitempty"`
+	InputTokens          int64   `json:"input_tokens,omitempty"`
+	OutputTokens         int64   `json:"output_tokens,omitempty"`
+	CachedTokens         int64   `json:"cached_tokens,omitempty"`
+	CacheCreationTokens  int64   `json:"cache_creation_tokens,omitempty"`
 }
+
+// AgentWorkState struct remains the same...
 
 type AgentWorkState struct {
 	AgentID              string     `json:"agent_id"`

@@ -18,6 +18,13 @@ test('extension manifest exposes a loopback server setting and execution command
     'timekeeper.holdSprint',
     'timekeeper.resumeSprint',
     'timekeeper.completeSprint',
+    'timekeeper.copyEditorReference',
+    'timekeeper.createTaskFromSelection',
+    'timekeeper.showProjectContext',
+    'timekeeper.showGitStatus',
+    'timekeeper.browseFileHistory',
+    'timekeeper.restoreFileHistoryVersion',
+    'timekeeper.captureFileHistorySnapshot',
     'timekeeper.openDashboard',
   ]) {
     assert.ok(commands.includes(command), `missing ${command}`);
@@ -32,4 +39,13 @@ test('extension manifest exposes a loopback server setting and execution command
   ]) {
     assert.ok(sprintMenus.some(item => item.command === command && item.when.includes(contextValue)), `missing Sprint menu ${command}`);
   }
+  const editorMenus = manifest.contributes.menus['editor/context'];
+  assert.ok(editorMenus.some(item => item.command === 'timekeeper.copyEditorReference' && item.when === 'editorTextFocus'));
+  assert.ok(editorMenus.some(item => item.command === 'timekeeper.createTaskFromSelection' && item.when === 'editorHasSelection'));
+  const viewMenus = manifest.contributes.menus['view/title'];
+  assert.ok(viewMenus.some(item => item.command === 'timekeeper.showProjectContext' && item.when === 'view == timekeeper.projects'));
+  assert.ok(viewMenus.some(item => item.command === 'timekeeper.showGitStatus' && item.when === 'view == timekeeper.projects'));
+  assert.ok(viewMenus.some(item => item.command === 'timekeeper.browseFileHistory' && item.when === 'view == timekeeper.projects'));
+  assert.ok(viewMenus.some(item => item.command === 'timekeeper.restoreFileHistoryVersion' && item.when === 'view == timekeeper.projects'));
+  assert.ok(viewMenus.some(item => item.command === 'timekeeper.captureFileHistorySnapshot' && item.when === 'view == timekeeper.projects'));
 });

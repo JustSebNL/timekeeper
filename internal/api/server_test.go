@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/JustSebNL/timekeeper/internal/api"
 	"github.com/JustSebNL/timekeeper/internal/model"
@@ -71,26 +72,73 @@ func TestTaskMetadataAPIUpdatesDurably(t *testing.T) {
 	}
 }
 
-func TestTaskMetadataAPIRejectsOversizedInputAsValidation(t *testing.T) {
+// Task goal/description are intentionally unbounded: a character ceiling shapes
+// what can be described. This test pins that contract so a future cap cannot
+// creep back in unnoticed. The ToTb board keeps its own 1000-char cap, which is
+// about keeping agent context reads small, not about content storage.
+func TestTaskMetadataAPIAcceptsLargeGoalAndDescription(t *testing.T) {
 	ctx := context.Background()
 	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
-	project, _ := database.CreateProject(ctx, model.CreateProjectInput{Name: "Task metadata validation"})
+	project, _ := database.CreateProject(ctx, model.CreateProjectInput{Name: "Task metadata limits"})
 	category, _ := database.CreateCategory(ctx, project.ProjectID, model.CreateCategoryInput{Name: "Delivery"})
 	task, _ := database.CreateTask(ctx, project.ProjectID, model.CreateTaskInput{CategoryID: category.CategoryID, Name: "Parent"})
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.TaskID+"/metadata", bytes.NewBufferString(`{"goal":"`+strings.Repeat("g", 1001)+`","description":"ok"}`))
+
+	// Comfortably beyond both the old 1000-char goal cap and the old 10000-char
+	// description cap. TrimSpace still applies (leading/trailing whitespace is
+	// normalized away), so the expected values below are compared trimmed.
+	rawGoal := strings.Repeat("goal ", 5000)
+	rawDescription := strings.Repeat("detail ", 20000)
+	largeGoal := strings.TrimSpace(rawGoal)
+	largeDescription := strings.TrimSpace(rawDescription)
+	if len(largeGoal) <= 1000 || len(largeDescription) <= 10000 {
+		t.Fatalf("fixture too small to prove the caps are gone: goal=%d description=%d", len(largeGoal), len(largeDescription))
+	}
+	payload, err := json.Marshal(map[string]string{"goal": rawGoal, "description": rawDescription})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.TaskID+"/metadata", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	api.New(database).ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest {
+	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	if !strings.Contains(body, `"code":"validation_error"`) || !strings.Contains(body, "task goal must be at most 1000 characters") {
-		t.Fatalf("body=%s", body)
+	var updated model.Task
+	if err := json.NewDecoder(response.Body).Decode(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Goal != largeGoal {
+		t.Fatalf("goal not stored verbatim: got %d chars, want %d", len(updated.Goal), len(largeGoal))
+	}
+	if updated.Description != largeDescription {
+		t.Fatalf("description not stored verbatim: got %d chars, want %d", len(updated.Description), len(largeDescription))
+	}
+}
+
+// An all-whitespace goal/description is still rejected: the limit is emptiness,
+// not length.
+func TestTaskMetadataAPIRejectsBlankContent(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	project, _ := database.CreateProject(ctx, model.CreateProjectInput{Name: "Task metadata blank"})
+	category, _ := database.CreateCategory(ctx, project.ProjectID, model.CreateCategoryInput{Name: "Delivery"})
+	task, _ := database.CreateTask(ctx, project.ProjectID, model.CreateTaskInput{CategoryID: category.CategoryID, Name: "Parent"})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.TaskID+"/metadata", bytes.NewBufferString(`{"goal":"ok","description":"`+strings.Repeat(" ", 50)+`"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	api.New(database).ServeHTTP(response, request)
+	// Blank is normalized to empty rather than rejected; the task must still load.
+	if response.Code != http.StatusOK && response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -377,6 +425,179 @@ func TestProjectMetadataUpdateIsDurableThroughAPI(t *testing.T) {
 	}
 }
 
+func TestProjectScheduleAndPhaseAPIsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	project, err := database.CreateProject(ctx, model.CreateProjectInput{Name: "Lifecycle API"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/projects/"+project.ProjectID+"/schedule", bytes.NewBufferString(`{"planned_start_date":"2026-10-11","target_end_date":"2030-10-10","schedule_timezone":"America/Vancouver","deadline_warning_days":14}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	api.New(database).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("schedule update=%d body=%s", response.Code, response.Body.String())
+	}
+	var scheduled model.Project
+	if err := json.Unmarshal(response.Body.Bytes(), &scheduled); err != nil {
+		t.Fatal(err)
+	}
+	if scheduled.PlannedStartDate != "2026-10-11" || scheduled.TargetEndDate != "2030-10-10" || scheduled.LifecyclePhase != model.ProjectPhaseIntake || scheduled.DeadlineWarningDays != 14 || scheduled.ScheduleTimezone != "America/Vancouver" || scheduled.DeadlineState != "on_track" {
+		t.Fatalf("schedule response=%+v", scheduled)
+	}
+
+	postPhase := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+project.ProjectID+"/phase", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp := httptest.NewRecorder()
+		api.New(database).ServeHTTP(resp, req)
+		return resp
+	}
+	invalid := postPhase(`{"phase":"execution","reason":"skip planning"}`)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid phase transition=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+	planning := postPhase(`{"phase":"planning","reason":"Schedule agreed"}`)
+	if planning.Code != http.StatusOK {
+		t.Fatalf("planning transition=%d body=%s", planning.Code, planning.Body.String())
+	}
+	execution := postPhase(`{"phase":"execution","reason":"Start delivery"}`)
+	if execution.Code != http.StatusOK || !strings.Contains(execution.Body.String(), `"actual_started_at":"`) || !strings.Contains(execution.Body.String(), `"lifecycle_phase":"execution"`) {
+		t.Fatalf("execution transition=%d body=%s", execution.Code, execution.Body.String())
+	}
+}
+
+func TestProjectMilestoneAPIsPersistAndEnforceOwnership(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	project, err := database.CreateProject(ctx, model.CreateProjectInput{Name: "Milestone API"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	category, err := database.CreateCategory(ctx, project.ProjectID, model.CreateCategoryInput{Name: "Delivery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := database.CreateTask(ctx, project.ProjectID, model.CreateTaskInput{CategoryID: category.CategoryID, Name: "Build"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherProject, err := database.CreateProject(ctx, model.CreateProjectInput{Name: "Other milestone owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCategory, err := database.CreateCategory(ctx, otherProject.ProjectID, model.CreateCategoryInput{Name: "Other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherTask, err := database.CreateTask(ctx, otherProject.ProjectID, model.CreateTaskInput{CategoryID: otherCategory.CategoryID, Name: "Foreign"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+project.ProjectID+"/milestones", bytes.NewBufferString(`{"name":"Acceptance","description":"Verify output","target_date":"2030-10-10","linked_task_id":"`+task.TaskID+`"}`))
+	create.Header.Set("Content-Type", "application/json")
+	created := httptest.NewRecorder()
+	api.New(database).ServeHTTP(created, create)
+	if created.Code != http.StatusCreated || !strings.Contains(created.Body.String(), `"deadline_state":"on_track"`) {
+		t.Fatalf("create milestone=%d body=%s", created.Code, created.Body.String())
+	}
+	var milestone model.ProjectMilestone
+	if err := json.Unmarshal(created.Body.Bytes(), &milestone); err != nil {
+		t.Fatal(err)
+	}
+	list := httptest.NewRecorder()
+	api.New(database).ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+project.ProjectID+"/milestones", nil))
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), milestone.MilestoneID) {
+		t.Fatalf("list milestones=%d body=%s", list.Code, list.Body.String())
+	}
+	status := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+project.ProjectID+"/milestones/"+milestone.MilestoneID+"/status", bytes.NewBufferString(`{"status":"Completed"}`))
+	status.Header.Set("Content-Type", "application/json")
+	completed := httptest.NewRecorder()
+	api.New(database).ServeHTTP(completed, status)
+	if completed.Code != http.StatusOK || !strings.Contains(completed.Body.String(), `"status":"Completed"`) || !strings.Contains(completed.Body.String(), `"completed_at":"`) {
+		t.Fatalf("complete milestone=%d body=%s", completed.Code, completed.Body.String())
+	}
+	foreign := httptest.NewRequest(http.MethodPost, "/api/v1/projects/"+project.ProjectID+"/milestones", bytes.NewBufferString(`{"name":"Wrong owner","target_date":"2030-10-10","linked_task_id":"`+otherTask.TaskID+`"}`))
+	foreign.Header.Set("Content-Type", "application/json")
+	foreignResponse := httptest.NewRecorder()
+	api.New(database).ServeHTTP(foreignResponse, foreign)
+	if foreignResponse.Code != http.StatusBadRequest {
+		t.Fatalf("cross-Project link=%d body=%s", foreignResponse.Code, foreignResponse.Body.String())
+	}
+}
+
+func TestProjectExportIncludesScheduleAndMilestones(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	project, err := database.CreateProject(ctx, model.CreateProjectInput{Name: "Export lifecycle", PlannedStartDate: "2026-10-11", TargetEndDate: "2030-10-10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateProjectMilestone(ctx, project.ProjectID, model.CreateProjectMilestoneInput{Name: "Launch", TargetDate: "2030-10-01"}); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	api.New(database).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+project.ProjectID+"/export", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("export=%d body=%s", response.Code, response.Body.String())
+	}
+	var snapshot struct {
+		Tree struct {
+			Project model.Project `json:"project"`
+		} `json:"execution_tree"`
+		Milestones []model.ProjectMilestone `json:"milestones"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Tree.Project.PlannedStartDate != "2026-10-11" || snapshot.Tree.Project.TargetEndDate != "2030-10-10" || len(snapshot.Milestones) != 1 || snapshot.Milestones[0].Name != "Launch" {
+		t.Fatalf("export snapshot=%+v", snapshot)
+	}
+}
+
+func TestProjectDeadlineWatchAPIIncludesProjectAndMilestoneAlerts(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	now := time.Now().UTC()
+	project, err := database.CreateProject(ctx, model.CreateProjectInput{Name: "Deadline watch", TargetEndDate: now.AddDate(0, 0, -1).Format("2006-01-02")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateProjectMilestone(ctx, project.ProjectID, model.CreateProjectMilestoneInput{Name: "Due soon milestone", TargetDate: now.AddDate(0, 0, 1).Format("2006-01-02")}); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	api.New(database).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/project-deadlines", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("deadline watch=%d body=%s", response.Code, response.Body.String())
+	}
+	var watch model.ProjectDeadlineWatch
+	if err := json.Unmarshal(response.Body.Bytes(), &watch); err != nil {
+		t.Fatal(err)
+	}
+	if len(watch.Items) != 2 || watch.Items[0].DeadlineState != "overdue" || watch.Items[1].DeadlineState != "due_soon" || watch.Items[1].EntityType != "milestone" {
+		t.Fatalf("deadline watch=%+v", watch)
+	}
+}
+
 func TestProjectStatusTransitionIsDurable(t *testing.T) {
 	database, err := store.Open(filepath.Join(t.TempDir(), "timekeeper.db"))
 	if err != nil {
@@ -512,6 +733,13 @@ func TestAPIHelpListsIdentityAdministrationAndMessageRoutes(t *testing.T) {
 		"/api/v1/admin/groups/{groupID}/members",
 		"/api/v1/projects/{projectID}/messages/checkpoint",
 		"/api/v1/projects/{projectID}/messages/{messageID}/context",
+		"/api/v1/project-deadlines",
+		"/api/v1/search",
+		"/api/v1/projects/{projectID}/schedule",
+		"/api/v1/projects/{projectID}/phase",
+		"/api/v1/projects/{projectID}/milestones/{milestoneID}/status",
+		"/api/v1/projects/{projectID}/file-root",
+		"/api/v1/projects/{projectID}/files/scan",
 		"/api/v1/plugins/{pluginID}/artifact",
 	} {
 		if !strings.Contains(response.Body.String(), route) {

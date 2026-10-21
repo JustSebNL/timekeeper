@@ -28,6 +28,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -191,7 +193,7 @@ func runWorkCycle(ctx context.Context, script string, detector *stuck.Detector) 
 	if _, err := os.Stat(script); err != nil {
 		return fmt.Errorf("work script %s: %w", script, err)
 	}
-	cmd := exec.CommandContext(ctx, "bash", script)
+	cmd := buildWorkCmd(ctx, script)
 	if detector != nil {
 		stdoutPipe, err := cmd.StdoutPipe()
 		if err != nil {
@@ -240,4 +242,36 @@ func acknowledgeNudge(ctx context.Context, baseURL, agentID string, nudgeID int6
 		return fmt.Errorf("ack returned %s", resp.Status)
 	}
 	return nil
+}
+
+func buildWorkCmd(ctx context.Context, script string) *exec.Cmd {
+	ext := strings.ToLower(filepath.Ext(script))
+	if runtime.GOOS == "windows" {
+		switch ext {
+		case ".ps1":
+			return exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script)
+		case ".bat", ".cmd":
+			return exec.CommandContext(ctx, "cmd.exe", "/c", script)
+		default:
+			if _, err := exec.LookPath("bash"); err == nil {
+				return exec.CommandContext(ctx, "bash", script)
+			}
+			if _, err := exec.LookPath("sh"); err == nil {
+				return exec.CommandContext(ctx, "sh", script)
+			}
+			return exec.CommandContext(ctx, "cmd.exe", "/c", script)
+		}
+	}
+	switch ext {
+	case ".ps1":
+		if _, err := exec.LookPath("pwsh"); err == nil {
+			return exec.CommandContext(ctx, "pwsh", "-File", script)
+		}
+		return exec.CommandContext(ctx, "powershell", "-File", script)
+	default:
+		if _, err := exec.LookPath("bash"); err == nil {
+			return exec.CommandContext(ctx, "bash", script)
+		}
+		return exec.CommandContext(ctx, "sh", script)
+	}
 }

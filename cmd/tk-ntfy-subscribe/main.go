@@ -21,6 +21,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -93,13 +95,14 @@ func runWakeCommand(agentID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Find tk.exe in the same directory as this executable.
-	tkExe := "tk.exe"
+	// Find tk executable in the same directory as this executable.
+	tkName := "tk"
+	if runtime.GOOS == "windows" {
+		tkName = "tk.exe"
+	}
+	tkExe := tkName
 	if exePath, err := os.Executable(); err == nil {
-		dir := strings.LastIndex(exePath, "\\")
-		if dir >= 0 {
-			tkExe = exePath[:dir+1] + "tk.exe"
-		}
+		tkExe = filepath.Join(filepath.Dir(exePath), tkName)
 	}
 
 	cmd := exec.CommandContext(ctx, tkExe, "guardian", "wake", "--agent", agentID)

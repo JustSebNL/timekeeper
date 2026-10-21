@@ -13,6 +13,7 @@ import (
 )
 
 func TestSprintNewReportsStructuredAPIError(t *testing.T) {
+	t.Setenv("TIMEKEEPER_STORE_STATE_DIR", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/tasks/T-10231/sprints" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
@@ -192,6 +193,7 @@ func TestSprintNextRetryAfterIsVisibleToCallers(t *testing.T) {
 }
 
 func TestSprintNewSanitizesAndBoundsPlainAPIError(t *testing.T) {
+	t.Setenv("TIMEKEEPER_STORE_STATE_DIR", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = fmt.Fprint(w, "upstream failed\r\n\n"+strings.Repeat("x", 5000))
@@ -200,16 +202,20 @@ func TestSprintNewSanitizesAndBoundsPlainAPIError(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	code := cli.Run([]string{"sp", "new", "task", "T-10231", "fifth", "15m"}, &out, &errOut, server.URL)
-	if code != 1 {
-		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	if code != 0 {
+		t.Fatalf("durable retry outbox should accept the failed delivery: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "502 Bad Gateway") || !strings.Contains(errOut.String(), "upstream failed") || !strings.HasSuffix(errOut.String(), "\n") {
-		t.Fatalf("stderr=%q", errOut.String())
+	if !strings.Contains(out.String(), "queued locally") || !strings.Contains(errOut.String(), "502 Bad Gateway") || !strings.Contains(errOut.String(), "upstream failed") || !strings.HasSuffix(errOut.String(), "\n") {
+		t.Fatalf("stdout=%q stderr=%q", out.String(), errOut.String())
 	}
 	if strings.Count(errOut.String(), "\n") != 1 {
 		t.Fatalf("error body injected extra lines: %q", errOut.String())
 	}
 	if len(errOut.String()) > 2200 {
 		t.Fatalf("error body was not bounded: %d bytes", len(errOut.String()))
+	}
+	var queueOut, queueErr bytes.Buffer
+	if code := cli.Run([]string{"queue", "list"}, &queueOut, &queueErr, server.URL); code != 0 || !strings.Contains(queueOut.String(), "Pending") {
+		t.Fatalf("failed delivery was not durable in local queue: code=%d out=%q err=%q", code, queueOut.String(), queueErr.String())
 	}
 }

@@ -6,19 +6,21 @@ Copyright (c) 2026 https://github.com/JustSebNL. All rights reserved.
 
 ## Connection
 
-Default local base URL:
+Default local base URL (the advertised contact point):
 
 ```text
-http://127.0.0.1:1618/api/v1
+http://timekeeper.local/api/v1
 ```
+
+Use `http://timekeeper.local/api/v1` as the standard local API entry point for agents and direct clients. The CLI uses that hostname by default unless `--url` or `TIMEKEEPER_URL` is supplied explicitly; explicit endpoints are used verbatim.
 
 Health is outside the API prefix:
 
 ```text
-GET http://127.0.0.1:1618/health
+GET http://timekeeper.local/health
 ```
 
-The server binds to loopback by default. It has no network authentication yet, so do not expose it on a LAN or public interface.
+The server's canonical listener and optional friendly proxy both bind to loopback. The friendly hostname is the user/agent-facing contact point, not remote access. TimeKeeper has no network authentication, so do not expose either listener on a LAN or public interface.
 
 ## Identity metadata
 
@@ -96,26 +98,24 @@ bounds, ShadowBox secret boundary, confidence gates, abstention, idempotency,
 readback, calibration, and the distinction between the existing planning-draft
 feature and Jev routing.
 
-Use the Project Board for short-lived context that deserves long-term survival: reasoning checkpoints, discoveries, decisions, questions, answers, lessons, and source links. Bodies are capped at 1000 Unicode characters. Store only the compact `ref` (for example `M-42`) in the active context, then retrieve the post or complete thread when needed.
+For gem-hunting, store each verified reusable mechanism in the dedicated project Treasure Chest, not as a generic ToTb note. Categories/subcategories are created on first use; the gem stores the source and reusable content:
 
 ```bash
-# Record a root thought; response includes M-<id>.
+tk tc add P-10000 "Research" "Retry budget" \
+  --subcategory "Backoff" \
+  --source "repo/path@commit#file" \
+  "Monotonic deadlines reduce retry storms; adapt by ..."
+tk tc show P-10000 G-42
+```
+
+Trail of Thought (ToTb) is the separate, general-purpose Project message board for working context: reasoning checkpoints, progress, decisions, questions, answers, blockers, handoffs, and source links. Entries are limited to 1,000 Unicode characters; retain compact `M-` references and retrieve the post or thread when needed. The [main harness contract](harness/SKILL.md) describes the context-menu save and context-window workflow.
+
+```bash
+# Record general workflow context, not a reusable gem.
 tk msg P-10000 add --kind observation --tags queue,debug "The queue stalls after Sprint promotion."
 
-# Reply without copying the original thought into context.
-tk msg P-10000 add --kind answer --reply-to M-42 "The save boundary throws before processSprint."
-
-# Edit current content; history remains immutable.
-tk msg P-10000 edit M-42 --kind lesson "Persist state before promoting a Sprint."
-tk msg P-10000 checkpoint --author agent-7 --entry 'decision|Persist before dispatch.|queue' --entry 'lesson|Keep only the root M-ref in active context.|handoff'
-tk msg P-10000 pin M-42
-
-# Recover context by reference.
+# Recover general context by reference.
 tk msg P-10000 show M-42
-tk msg P-10000 thread M-42
-tk msg P-10000 context M-42 --related-limit 8
-tk msg P-10000 revisions M-42
-tk msg P-10000 search "processSprint save boundary"
 ```
 
 The HTTP equivalents are under `/api/v1/projects/{projectID}/messages`. Replies must reference a message in the same Project. Edits use `PATCH` and append a revision; parentage is immutable. The board is not a transcript archive: keep entries atomic, searchable, and small enough to act as durable context anchors.
@@ -127,7 +127,7 @@ The `context` command is the preferred recovery path when an agent only has an `
 When an adapter can report usage, send cumulative counters at each completed turn. Keep one stable session ID for the conversation and increase `turn_seq` monotonically:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:1618/api/v1/projects/P-10053/usage-sessions/session-42/snapshots \
+curl -sS -X POST http://timekeeper.local/api/v1/projects/P-10053/usage-sessions/session-42/snapshots \
   -H 'Content-Type: application/json' \
   -H 'X-Agent-ID: agent:worker-7' \
   -d '{"agent_id":"agent:worker-7","model":"gpt-5","turn_seq":7,"input_tokens":12000,"output_tokens":1800,"cache_creation_tokens":500,"cache_read_tokens":2400,"messages":14}'
@@ -150,26 +150,26 @@ The envelope is capped at 64 KiB, rejects unknown fields and sensitive fields, a
 Example portable HTTP calls:
 
 ```bash
-curl -sS http://127.0.0.1:1618/health
+curl -sS http://timekeeper.local/health
 
-curl -sS -X POST http://127.0.0.1:1618/api/v1/projects \
+curl -sS -X POST http://timekeeper.local/api/v1/projects \
   -H 'Content-Type: application/json' \
   -H 'X-Agent-ID: agent:worker-7' \
   -H 'X-Agent-Type: agent' \
   -d '{"name":"Example Project","goal":"Deliver a durable local workflow"}'
 
-curl -sS -X POST http://127.0.0.1:1618/api/v1/projects/P-10000/categories \
+curl -sS -X POST http://timekeeper.local/api/v1/projects/P-10000/categories \
   -H 'Content-Type: application/json' \
   -H 'X-Agent-ID: agent:worker-7' \
   -H 'X-Agent-Type: agent' \
   -d '{"name":"Memory","goal":"Own memory subsystems"}'
 
-curl -sS -X POST http://127.0.0.1:1618/api/v1/projects/P-10000/tasks \
+curl -sS -X POST http://timekeeper.local/api/v1/projects/P-10000/tasks \
   -H 'Content-Type: application/json' \
   -H 'X-Agent-ID: agent:worker-7' \
   -H 'X-Agent-Type: agent' \
   -d '{"category_id":"C-10001","name":"Build recall","estimated_duration_seconds":1800}'
-curl -sS -X POST http://127.0.0.1:1618/api/v1/agents/agent%3Aworker-7/progress \
+curl -sS -X POST http://timekeeper.local/api/v1/agents/agent%3Aworker-7/progress \
   -H 'Content-Type: application/json' \
   -d '{"active_sprint_id":"SP-10004","lease_duration_seconds":45,"guardian_url":"http://127.0.0.1:19090/pulse"}'
 ```

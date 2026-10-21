@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,7 +35,7 @@ func printMessagesHelp(out io.Writer) {
 	fmt.Fprintln(out, "Subcommands:")
 	fmt.Fprintln(out, "  add [--kind note|decision|observation|link|lesson|question|answer] [--author <id>] [--tags <t>] [--parent <id>] [--link <url>] <body...>")
 	fmt.Fprintln(out, "  list [--kind <kind>] [--limit <n>]")
-	fmt.Fprintln(out, "  search <query>")
+	fmt.Fprintln(out, "  search <query> [--limit <n>] [--kind <kind>] [--tags <tag,...>] [--after <date>] [--before <date>]")
 	fmt.Fprintln(out, "  show <message-id>")
 	fmt.Fprintln(out, "  edit <message-id> [--kind <kind>] [--body <text>] [--add-tags <t>] [--remove-tags <t>]")
 	fmt.Fprintln(out, "  thread <message-id>")
@@ -180,6 +181,7 @@ func msgAdd(projectID string, args []string, out, errOut io.Writer, baseURL stri
 		return 2
 	}
 	input := model.CreateProjectMessageInput{Kind: kind, Author: author, Body: body, Link: link, Tags: tags, ParentMessageID: parentMessageID}
+	warnForPossibleMessageDuplicates(projectID, body, errOut, baseURL)
 	raw, _ := json.Marshal(input)
 	postURL := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/messages"
 	req, err := http.NewRequest(http.MethodPost, postURL, strings.NewReader(string(raw)))
@@ -259,34 +261,70 @@ func msgList(projectID string, args []string, out, errOut io.Writer, baseURL str
 }
 
 func msgSearch(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(errOut, "usage: tk msg <project> search <query...> [--limit <n>]")
-		return 2
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		fmt.Fprintln(out, "usage: tk msg <project> search <query...> [--limit <n>] [--kind <kind>] [--tags <tag,...>] [--after <date>] [--before <date>]")
+		return 0
 	}
-	limit := ""
+	limit, kind, after, before := "", "", "", ""
+	var tags []string
 	qParts := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "--limit" {
+		flag := args[i]
+		switch flag {
+		case "--limit", "--kind", "--tags", "--after", "--before":
 			if i+1 >= len(args) {
-				fmt.Fprintln(errOut, "--limit requires a value")
+				fmt.Fprintf(errOut, "%s requires a value\n", flag)
 				return 2
 			}
 			i++
-			limit = args[i]
-			continue
+			switch flag {
+			case "--limit":
+				limit = args[i]
+			case "--kind":
+				kind = args[i]
+			case "--tags":
+				for _, rawTag := range strings.Split(args[i], ",") {
+					if tag := strings.TrimSpace(rawTag); tag != "" {
+						tags = append(tags, tag)
+					}
+				}
+			case "--after":
+				after = args[i]
+			case "--before":
+				before = args[i]
+			}
+		case "--help", "-h":
+			fmt.Fprintln(out, "usage: tk msg <project> search <query...> [--limit <n>] [--kind <kind>] [--tags <tag,...>] [--after <date>] [--before <date>]")
+			return 0
+		default:
+			if strings.HasPrefix(flag, "-") {
+				fmt.Fprintf(errOut, "unknown search option %q\n", flag)
+				return 2
+			}
+			qParts = append(qParts, flag)
 		}
-		qParts = append(qParts, a)
 	}
 	q := strings.TrimSpace(strings.Join(qParts, " "))
 	if q == "" {
-		fmt.Fprintln(errOut, "search query is required")
+		fmt.Fprintln(errOut, "usage: tk msg <project> search <query...> [--limit <n>] [--kind <kind>] [--tags <tag,...>] [--after <date>] [--before <date>]")
 		return 2
 	}
 	qvals := url.Values{}
 	qvals.Set("q", q)
 	if limit != "" {
 		qvals.Set("limit", limit)
+	}
+	if kind != "" {
+		qvals.Set("kind", kind)
+	}
+	if len(tags) > 0 {
+		qvals.Set("tags", strings.Join(tags, ","))
+	}
+	if after != "" {
+		qvals.Set("after", after)
+	}
+	if before != "" {
+		qvals.Set("before", before)
 	}
 	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + projectID + "/messages/search?" + qvals.Encode()
 	body, status, err := getJSON(endpoint)
@@ -398,7 +436,7 @@ func msgSeed(projectID string, args []string, out, errOut io.Writer, baseURL str
 
 func msgEdit(projectID string, args []string, out, errOut io.Writer, baseURL string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errOut, "usage: tk msg <project> edit M-1 [--kind <k>] [--author <a>] [--link <u>] [--tags <t>] <body...>")
+		fmt.Fprintln(errOut, "usage: tk msg <project> edit M-1 [--kind <kind>] [--author <a>] [--link <url>] [--tags <t>] [--body <text>] [--add-tags <t>] [--remove-tags <t>] <body...>")
 		return 2
 	}
 	id, err := parseMessageID(args[0])
@@ -407,10 +445,11 @@ func msgEdit(projectID string, args []string, out, errOut io.Writer, baseURL str
 		return 2
 	}
 	bodyParts := make([]string, 0, len(args)-1)
-	var kind, author, link, tags string
+	var kind, author, link, tags, bodyText string
+	var addTags, removeTags string
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
-		case "--kind", "--author", "--link", "--tags":
+		case "--kind", "--author", "--link", "--tags", "--body", "--add-tags", "--remove-tags":
 			if i+1 >= len(args) {
 				fmt.Fprintf(errOut, "%s requires a value\n", args[i])
 				return 2
@@ -426,9 +465,15 @@ func msgEdit(projectID string, args []string, out, errOut io.Writer, baseURL str
 				link = value
 			case "--tags":
 				tags = value
+			case "--body":
+				bodyText = value
+			case "--add-tags":
+				addTags = value
+			case "--remove-tags":
+				removeTags = value
 			}
 		case "--help", "-h":
-			fmt.Fprintln(out, "usage: tk msg <project> edit M-1 [--kind <k>] [--author <a>] [--link <u>] [--tags <t>] <body...>")
+			fmt.Fprintln(out, "usage: tk msg <project> edit M-1 [--kind <kind>] [--author <a>] [--link <url>] [--tags <t>] [--body <text>] [--add-tags <t>] [--remove-tags <t>] <body...>")
 			return 0
 		default:
 			bodyParts = append(bodyParts, args[i])
@@ -456,8 +501,39 @@ func msgEdit(projectID string, args []string, out, errOut io.Writer, baseURL str
 	if tags == "" {
 		tags = current.Tags
 	}
+	// Apply tag modifications (add/remove) relative to current tags
+	if addTags != "" || removeTags != "" {
+		tagSet := make(map[string]bool)
+		for _, t := range strings.Split(current.Tags, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				tagSet[t] = true
+			}
+		}
+		for _, t := range strings.Split(addTags, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				tagSet[t] = true
+			}
+		}
+		for _, t := range strings.Split(removeTags, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				delete(tagSet, t)
+			}
+		}
+		modifiedTags := make([]string, 0, len(tagSet))
+		for t := range tagSet {
+			modifiedTags = append(modifiedTags, t)
+		}
+		// Sort for deterministic output
+		sort.Strings(modifiedTags)
+		tags = strings.Join(modifiedTags, ",")
+	}
 	body := strings.TrimSpace(strings.Join(bodyParts, " "))
-	if body == "" {
+	if bodyText != "" {
+		body = strings.TrimSpace(bodyText)
+	} else if body == "" {
 		body = current.Body
 	}
 	input := model.UpdateProjectMessageInput{Kind: model.MessageKind(kind), Author: author, Body: body, Link: link, Tags: tags}

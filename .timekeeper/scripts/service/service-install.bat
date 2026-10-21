@@ -1,7 +1,22 @@
 @echo off
 rem TimeKeeper Windows service wrapper (NSSM)
 rem Installs TimeKeeper as a real Windows service, then cleans up the legacy 30-minute runner.
+rem Requests UAC before service mutations when not already elevated.
 setlocal EnableDelayedExpansion
+
+powershell.exe -NoProfile -NonInteractive -Command "$identity=[Security.Principal.WindowsIdentity]::GetCurrent(); $principal=New-Object Security.Principal.WindowsPrincipal($identity); if($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){exit 0}else{exit 1}" >nul 2>&1
+if not errorlevel 1 goto elevated
+
+set "ELEVATE=%~dp0..\..\..\scripts\service\elevate-batch.ps1"
+if not exist "%ELEVATE%" (
+  echo [service] Elevation helper not found: "%ELEVATE%" 1>&2
+  exit /b 2
+)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ELEVATE%" -BatchPath "%~f0" -WorkingDirectory "%CD%"
+set "RESULT=%ERRORLEVEL%"
+exit /b %RESULT%
+
+:elevated
 
 set "ROOT=%~dp0.."
 set "NSSM=%ROOT%\service\nssm\nssm.exe"
@@ -17,7 +32,7 @@ echo [service] Using NSSM: %NSSM%
 
 "%NSSM%" status "%SERVICE%" >nul 2>nul
 if %errorlevel% equ 0 (
-  echo [service] Existing service found — removing first
+  echo [service] Existing service found - removing first
   "%NSSM%" stop "%SERVICE%" >nul 2>nul
   "%NSSM%" remove "%SERVICE%" confirm >nul 2>nul
   timeout /t 2 /nobreak >nul

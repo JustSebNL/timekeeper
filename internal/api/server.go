@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +43,9 @@ type RuntimeStatus struct {
 	ObserverEnabled bool `json:"observer_enabled"`
 	// ObserverAvailable reports whether the active journal is usable.
 	ObserverAvailable bool `json:"observer_available"`
+	// GuardianRecoveryURL is the canonical recovery callback when the server has
+	// an explicit private artifact directory configured. Empty means disabled.
+	GuardianRecoveryURL string `json:"guardian_recovery_url,omitempty"`
 }
 
 // New returns the API with no process-local recovery worker assumed.
@@ -73,7 +77,7 @@ func NewWithKnowledge(database *store.Store, runtime RuntimeStatus, knowledgeSer
 // service keeps file routes explicitly unavailable rather than granting the
 // server implicit filesystem access.
 func NewWithHistory(database *store.Store, runtime RuntimeStatus, knowledgeService KnowledgeService, fileHistoryService FileHistoryService) http.Handler {
-	return newWithObserver(database, runtime, knowledgeService, fileHistoryService, nil)
+	return newWithObserver(database, runtime, knowledgeService, fileHistoryService, nil, nil)
 }
 
 // NewWithObserver builds the handler with an event journal attached.
@@ -81,10 +85,16 @@ func NewWithHistory(database *store.Store, runtime RuntimeStatus, knowledgeServi
 // A nil observer disables journalling rather than failing, so the
 // capability stays optional end to end.
 func NewWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeService KnowledgeService, fileHistoryService FileHistoryService, obs observer.Observer) http.Handler {
-	return newWithObserver(database, runtime, knowledgeService, fileHistoryService, obs)
+	return newWithObserver(database, runtime, knowledgeService, fileHistoryService, obs, nil)
 }
 
-func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeService KnowledgeService, fileHistoryService FileHistoryService, obs observer.Observer) http.Handler {
+// NewWithGuardianRecovery builds the complete optional dependency set. A nil
+// recovery handler keeps the canonical route mounted but explicitly unavailable.
+func NewWithGuardianRecovery(database *store.Store, runtime RuntimeStatus, knowledgeService KnowledgeService, fileHistoryService FileHistoryService, obs observer.Observer, guardianRecovery http.Handler) http.Handler {
+	return newWithObserver(database, runtime, knowledgeService, fileHistoryService, obs, guardianRecovery)
+}
+
+func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeService KnowledgeService, fileHistoryService FileHistoryService, obs observer.Observer, guardianRecovery http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health)
 	mux.HandleFunc("GET /api/v1/version", func(w http.ResponseWriter, r *http.Request) {
@@ -97,14 +107,16 @@ func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 			"display":    version.String(),
 		})
 	})
-	mux.HandleFunc("GET /api/v1/connection-info", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"friendly_urls": runtime.FriendlyURLs})
-	})
+	mux.HandleFunc("GET /api/v1/connection-info", connectionInfo(database, runtime, knowledgeService, fileHistoryService, obs))
 	mux.HandleFunc("GET /api/help", apiHelp)
 	mux.HandleFunc("GET /api/v1/llm-pipelines", listLLMPipelines(database))
 	mux.HandleFunc("POST /api/v1/llm-pipelines", createLLMPipeline(database))
 	mux.HandleFunc("GET /api/v1/pulse", pulse(database))
 	mux.HandleFunc("GET /api/v1/guardian/status", guardianStatus(database, runtime))
+	if guardianRecovery == nil {
+		guardianRecovery = http.HandlerFunc(unavailableGuardianRecovery)
+	}
+	mux.Handle("POST /api/v1/guardian/recover", guardianRecovery)
 	mux.HandleFunc("GET /api/v1/agents", listActiveAgents(database))
 	mux.HandleFunc("POST /api/v1/agents/broadcast", createBroadcastNudge(database))
 	mux.HandleFunc("GET /api/v1/agents/{agentID}/progress", getAgentProgress(database))
@@ -112,13 +124,21 @@ func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 	mux.HandleFunc("GET /api/v1/agents/{agentID}/nudges/history", listPulseNudgeHistory(database))
 	mux.HandleFunc("GET /api/v1/agents/{agentID}/nudges", listPendingPulseNudges(database))
 	mux.HandleFunc("POST /api/v1/agents/{agentID}/nudges/{nudgeID}/ack", acknowledgePulseNudge(database))
+	mux.HandleFunc("GET /api/v1/search", globalSearch(database))
 	mux.HandleFunc("GET /api/v1/projects", listProjects(database))
+	mux.HandleFunc("GET /api/v1/project-deadlines", projectDeadlineWatch(database))
 	mux.HandleFunc("POST /api/v1/projects", createProject(database))
 	mux.HandleFunc("POST /api/v1/bug-reports", createBugReport(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/bug-reports", listBugReports(database))
 	mux.HandleFunc("POST /api/v1/bug-reports/{reportID}/status", updateBugReportStatus(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/metadata", updateProjectMetadata(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/status", updateProjectStatus(database))
+	mux.HandleFunc("PATCH /api/v1/projects/{projectID}/schedule", updateProjectSchedule(database))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/phase", transitionProjectPhase(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/milestones", listProjectMilestones(database))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/milestones", createProjectMilestone(database))
+	mux.HandleFunc("PATCH /api/v1/projects/{projectID}/milestones/{milestoneID}", updateProjectMilestone(database))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/milestones/{milestoneID}/status", updateProjectMilestoneStatus(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/alias", updateProjectAlias(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/export", projectExport(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/execution-tree", projectExecutionTree(database))
@@ -126,6 +146,7 @@ func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/coding-outcomes", resolveMessageProject(database, codingOutcomes(database)))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/coding-outcomes", resolveMessageProject(database, codingOutcomes(database)))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/usage-summary", projectUsageSummary(database))
+	mux.HandleFunc("GET /api/v1/agents/{agentID}/sessions", agentSessionsHandler(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/attention", projectAttention(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots", usageSnapshotsHandler(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots", usageSnapshotsHandler(database))
@@ -147,6 +168,16 @@ func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/messages/{messageID}/revisions", resolveMessageProject(database, listProjectMessageRevisions(database)))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/messages/{messageID}/pin", resolveMessageProject(database, setProjectMessagePinned(database)))
 	mux.HandleFunc("PATCH /api/v1/projects/{projectID}/messages/{messageID}", resolveMessageProject(database, updateProjectMessage(database)))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/treasure-chest/categories", resolveMessageProject(database, listProjectGemCategories(database)))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/treasure-chest/gems", resolveMessageProject(database, listProjectGems(database)))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/treasure-chest/gems", resolveMessageProject(database, createProjectGem(database)))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/treasure-chest/gems/search", resolveMessageProject(database, searchProjectGems(database)))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/treasure-chest/gems/{gemID}", resolveMessageProject(database, getProjectGem(database)))
+	mux.HandleFunc("PATCH /api/v1/projects/{projectID}/treasure-chest/gems/{gemID}", resolveMessageProject(database, updateProjectGem(database)))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/treasure-chest/gems/{gemID}/revisions", resolveMessageProject(database, listProjectGemRevisions(database)))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/treasure-chest/gems/{gemID}/pin", resolveMessageProject(database, setProjectGemPinned(database)))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/treasure-chest/gems/{gemID}/delete", resolveMessageProject(database, deleteProjectGem(database, false)))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/treasure-chest/gems/{gemID}/restore", resolveMessageProject(database, deleteProjectGem(database, true)))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/categories", listCategories(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/categories", createCategory(database))
 	mux.HandleFunc("POST /api/v1/categories/{categoryID}/metadata", updateCategoryMetadata(database))
@@ -157,6 +188,7 @@ func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 	mux.HandleFunc("GET /api/v1/tasks/{taskID}/subtasks", listSubtasks(database))
 	mux.HandleFunc("POST /api/v1/tasks/{taskID}/subtasks", createSubtask(database))
 	mux.HandleFunc("POST /api/v1/tasks/{taskID}/metadata", updateTaskMetadata(database))
+	mux.HandleFunc("PATCH /api/v1/tasks/{taskID}/metadata", patchTaskMetadata(database))
 	mux.HandleFunc("POST /api/v1/tasks/{taskID}/status", updateTaskStatus(database))
 	mux.HandleFunc("GET /api/v1/tasks/{taskID}/sprints", listSprints(database))
 	mux.HandleFunc("POST /api/v1/tasks/{taskID}/sprints", createSprint(database))
@@ -178,11 +210,17 @@ func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 	mux.HandleFunc("GET /api/v1/sprints/{sprintID}/time-entries", listTimeEntries(database))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/handoff", projectHandoff(database))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/tasks/batch", createTasksBatch(database))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/tasks/batch/validate", validateTasksBatch(database))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/execution-batches/validate", validateExecutionBatch(database))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/execution-batches", createExecutionBatch(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/registration-queue", listRegistrationQueue(database))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/registration-queue/{queueID}", getRegistrationQueueItem(database))
 	mux.HandleFunc("GET /api/v1/events/stream", eventsStream(database, false))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/events/stream", eventsStream(database, true))
 	knowledgeRoutes(mux, knowledgeService, database)
 	fileHistoryRoutes(mux, fileHistoryService)
 	pluginStoreRoutes(mux, runtime.PluginStoreRoot)
+	routingDecisionRoutes(mux, database)
 	adminRoutes(mux, database)
 	faseIdentityRoutes(mux, database)
 	agentActivityRoutes(mux, database)
@@ -255,15 +293,54 @@ func apiHelp(w http.ResponseWriter, _ *http.Request) {
 	routes := []map[string]string{
 		{"method": "GET", "path": "/health", "desc": "Health check — returns {status: ok}"},
 		{"method": "GET", "path": "/api/help", "desc": "This help listing"},
+		{"method": "GET", "path": "/api/v1/version", "desc": "Build identity of the running service"},
+		{"method": "POST", "path": "/api/v1/agent-identities/resolve", "desc": "Resolve or enrol a permanent FASE agent identity"},
+		{"method": "POST", "path": "/api/v1/agent-identities/resume", "desc": "Resume an existing FASE agent identity"},
+		{"method": "GET", "path": "/api/v1/agent-profiles/{identity}", "desc": "Read a masked FASE agent profile"},
+		{"method": "GET", "path": "/api/v1/admin/me", "desc": "Read the calling administrator principal"},
+		{"method": "GET", "path": "/api/v1/admin/users", "desc": "List administrator users"},
+		{"method": "PATCH", "path": "/api/v1/admin/users/{userID}", "desc": "Update one administrator user"},
+		{"method": "GET", "path": "/api/v1/admin/groups", "desc": "List administrator groups"},
+		{"method": "POST", "path": "/api/v1/admin/groups", "desc": "Create an administrator group"},
+		{"method": "PUT", "path": "/api/v1/admin/groups/{groupID}/members", "desc": "Replace group membership"},
+		{"method": "GET", "path": "/api/v1/admin/permissions", "desc": "List administrator permissions"},
+		{"method": "GET", "path": "/api/v1/admin/audit", "desc": "Read the administrator audit trail"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/handoff", "desc": "Agent session handoff snapshot"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/tasks/batch", "desc": "Bulk task ingestion"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/tasks/batch/validate", "desc": "Read-only validation for legacy task batch imports"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/execution-batches/validate", "desc": "Read-only smoke test for a versioned nested execution batch"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/execution-batches", "desc": "Atomically register a versioned nested execution batch"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/registration-queue", "desc": "List stackable Task/Subtask/Sprint registration offers"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/registration-queue/{queueID}", "desc": "Read registration payload, queue status, validation, and registered result"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/events/stream", "desc": "Server-sent project event stream"},
+		{"method": "GET", "path": "/api/v1/events/stream", "desc": "Server-sent event stream across projects"},
+		{"method": "POST", "path": "/api/v1/execution-claims/{itemID}", "desc": "Claim execution of a Task or Sprint"},
+		{"method": "POST", "path": "/api/v1/execution-claims/{itemID}/release", "desc": "Release an execution claim"},
 		{"method": "GET", "path": "/api/v1/llm-pipelines", "desc": "List LLM pipelines"},
 		{"method": "POST", "path": "/api/v1/llm-pipelines", "desc": "Create an LLM pipeline"},
 		{"method": "GET", "path": "/api/v1/pulse", "desc": "Local attention items needing follow-up"},
-		{"method": "GET", "path": "/api/v1/connection-info", "desc": "Discover friendly URLs using the running listener port"},
+		{"method": "GET", "path": "/api/v1/connection-info", "desc": "Discover stable instance identity, API compatibility, capabilities, and friendly URLs"},
 		{"method": "GET", "path": "/api/v1/knowledge/status", "desc": "Memory Galaxy provider status"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/messages/checkpoint", "desc": "Post a multi-entry Trail of Thought checkpoint"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/messages/{messageID}/context", "desc": "Read a Trail entry with thread, related and revisions"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/treasure-chest/gems", "desc": "List project Treasure Chest gems"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/treasure-chest/gems", "desc": "Store a project-scoped Treasure Chest gem or attachment"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/treasure-chest/gems/search", "desc": "Search project Treasure Chest gems"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/treasure-chest/categories", "desc": "List categories/subcategories derived from project gems"},
+		{"method": "PATCH", "path": "/api/v1/projects/{projectID}/treasure-chest/gems/{gemID}", "desc": "Edit a gem; preserve an immutable revision"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/treasure-chest/gems/{gemID}", "desc": "Read a project Treasure Chest gem"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/treasure-chest/gems/{gemID}/pin", "desc": "Pin or unpin a gem"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/treasure-chest/gems/{gemID}/delete", "desc": "Soft-delete a gem"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/treasure-chest/gems/{gemID}/restore", "desc": "Restore a soft-deleted gem"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/treasure-chest/gems/{gemID}/revisions", "desc": "List immutable gem revisions"},
+		{"method": "GET", "path": "/api/v1/plugins/{pluginID}/artifact", "desc": "Download a checksum-verified plugin artifact"},
 		{"method": "POST", "path": "/api/v1/knowledge/search", "desc": "Search bounded cross-project Galaxy knowledge"},
 		{"method": "GET", "path": "/api/v1/knowledge/{id}", "desc": "Retrieve one Galaxy knowledge item"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/messages/{messageID}/promote", "desc": "Promote a redaction-verified Trail entry to Galaxy"},
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/files", "desc": "List tracked project files"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/file-root", "desc": "Read the configured local source root for a project"},
+		{"method": "PUT", "path": "/api/v1/projects/{projectID}/file-root", "desc": "Configure a local source root for project file discovery"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/files/scan", "desc": "Discover and capture supported project text files"},
 		{"method": "GET", "path": "/api/v1/files/{fileID}", "desc": "Read tracked file metadata"},
 		{"method": "GET", "path": "/api/v1/files/{fileID}/versions", "desc": "List immutable file versions"},
 		{"method": "GET", "path": "/api/v1/files/{fileID}/versions/{versionID}", "desc": "Read a historical file version"},
@@ -272,6 +349,7 @@ func apiHelp(w http.ResponseWriter, _ *http.Request) {
 		{"method": "GET", "path": "/api/v1/files/{fileID}/compare", "desc": "Compare two file versions"},
 		{"method": "POST", "path": "/api/v1/files/{fileID}/restore", "desc": "Restore a historical version as a new version"},
 		{"method": "GET", "path": "/api/v1/guardian/status", "desc": "Guardian runtime status + registered callbacks"},
+		{"method": "POST", "path": "/api/v1/guardian/recover", "desc": "Accept a Guardian recovery signal on the canonical listener"},
 		{"method": "POST", "path": "/api/v1/sprints/{sprintID}/supervised-launches", "desc": "Atomically claim a bounded supervised run"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/coding-outcomes", "desc": "Record an immutable evidence-linked coding review"},
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/coding-outcomes", "desc": "Compare reported outcomes in matching cohorts"},
@@ -282,15 +360,27 @@ func apiHelp(w http.ResponseWriter, _ *http.Request) {
 		{"method": "GET", "path": "/api/v1/agents/{agentID}/nudges/history", "desc": "Guardian nudge delivery/recovery history"},
 		{"method": "POST", "path": "/api/v1/agents/{agentID}/nudges/{nudgeID}/ack", "desc": "Acknowledge a Guardian nudge"},
 		{"method": "GET", "path": "/api/v1/projects", "desc": "List projects"},
+		{"method": "GET", "path": "/api/v1/search", "desc": "Search Projects, Tasks, and messages across Projects"},
+		{"method": "GET", "path": "/api/v1/project-deadlines", "desc": "List due-soon and overdue Project/milestone checkpoints"},
 		{"method": "POST", "path": "/api/v1/projects", "desc": "Create a project"},
 		{"method": "POST", "path": "/api/v1/bug-reports", "desc": "Report a bounded TimeKeeper alpha defect as JSON or Markdown"},
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/bug-reports", "desc": "List project bug reports"},
 		{"method": "POST", "path": "/api/v1/bug-reports/{reportID}/status", "desc": "Transition a bug report status"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/metadata", "desc": "Update project context"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/status", "desc": "Set project status"},
+		{"method": "PATCH", "path": "/api/v1/projects/{projectID}/schedule", "desc": "Update Project planned dates and deadline settings"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/phase", "desc": "Transition Project lifecycle phase"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/milestones", "desc": "List dated Project deliverable milestones"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/milestones", "desc": "Create a dated Project milestone"},
+		{"method": "PATCH", "path": "/api/v1/projects/{projectID}/milestones/{milestoneID}", "desc": "Update Project milestone details"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/milestones/{milestoneID}/status", "desc": "Transition Project milestone status"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/alias", "desc": "Set project alias"},
-		{"method": "GET", "path": "/api/v1/projects/{projectID}/export", "desc": "Export project snapshot as JSON"},
-		{"method": "GET", "path": "/api/v1/projects/{projectID}/execution-tree", "desc": "Show executable hierarchy"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/export", "desc": "Export the full Project snapshot or a task-filtered snapshot without notes/events"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/execution-tree", "desc": "Show executable hierarchy; supports task_id, status, active, depth, and limit filters"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/routing/candidates", "desc": "Read bounded routing candidates and their state hash"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/routing/category", "desc": "Validate a Category-only routing decision without mutating work"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/routing/decide", "desc": "Validate a typed routing proposal without mutating work"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/routing/apply", "desc": "Apply a confirmed routing proposal idempotently through Core"},
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/operational-summary", "desc": "Sprint operational snapshot"},
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/usage-summary", "desc": "Agent token usage summary"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/usage-sessions/{sessionID}/snapshots", "desc": "Record cumulative agent usage snapshot"},
@@ -309,10 +399,16 @@ func apiHelp(w http.ResponseWriter, _ *http.Request) {
 		{"method": "POST", "path": "/api/v1/categories/{categoryID}/status", "desc": "Set category status"},
 		{"method": "GET", "path": "/api/v1/projects/{projectID}/tasks", "desc": "List tasks"},
 		{"method": "POST", "path": "/api/v1/projects/{projectID}/tasks", "desc": "Create a task"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/tasks/batch/validate", "desc": "Read-only validation for legacy task batch imports"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/execution-batches/validate", "desc": "Read-only smoke test for a versioned nested execution batch"},
+		{"method": "POST", "path": "/api/v1/projects/{projectID}/execution-batches", "desc": "Atomically register a versioned nested execution batch"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/registration-queue", "desc": "List stackable Task/Subtask/Sprint registration offers"},
+		{"method": "GET", "path": "/api/v1/projects/{projectID}/registration-queue/{queueID}", "desc": "Read registration payload, queue status, validation, and registered result"},
 		{"method": "GET", "path": "/api/v1/tasks/{taskID}", "desc": "Read one Task with subtasks, sprints and completion blockers"},
 		{"method": "GET", "path": "/api/v1/tasks/{taskID}/subtasks", "desc": "List subtasks"},
 		{"method": "POST", "path": "/api/v1/tasks/{taskID}/subtasks", "desc": "Create a subtask"},
 		{"method": "POST", "path": "/api/v1/tasks/{taskID}/metadata", "desc": "Update task context"},
+		{"method": "PATCH", "path": "/api/v1/tasks/{taskID}/metadata", "desc": "Partially update task context; omitted fields are preserved"},
 		{"method": "POST", "path": "/api/v1/tasks/{taskID}/status", "desc": "Set task status"},
 		{"method": "GET", "path": "/api/v1/tasks/{taskID}/sprints", "desc": "List task sprints"},
 		{"method": "POST", "path": "/api/v1/tasks/{taskID}/sprints", "desc": "Create a sprint"},
@@ -354,9 +450,43 @@ func guardianStatus(database *store.Store, runtime RuntimeStatus) http.HandlerFu
 			"pulse_guardian_interval_seconds": runtime.PulseGuardianIntervalSeconds,
 			"recovery_policy":                 runtime.RecoveryPolicy,
 			"registered_callbacks":            registered,
+			"callback_migration":              guardianCallbackMigration(registered, runtime.GuardianRecoveryURL),
+		}
+		if runtime.GuardianRecoveryURL != "" {
+			status["guardian_recovery_url"] = runtime.GuardianRecoveryURL
 		}
 		writeJSON(w, http.StatusOK, status)
 	}
+}
+
+func guardianCallbackMigration(registered []model.RegisteredGuardian, canonicalURL string) map[string]any {
+	canonical := 0
+	legacy := 0
+	other := 0
+	for _, callback := range registered {
+		if canonicalURL != "" && callback.GuardianURL == canonicalURL {
+			canonical++
+			continue
+		}
+		endpoint, err := url.Parse(callback.GuardianURL)
+		if err == nil && endpoint.Path == "/v1/recover" {
+			legacy++
+			continue
+		}
+		other++
+	}
+	return map[string]any{
+		"registered":                    len(registered),
+		"canonical_recovery":            canonical,
+		"legacy_recovery":               legacy,
+		"worker_or_custom":              other,
+		"legacy_receiver_required":      legacy > 0,
+		"canonical_recovery_configured": canonicalURL != "",
+	}
+}
+
+func unavailableGuardianRecovery(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusServiceUnavailable, "guardian_recovery_unavailable", "Guardian recovery is not configured on this server.")
 }
 
 // pulse returns local, read-only attention items. Delivery and scheduling remain the caller's responsibility.
@@ -396,10 +526,26 @@ func reportAgentProgress(database *store.Store) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_agent_progress", "Agent progress input must contain one JSON object.")
 			return
 		}
-		progress, err := database.ReportAgentProgress(r.Context(), r.PathValue("agentID"), input)
+		agentID := r.PathValue("agentID")
+		// A lease renewal is material progress, so it must also resume the
+		// derived work state. Reads and polling must never do this.
+		current, stateErr := database.AgentWorkStateAt(r.Context(), agentID, time.Now())
+		progress, err := database.ReportAgentProgress(r.Context(), agentID, input)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_agent_progress", err.Error())
 			return
+		}
+		if stateErr == nil {
+			if _, err := database.RecordAgentActivityAt(r.Context(), agentID, model.AgentActivityInput{
+				SessionID: strings.TrimSpace(r.Header.Get("X-Agent-Session-ID")),
+				Runtime:   r.Header.Get("X-Agent-Runtime"),
+				Event:     "work",
+				SprintID:  current.ActiveSprintID,
+				ProjectID: current.ProjectID,
+			}, time.Now()); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_agent_progress", err.Error())
+				return
+			}
 		}
 		writeJSON(w, http.StatusCreated, progress)
 	}
@@ -532,6 +678,17 @@ func listProjects(database *store.Store) http.HandlerFunc {
 	}
 }
 
+func projectDeadlineWatch(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		watch, err := database.ProjectDeadlineWatch(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "project_deadline_watch_failed", "Could not load Project deadline watch.")
+			return
+		}
+		writeJSON(w, http.StatusOK, watch)
+	}
+}
+
 func createProject(database *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input model.CreateProjectInput
@@ -589,6 +746,107 @@ func updateProjectStatus(database *store.Store) http.HandlerFunc {
 	}
 }
 
+func updateProjectSchedule(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input model.UpdateProjectScheduleInput
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_project_schedule", "Project schedule input must be valid JSON.")
+			return
+		}
+		project, err := database.UpdateProjectSchedule(r.Context(), r.PathValue("projectID"), input)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, project)
+	}
+}
+
+func transitionProjectPhase(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input model.TransitionProjectPhaseInput
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_project_phase", "Project phase input must be valid JSON.")
+			return
+		}
+		project, err := database.TransitionProjectPhase(r.Context(), r.PathValue("projectID"), input)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, project)
+	}
+}
+
+func listProjectMilestones(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		milestones, err := database.ListProjectMilestones(r.Context(), r.PathValue("projectID"))
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, milestones)
+	}
+}
+
+func createProjectMilestone(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input model.CreateProjectMilestoneInput
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_project_milestone", "Project milestone input must be valid JSON.")
+			return
+		}
+		milestone, err := database.CreateProjectMilestone(r.Context(), r.PathValue("projectID"), input)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, milestone)
+	}
+}
+
+func updateProjectMilestone(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input model.UpdateProjectMilestoneInput
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_project_milestone", "Project milestone update must be valid JSON.")
+			return
+		}
+		milestone, err := database.UpdateProjectMilestone(r.Context(), r.PathValue("projectID"), r.PathValue("milestoneID"), input)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, milestone)
+	}
+}
+
+func updateProjectMilestoneStatus(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input model.UpdateProjectMilestoneStatusInput
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_project_milestone_status", "Project milestone status input must be valid JSON.")
+			return
+		}
+		milestone, err := database.UpdateProjectMilestoneStatus(r.Context(), r.PathValue("projectID"), r.PathValue("milestoneID"), input)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, milestone)
+	}
+}
+
 func updateProjectAlias(database *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input model.UpdateProjectAliasInput
@@ -610,9 +868,41 @@ func updateProjectAlias(database *store.Store) http.HandlerFunc {
 func projectExport(database *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectID := r.PathValue("projectID")
+		taskID, taskFilterSet, err := singleExecutionTreeQueryValue(r.URL.Query(), "task_id")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_project_export_filter", err.Error())
+			return
+		}
+		taskID = strings.TrimSpace(taskID)
+		if len(taskID) > 128 {
+			writeError(w, http.StatusBadRequest, "invalid_project_export_filter", "task_id is too long.")
+			return
+		}
 		tree, err := database.ProjectExecutionTree(r.Context(), projectID)
 		if err != nil {
 			writeStoreError(w, err)
+			return
+		}
+		if taskFilterSet {
+			filtered, found := model.FilterExecutionTree(tree, taskID, "")
+			if !found {
+				tree.Categories = make([]model.ExecutionCategory, 0)
+			} else {
+				tree = filtered
+			}
+			writeJSON(w, http.StatusOK, struct {
+				Format     string              `json:"format"`
+				ProjectID  string              `json:"project_id"`
+				Tree       model.ExecutionTree `json:"execution_tree"`
+				FilteredBy struct {
+					TaskID string `json:"task_id"`
+				} `json:"filtered_by"`
+			}{
+				Format: "timekeeper-project-export/v1", ProjectID: projectID, Tree: tree,
+				FilteredBy: struct {
+					TaskID string `json:"task_id"`
+				}{TaskID: taskID},
+			})
 			return
 		}
 		notes, err := database.ListProjectNotes(r.Context(), projectID)
@@ -621,6 +911,11 @@ func projectExport(database *store.Store) http.HandlerFunc {
 			return
 		}
 		events, err := database.ListProjectEvents(r.Context(), projectID)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		milestones, err := database.ListProjectMilestones(r.Context(), projectID)
 		if err != nil {
 			writeStoreError(w, err)
 			return
@@ -636,22 +931,28 @@ func projectExport(database *store.Store) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, struct {
-			Format    string                          `json:"format"`
-			ProjectID string                          `json:"project_id"`
-			Tree      model.ExecutionTree             `json:"execution_tree"`
-			Summary   model.ProjectOperationalSummary `json:"operational_summary"`
-			Usage     model.ProjectUsageSummary       `json:"usage_summary"`
-			Notes     []model.ProjectNote             `json:"notes"`
-			Events    []model.ProjectEvent            `json:"events"`
+			Format     string                          `json:"format"`
+			ProjectID  string                          `json:"project_id"`
+			Tree       model.ExecutionTree             `json:"execution_tree"`
+			Summary    model.ProjectOperationalSummary `json:"operational_summary"`
+			Usage      model.ProjectUsageSummary       `json:"usage_summary"`
+			Notes      []model.ProjectNote             `json:"notes"`
+			Events     []model.ProjectEvent            `json:"events"`
+			Milestones []model.ProjectMilestone        `json:"milestones"`
 		}{
 			Format: "timekeeper-project-export/v1", ProjectID: projectID, Tree: tree, Summary: summary, Usage: usage,
-			Notes: notes, Events: events,
+			Notes: notes, Events: events, Milestones: milestones,
 		})
 	}
 }
 
 func projectExecutionTree(database *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		filters, err := parseExecutionTreeFilterOptions(r.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_execution_tree_filter", err.Error())
+			return
+		}
 		tree, err := database.ProjectExecutionTree(r.Context(), r.PathValue("projectID"))
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
@@ -660,6 +961,12 @@ func projectExecutionTree(database *store.Store) http.HandlerFunc {
 			}
 			writeError(w, http.StatusInternalServerError, "project_execution_tree_failed", "Could not load the project execution tree.")
 			return
+		}
+		tree, totalTasks, shownTasks, truncated := applyExecutionTreeFilterOptions(tree, filters)
+		if filters.limit > 0 {
+			w.Header().Set("X-TimeKeeper-Execution-Tree-Total-Tasks", strconv.Itoa(totalTasks))
+			w.Header().Set("X-TimeKeeper-Execution-Tree-Shown-Tasks", strconv.Itoa(shownTasks))
+			w.Header().Set("X-TimeKeeper-Execution-Tree-Truncated", strconv.FormatBool(truncated))
 		}
 		writeJSON(w, http.StatusOK, tree)
 	}
@@ -960,19 +1267,12 @@ func createTask(database *store.Store) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_task", "Task input must be valid JSON.")
 			return
 		}
-		task, err := database.CreateTask(r.Context(), r.PathValue("projectID"), input)
+		item, duplicate, err := submitRegistration(database, r, r.PathValue("projectID"), model.RegistrationQueueKindTask, executionBatchFromTask(input))
 		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				writeError(w, http.StatusNotFound, "project_or_category_not_found", "Project or Category was not found.")
-				return
-			}
-			if r.Context().Err() != nil {
-				return
-			}
-			writeError(w, http.StatusBadRequest, "invalid_task", err.Error())
+			writeRegistrationError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, task)
+		writeTaskRegistration(w, item, duplicate)
 	}
 }
 
@@ -1004,6 +1304,26 @@ func updateTaskMetadata(database *store.Store) http.HandlerFunc {
 			return
 		}
 		task, err := database.UpdateTaskMetadata(r.Context(), r.PathValue("taskID"), input)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, task)
+	}
+}
+
+// patchTaskMetadata applies a partial Task context update. Omitted fields are
+// preserved, so a caller can fix one long field without resubmitting the other.
+func patchTaskMetadata(database *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input model.PatchTaskMetadataInput
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_task_metadata", "Task metadata patch must be valid JSON.")
+			return
+		}
+		task, err := database.UpdateTaskMetadataPartial(r.Context(), r.PathValue("taskID"), input)
 		if err != nil {
 			writeStoreError(w, err)
 			return
@@ -1082,12 +1402,13 @@ func createTasksBatch(database *store.Store) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_tasks_batch", "Tasks batch requires at least one task.")
 			return
 		}
-		tasks, err := database.CreateTasksBatch(r.Context(), r.PathValue("projectID"), input.Tasks)
+		batch := executionBatchFromLegacyTasks(input.Tasks)
+		item, duplicate, err := submitRegistration(database, r, r.PathValue("projectID"), model.RegistrationQueueKindTaskBatch, batch)
 		if err != nil {
-			writeStoreError(w, err)
+			writeRegistrationError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{"tasks": tasks, "count": len(tasks)})
+		writeLegacyTaskBatchRegistration(w, item, duplicate)
 	}
 }
 
@@ -1114,18 +1435,27 @@ func getTask(database *store.Store) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "read_task_failed", "Could not read Task Sprints.")
 			return
 		}
+		allSprints := append([]model.Sprint(nil), sprints...)
+		for _, subtask := range subtasks {
+			subtaskSprints, err := database.ListSubtaskSprints(r.Context(), subtask.SubtaskID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "read_task_failed", "Could not read Task Subtask Sprints.")
+				return
+			}
+			allSprints = append(allSprints, subtaskSprints...)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"task":     task,
 			"subtasks": subtasks,
 			"sprints":  sprints,
-			"children": summariseChildren(subtasks, sprints),
+			"children": summariseChildren(subtasks, sprints, allSprints),
 		})
 	}
 }
 
 // summariseChildren reports the child identifiers and whether anything still
 // blocks completion, so the caller can see why a completion would be refused.
-func summariseChildren(subtasks []model.Subtask, sprints []model.Sprint) map[string]any {
+func summariseChildren(subtasks []model.Subtask, directSprints, allSprints []model.Sprint) map[string]any {
 	openSubtasks := 0
 	subtaskIDs := make([]string, 0, len(subtasks))
 	for _, subtask := range subtasks {
@@ -1135,12 +1465,14 @@ func summariseChildren(subtasks []model.Subtask, sprints []model.Sprint) map[str
 		subtaskIDs = append(subtaskIDs, subtask.SubtaskID)
 	}
 	openSprints := 0
-	sprintIDs := make([]string, 0, len(sprints))
-	for _, sprint := range sprints {
-		if sprint.Status != "Completed" && sprint.Status != "Cancelled" {
+	sprintIDs := make([]string, 0, len(directSprints))
+	for _, sprint := range directSprints {
+		sprintIDs = append(sprintIDs, sprint.SprintID)
+	}
+	for _, sprint := range allSprints {
+		if sprint.Status != "Completed" && sprint.Status != "Cancelled" && sprint.Status != "TimedOut" {
 			openSprints++
 		}
-		sprintIDs = append(sprintIDs, sprint.SprintID)
 	}
 	return map[string]any{
 		"subtask_ids":   subtaskIDs,
@@ -1196,19 +1528,21 @@ func createSubtask(database *store.Store) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_subtask", "Subtask input must be valid JSON.")
 			return
 		}
-		subtask, err := database.CreateSubtask(r.Context(), r.PathValue("taskID"), input)
+		task, err := database.GetTask(r.Context(), r.PathValue("taskID"))
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "task_not_found", "Task was not found.")
 				return
 			}
-			if r.Context().Err() != nil {
-				return
-			}
-			writeError(w, http.StatusBadRequest, "invalid_subtask", err.Error())
+			writeStoreError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, subtask)
+		item, duplicate, err := submitRegistration(database, r, task.ProjectID, model.RegistrationQueueKindSubtask, executionBatchFromSubtask(task.TaskID, input))
+		if err != nil {
+			writeRegistrationError(w, err)
+			return
+		}
+		writeSubtaskRegistration(w, item, duplicate)
 	}
 }
 
@@ -1236,16 +1570,21 @@ func createSprint(database *store.Store) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_sprint", "Sprint input must be valid JSON.")
 			return
 		}
-		sprint, err := database.CreateSprint(r.Context(), r.PathValue("taskID"), input)
+		task, err := database.GetTask(r.Context(), r.PathValue("taskID"))
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "task_not_found", "Task was not found.")
 				return
 			}
-			writeError(w, http.StatusBadRequest, "invalid_sprint", err.Error())
+			writeStoreError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, sprint)
+		item, duplicate, err := submitRegistration(database, r, task.ProjectID, model.RegistrationQueueKindSprint, executionBatchFromTaskSprints(task.TaskID, input))
+		if err != nil {
+			writeRegistrationError(w, err)
+			return
+		}
+		writeSprintRegistration(w, item, duplicate)
 	}
 }
 
@@ -1273,16 +1612,21 @@ func createSubtaskSprint(database *store.Store) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_sprint", "Sprint input must be valid JSON.")
 			return
 		}
-		sprint, err := database.CreateSubtaskSprint(r.Context(), r.PathValue("subtaskID"), input)
+		subtask, err := database.GetSubtask(r.Context(), r.PathValue("subtaskID"))
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "subtask_not_found", "Subtask was not found.")
 				return
 			}
-			writeError(w, http.StatusBadRequest, "invalid_sprint", err.Error())
+			writeStoreError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, sprint)
+		item, duplicate, err := submitRegistration(database, r, subtask.ProjectID, model.RegistrationQueueKindSprint, executionBatchFromSubtaskSprints(subtask.SubtaskID, input))
+		if err != nil {
+			writeRegistrationError(w, err)
+			return
+		}
+		writeSprintRegistration(w, item, duplicate)
 	}
 }
 
@@ -1314,6 +1658,9 @@ func transitionSprint(database *store.Store, action string) http.HandlerFunc {
 		}
 		sprint, err := database.TransitionSprint(r.Context(), r.PathValue("sprintID"), action, input.Reason)
 		if err != nil {
+			if writeClaimConflict(w, err) {
+				return
+			}
 			if errors.Is(err, store.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "sprint_not_found", "Sprint was not found.")
 				return

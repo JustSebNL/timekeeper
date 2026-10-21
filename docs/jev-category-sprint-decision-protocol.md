@@ -177,11 +177,13 @@ The exact route table in `internal/api/server.go` and validation in `internal/st
 | Capability | Current state | Target for Jev routing |
 |---|---|---|
 | TimeKeeper hierarchy and Sprint lifecycle | Implemented in Store/API | Reuse unchanged |
-| Execution tree discovery | Implemented | Bounded candidate extractor |
+| Execution tree discovery | Implemented | `internal/routing` now builds a bounded, hashed candidate set |
 | Planning draft generation | Implemented with configured LLM pipeline | Keep separate from Jev typed routing |
-| Jev/TypeSafe client | Not implemented as a live integration | ShadowBox-only typed decision client |
-| Category decision | Manual/agent/API workflow | Advisory first, then confidence-gated |
-| Task/Sprint decision | Manual/agent/API workflow | Two-pass Jev decision after category narrowing |
+| Jev/TypeSafe client | ShadowBox source implements sequential typed Category and Work passes; no live TypeSafe call was run in this slice | Calibrate against representative live answers only after explicit provider activation |
+| Optional routing seam | `routing.Provider` and `plugin.KindRouting` are implemented | Store plugin registration and activation |
+| Category decision | Source-level Core `routing/category` validates finite confidence and bounded/normalized distributions; ShadowBox calls it after its Category pass | Candidate narrowing is implemented; external-model calibration remains opt-in |
+| Task/Sprint decision | Source-level Core `routing/decide` validates bounded Choice distributions, owner consistency, Sprint estimate bounds, and confidence; ShadowBox filters Work candidates to the accepted Category | Two-pass source flow is implemented; live TypeSafe call not run |
+| Core proposal validation API | Read-only `routing/candidates` returns the bounded policy set/hash; ShadowBox uses that snapshot and supplies its hash to both evaluation calls; Core rejects stale state | Apply/idempotency endpoint and durable decision history remain unimplemented |
 | Decision record | Use Project events/messages initially | Dedicated record may follow after contract stabilizes |
 | Automatic Category mutation | Not enabled | Only after calibration and threshold gate |
 | Automatic Sprint creation | Not enabled | High threshold, bounded estimate, idempotent API mutation |
@@ -189,6 +191,8 @@ The exact route table in `internal/api/server.go` and validation in `internal/st
 | Fallback when Jev unavailable | Manual low-level API/CLI | Must remain deterministic and usable offline |
 
 The words “decision maker” mean Jev makes a typed recommendation. They do not mean Jev receives authority to mutate TimeKeeper.
+
+The `internal/routing` package provides the deterministic boundary around a future Jev answer and a `routing.Provider` seam for an optional routing plugin. It extracts bounded candidate facts with a stable state hash, validates typed Choice distributions and finite confidence, enforces 15–60 minute Sprint estimates and parent/target consistency, checks Sprint capacity/runnability, and returns `proposed` or `needs_review`. The source now exposes this through read-only `POST /api/v1/projects/{projectID}/routing/decide`; the endpoint fetches candidates from Core rather than accepting a caller-supplied tree. It does not call a model, persist a decision, mutate TimeKeeper, or activate a Store plugin, and the installed service binary has not been updated by this source change.
 
 ## 5. End-to-end decision flow
 
@@ -394,7 +398,7 @@ A separate target question must select the actual existing destination:
 }
 ```
 
-A target question is mandatory whenever an action implies a target. Do not allow a response such as `resume_existing` with no selected Task/Sprint to become an executable proposal.
+A target question is mandatory whenever an action implies a target. Its distribution must select the exact existing Task/Subtask/Sprint ID for resume/create-on-existing-owner actions, or `none_of_the_above` before proposing a new Task. Do not allow a response such as `resume_existing` with no selected Task/Sprint to become an executable proposal.
 
 For a new Sprint estimate, use a bounded Score rather than an unbounded free-form number:
 
@@ -421,7 +425,7 @@ needs_code_snapshots: Noul; true when source files will change
 risk_level: Score; informational -> ordinary -> consequential -> high-risk
 ```
 
-Jev should never return a raw `estimated_duration_seconds` without policy code bounding it to the supported range. The domain's maximum is a split signal, not an invitation to create a giant Sprint.
+Jev should never return a raw `estimated_duration_seconds` without policy code bounding it to the supported range of 900–3600 seconds (15–60 minutes). Out-of-range estimates route to review so the work can be split; the maximum is not an invitation to create a giant Sprint.
 
 ### Step 7: Compose a proposal in deterministic code
 
@@ -467,7 +471,8 @@ The composer must reject proposals when:
 - a new Sprint would exceed the one-to-four direct-Sprint limit;
 - a new Sprint estimate is outside the bounded range;
 - Jev returned missing, blank, malformed, or unknown answers;
-- probability distributions do not sum within the accepted tolerance;
+- confidence is non-finite or outside `[0,1]`;
+- probability distributions contain non-finite/out-of-range values, unknown candidate keys, a missing selected key, a selected option that is not the unique maximum, or a sum more than `0.01` from `1.0`;
 - independent answers contradict one another;
 - a human confirmation is required but absent;
 - a retry would reuse an idempotency key for a different intent;
@@ -838,7 +843,7 @@ ShadowBox policy must enforce:
 - timeout and retry cap for 429/529 responses;
 - no shell execution for the decision task;
 - no direct TimeKeeper SQLite access;
-- no direct mutation API authority unless a separate predetermined connector is explicitly approved;
+- no direct mutation API authority in Jev; the only write boundary is the separately specified Core-owned `/routing/apply` route, which requires explicit confirmation, current candidate hash, and idempotency; current action scope is limited to new Sprints under existing Task/Subtask owners and atomic Task+Sprint creation;
 - sanitized decision artifact with model/version, latency, answer schema, and hashes;
 - kill switch and failure state when policy cannot be enforced.
 
@@ -885,15 +890,21 @@ It must print review instructions, not pretend to apply a mutation when confiden
 If server-side orchestration is required, keep it narrow:
 
 ```text
+GET  /api/v1/projects/{projectID}/routing/candidates
+POST /api/v1/projects/{projectID}/routing/category
 POST /api/v1/projects/{projectID}/routing/decide
 POST /api/v1/projects/{projectID}/routing/apply
 GET  /api/v1/projects/{projectID}/routing/decisions/{decisionID}
 GET  /api/v1/projects/{projectID}/routing/decisions
 ```
 
-The `decide` route should be read/propose only. The `apply` route must require a decision ID, policy version, idempotency key, and confirmation state. It must re-read candidates before mutation.
+The candidate snapshot, Category-only, and full-decision routes are implemented in source as read-only boundaries. The Core-owned Apply route is also implemented in source and submits confirmed supported proposals through the idempotent execution-batch queue; decision-history routes remain planned. The installed service binary has not been updated.
 
-A first implementation may keep this entirely in the CLI/adapter to avoid adding a premature Core route. If a route is added, it must not make Core call TypeSafe directly or store the API key.
+ShadowBox checks `/api/v1/connection-info` for the read-only routing capabilities, then reads `/routing/candidates` and uses that exact bounded set and `state_hash` for both Jev passes. It sends the same `candidate_state_hash` with `/routing/category` and `/routing/decide`; Core compares it to fresh state and returns `409 routing_candidate_state_changed` on drift. The second Jev pass only sees open Tasks/Subtasks and runnable Sprints under the accepted Category. With `--apply`, ShadowBox additionally requires `routing.proposal.apply` before any TypeSafe call, displays the Core-validated proposal and requires the operator to type the exact `APPLY <decisionID>` phrase, then sends the proposal only to Core. Default mode remains read-only. Apply currently supports only `create_sprint` under an existing Task/Subtask and atomic `create_task_and_sprint` under an existing Category; Category creation and Sprint resumption are rejected pending separate lifecycle design. Core revalidates the candidate hash again inside the registration transaction. No remote API-key authentication or service deployment is included.
+
+The `decide` route remains read/propose only. The `apply` route requires a matching decision ID, policy version, idempotency key, and explicit confirmation state; it re-reads candidates before queueing and validates them again transactionally before commit.
+
+Keep TypeSafe calls in the ShadowBox/adapter boundary. Core receives only the bounded typed decision for evaluation; it must not call TypeSafe directly or store the API key.
 
 ### 11.3 Proposed request envelope
 

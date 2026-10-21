@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -44,12 +46,14 @@ type LaunchConfig struct {
 	Args     []string          `json:"args,omitempty"`
 	Env      map[string]string `json:"env,omitempty"`
 	CoreURL  string            `json:"core_url,omitempty"`
+	Offline  bool              `json:"offline,omitempty"`
 }
 
 // Launcher manages out-of-process plugin execution safely outside Core memory space.
 type Launcher struct {
-	mu        sync.RWMutex
-	processes map[string]*managedProcess
+	mu          sync.RWMutex
+	processes   map[string]*managedProcess
+	allowedRoot string
 }
 
 type managedProcess struct {
@@ -67,11 +71,23 @@ type managedProcess struct {
 	cancel    context.CancelFunc
 }
 
-// NewLauncher initializes a process launcher instance.
-func NewLauncher() *Launcher {
-	return &Launcher{
-		processes: make(map[string]*managedProcess),
+// NewLauncher initializes a process launcher instance with optional sandbox root containment.
+func NewLauncher(allowedRoot ...string) *Launcher {
+	root := ""
+	if len(allowedRoot) > 0 {
+		root = allowedRoot[0]
 	}
+	return &Launcher{
+		processes:   make(map[string]*managedProcess),
+		allowedRoot: root,
+	}
+}
+
+// SetAllowedRoot updates the mandatory sandbox root directory for executable containment.
+func (l *Launcher) SetAllowedRoot(root string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.allowedRoot = root
 }
 
 // Launch starts an external executable plugin process out-of-process.
@@ -86,31 +102,82 @@ func (l *Launcher) Launch(ctx context.Context, config LaunchConfig) (*PluginProc
 		return nil, errors.New("executable path is required")
 	}
 
+	absExec, err := filepath.Abs(config.ExecPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid executable path: %w", err)
+	}
+	evalExec, err := filepath.EvalSymlinks(absExec)
+	if err != nil {
+		evalExec = absExec
+	}
+
+	if l.allowedRoot != "" {
+		absRoot, err := filepath.Abs(l.allowedRoot)
+		if err != nil {
+			return nil, fmt.Errorf("invalid sandbox root: %w", err)
+		}
+		evalRoot, err := filepath.EvalSymlinks(absRoot)
+		if err != nil {
+			evalRoot = absRoot
+		}
+
+		cleanExec := filepath.Clean(evalExec)
+		cleanRoot := filepath.Clean(evalRoot)
+
+		rel, err := filepath.Rel(cleanRoot, cleanExec)
+		if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+			return nil, fmt.Errorf("sandbox violation: plugin executable %s resolves outside allowed root %s", config.ExecPath, l.allowedRoot)
+		}
+	}
+
 	if existing, found := l.processes[config.ID]; found {
 		if existing.state == StateRunning {
 			return nil, fmt.Errorf("plugin process %s is already running (PID %d)", config.ID, existing.pid)
 		}
 	}
 
-	envVars := make([]string, 0, len(config.Env)+2)
-	for k, v := range config.Env {
-		envVars = append(envVars, fmt.Sprintf("%s=%s", k, v))
+	// Environment scrubbing: pass scrubbed minimal OS environment + explicit plugin variables.
+	cleanEnv := make([]string, 0)
+	systemKeepKeys := []string{"PATH", "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "PATHEXT", "COMSPEC"}
+	for _, key := range systemKeepKeys {
+		if val, ok := os.LookupEnv(key); ok {
+			cleanEnv = append(cleanEnv, fmt.Sprintf("%s=%s", key, val))
+		}
 	}
-	envVars = append(envVars, fmt.Sprintf("TIMEKEEPER_PLUGIN_ID=%s", config.ID))
+	for k, v := range config.Env {
+		cleanEnv = append(cleanEnv, fmt.Sprintf("%s=%s", k, v))
+	}
+	cleanEnv = append(cleanEnv, fmt.Sprintf("TIMEKEEPER_PLUGIN_ID=%s", config.ID))
 	if config.CoreURL != "" {
-		envVars = append(envVars, fmt.Sprintf("TIMEKEEPER_API_URL=%s", config.CoreURL))
+		cleanEnv = append(cleanEnv, fmt.Sprintf("TIMEKEEPER_API_URL=%s", config.CoreURL))
+	}
+
+	if config.Offline {
+		cleanEnv = append(cleanEnv,
+			"HTTP_PROXY=http://127.0.0.1:0",
+			"HTTPS_PROXY=http://127.0.0.1:0",
+			"ALL_PROXY=http://127.0.0.1:0",
+			"http_proxy=http://127.0.0.1:0",
+			"https_proxy=http://127.0.0.1:0",
+			"all_proxy=http://127.0.0.1:0",
+			"NO_PROXY=",
+			"no_proxy=",
+			"TIMEKEEPER_OFFLINE=true",
+			"TIMEKEEPER_NETWORK_MODE=disabled",
+		)
 	}
 
 	procCtx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(procCtx, config.ExecPath, config.Args...)
-	cmd.Env = append(os.Environ(), envVars...)
+	cmd := exec.CommandContext(procCtx, evalExec, config.Args...)
+	cmd.Dir = filepath.Dir(evalExec)
+	cmd.Env = cleanEnv
 
 	mp := &managedProcess{
 		id:        config.ID,
 		name:      config.Name,
 		execPath:  config.ExecPath,
 		args:      config.Args,
-		env:       envVars,
+		env:       cleanEnv,
 		cmd:       cmd,
 		state:     StateStarting,
 		startedAt: time.Now(),

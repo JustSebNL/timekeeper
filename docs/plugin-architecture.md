@@ -65,6 +65,7 @@ A `Kind` is a capability core promises to understand.
 | Kind        | Interface                          | Package                  |
 | ----------- | ---------------------------------- | ------------------------ |
 | `knowledge` | `knowledge.KnowledgeProvider`      | `internal/knowledge`     |
+| `routing`   | `routing.Provider`                 | `internal/routing`       |
 
 Adding a kind is a core change. Adding a plugin for an existing kind
 is not.

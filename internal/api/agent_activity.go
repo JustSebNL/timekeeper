@@ -13,6 +13,11 @@ import (
 )
 
 func activityError(w http.ResponseWriter, err error) {
+	if store.IsBusyError(err) {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "database_busy", "The database is busy writing. Retry the request.")
+		return
+	}
 	if errors.Is(err, store.ErrAgentSessionConflict) {
 		writeError(w, 409, "agent_session_conflict", err.Error())
 		return
@@ -150,6 +155,11 @@ func trackAgentActivity(s *store.Store, next http.Handler) http.Handler {
 			}
 			if input.Event != "contact" {
 				if _, err = s.RecordAgentActivityAt(r.Context(), id, input, time.Now()); err != nil {
+					if store.IsBusyError(err) {
+						w.Header().Set("Retry-After", "1")
+						writeError(w, http.StatusServiceUnavailable, "database_busy", "The database is busy writing. Retry the request.")
+						return
+					}
 					writeError(w, 500, "agent_tracking_failed", "Work mutation succeeded but activity tracking failed; inspect state before retrying.")
 					return
 				}

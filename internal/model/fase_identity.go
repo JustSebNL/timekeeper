@@ -31,11 +31,19 @@ type FASEIdentity struct {
 	CreatedAt         time.Time    `json:"created_at"`
 }
 type FASEProfile struct {
-	Identity        FASEIdentity    `json:"identity"`
-	Events          []ProjectEvent  `json:"events"`
-	EventsTruncated bool            `json:"events_truncated"`
-	Claims          []FASEClaim     `json:"execution_claims"`
-	WorkState       *AgentWorkState `json:"work_state,omitempty"`
+	Identity        FASEIdentity             `json:"identity"`
+	Events          []ProjectEvent           `json:"events"`
+	EventsTruncated bool                     `json:"events_truncated"`
+	Claims          []FASEClaim              `json:"execution_claims"`
+	WorkState       *AgentWorkState          `json:"work_state,omitempty"`
+	TokenSummary    *FASETokens              `json:"token_summary,omitempty"`
 	// These are all actually used periods, including the latest one.
 	PreviousIDs []string `json:"previous_fase_ids"`
+}
+
+type FASETokens struct {
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
+	CachedTokens int64 `json:"cached_tokens"`
+	CreatedAt    int64 `json:"created_at"`
 }

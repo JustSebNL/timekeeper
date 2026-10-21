@@ -81,7 +81,7 @@ func TestRunHelpListsImplementedExtensionAndPlanningCommands(t *testing.T) {
 	if code := cli.Run([]string{"help"}, &out, &errOut, "http://127.0.0.1:1618"); code != 0 {
 		t.Fatalf("code=%d", code)
 	}
-	for _, command := range []string{"Usage: tk [--url <api-base-url>] <command>", "agent identity", "agent state [agent-id]", "agent states", "agent work <sprint-id> <lease>", "agent wait <duration> <reason>", "agent idle [reason]", "agent stop [reason]", "sp extend <sprint-id> <duration> <reason>", "sp extensions <sprint-id>", "sp entries <sprint-id>", "sp next <project-id>", "sp attempt <sprint-id> <reason>", "sp attempts <sprint-id>", "p edit <project-id> <goal> <description>", "t edit <task-id> <goal> <description>", "p status <project-id>", "c status <category-id>", "t status <task-id>", "st status <subtask-id>", "llm new", "plan <generate|apply>"} {
+	for _, command := range []string{"Usage: tk [--url <api-base-url>] <command>", "tree <project-id> [--task <T-ID>] [--status S] [--active] [--depth N] [--limit N]", "agent identity", "agent state [agent-id]", "agent states", "agent work <sprint-id> <lease>", "agent wait <duration> <reason>", "agent idle [reason]", "agent stop [reason]", "sp extend <sprint-id> <duration> <reason>", "sp extensions <sprint-id>", "sp entries <sprint-id>", "sp next <project-id>", "sp attempt <sprint-id> <reason>", "sp attempts <sprint-id>", "p edit <project-id> <goal> <description>", "p deadlines", "search <query...>", "t show <task-id> [--json]", "t edit <task-id> <goal> <description>", "p status <project-id>", "c status <category-id>", "t status <task-id>", "st show <subtask-id> [--json]", "st status <subtask-id>", "llm new", "plan <generate|apply>", "harness list/show <item>"} {
 		if !strings.Contains(out.String(), command) {
 			t.Fatalf("help missing %q: %s", command, out.String())
 		}
@@ -216,6 +216,7 @@ func TestRunSprintStartCallsLifecycleEndpoint(t *testing.T) {
 }
 
 func TestRunSprintNewPassesOptionalBufferPercent(t *testing.T) {
+	t.Setenv("TIMEKEEPER_STORE_STATE_DIR", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/tasks/T-10002/sprints" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
@@ -338,6 +339,85 @@ func TestRunProjectEditUpdatesGoalAndDescription(t *testing.T) {
 	t.Cleanup(server.Close)
 	var out, errOut bytes.Buffer
 	if code := cli.Run([]string{"p", "edit", "P-10000", "Ship", "Useful tracker"}, &out, &errOut, server.URL); code != 0 || out.String() != "P-10000\tShip\tUseful tracker\n" {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestRunProjectSchedulePatchesDatesAndWarningWindow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/projects/P-10000/schedule" {
+			t.Fatalf("request=%s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["planned_start_date"] != "2026-10-11" || body["target_end_date"] != "2026-12-01" || body["schedule_timezone"] != "Europe/Amsterdam" || body["deadline_warning_days"] != float64(10) {
+			t.Fatalf("schedule body=%#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"project_id":"P-10000","planned_start_date":"2026-10-11","target_end_date":"2026-12-01","deadline_state":"on_track"}`))
+	}))
+	t.Cleanup(server.Close)
+	var out, errOut bytes.Buffer
+	code := cli.Run([]string{"p", "schedule", "P-10000", "start=2026-10-11", "due=2026-12-01", "timezone=Europe/Amsterdam", "warn=10"}, &out, &errOut, server.URL)
+	if code != 0 || out.String() != "P-10000\t2026-10-11\t2026-12-01\ton_track\n" {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestRunProjectPhaseTransitionSendsReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/projects/P-10000/phase" {
+			t.Fatalf("request=%s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["phase"] != "execution" || body["reason"] != "Ready to deliver" {
+			t.Fatalf("phase body=%#v err=%v", body, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"project_id":"P-10000","lifecycle_phase":"execution","actual_started_at":"2026-10-10T12:00:00Z"}`))
+	}))
+	t.Cleanup(server.Close)
+	var out, errOut bytes.Buffer
+	code := cli.Run([]string{"p", "phase", "P-10000", "execution", "Ready", "to", "deliver"}, &out, &errOut, server.URL)
+	if code != 0 || out.String() != "P-10000\texecution\t2026-10-10T12:00:00Z\n" {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestRunProjectMilestoneStatusSendsReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/projects/P-10000/milestones/MS-100/status" {
+			t.Fatalf("request=%s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["status"] != "Cancelled" || body["reason"] != "Scope descoped" {
+			t.Fatalf("milestone status body=%#v err=%v", body, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"milestone_id":"MS-100","status":"Cancelled","deadline_state":"cancelled"}`))
+	}))
+	t.Cleanup(server.Close)
+	var out, errOut bytes.Buffer
+	code := cli.Run([]string{"p", "milestones", "status", "P-10000", "MS-100", "Cancelled", "Scope", "descoped"}, &out, &errOut, server.URL)
+	if code != 0 || out.String() != "MS-100\tCancelled\tcancelled\n" {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestRunProjectDeadlineWatchListsDueProjectsAndMilestones(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/project-deadlines" {
+			t.Fatalf("request=%s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"project_id":"P-1","project_name":"Platform","entity_type":"project","entity_id":"P-1","name":"Platform","target_date":"2026-10-09","status":"Open","deadline_state":"overdue","days_to_deadline":-1},{"project_id":"P-2","project_name":"Launch","entity_type":"milestone","entity_id":"MS-2","name":"Beta gate","target_date":"2026-10-12","status":"Planned","deadline_state":"due_soon","days_to_deadline":2}]}`))
+	}))
+	t.Cleanup(server.Close)
+	var out, errOut bytes.Buffer
+	code := cli.Run([]string{"p", "deadlines"}, &out, &errOut, server.URL)
+	if code != 0 || !strings.Contains(out.String(), "overdue\t2026-10-09\tPlatform\tproject\tP-1") || !strings.Contains(out.String(), "due_soon\t2026-10-12\tLaunch\tmilestone\tMS-2") {
 		t.Fatalf("code=%d out=%q err=%q", code, out.String(), errOut.String())
 	}
 }
@@ -523,6 +603,7 @@ func TestRunSprintExtendSurfacesValidationBody(t *testing.T) {
 }
 
 func TestRunSprintNewCreatesBelowExplicitSubtask(t *testing.T) {
+	t.Setenv("TIMEKEEPER_STORE_STATE_DIR", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/subtasks/ST-10003/sprints" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
@@ -544,6 +625,7 @@ func TestRunSprintNewCreatesBelowExplicitSubtask(t *testing.T) {
 }
 
 func TestRunSprintNewCreatesBelowExplicitTask(t *testing.T) {
+	t.Setenv("TIMEKEEPER_STORE_STATE_DIR", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/tasks/T-10002/sprints" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
@@ -572,6 +654,7 @@ func TestRunSprintNewCreatesBelowExplicitTask(t *testing.T) {
 }
 
 func TestRunSubtaskNewCreatesBelowExplicitTask(t *testing.T) {
+	t.Setenv("TIMEKEEPER_STORE_STATE_DIR", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/tasks/T-10002/subtasks" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
@@ -600,6 +683,7 @@ func TestRunSubtaskNewCreatesBelowExplicitTask(t *testing.T) {
 }
 
 func TestRunTaskNewCreatesBelowExplicitProjectAndCategory(t *testing.T) {
+	t.Setenv("TIMEKEEPER_STORE_STATE_DIR", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/projects/P-10000/tasks" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)

@@ -215,6 +215,31 @@ func (s *Store) ProjectUsageSummary(ctx context.Context, projectID string) (mode
 	return summary, nil
 }
 
+// ListAgentSessions returns all recorded usage sessions for an agent across all projects.
+func (s *Store) ListAgentSessions(ctx context.Context, agentID string) ([]model.UsageSession, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT usage_id, session_id, project_id, sprint_id, agent_id, model, source, coverage,
+		turn_seq, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+		context_used, context_size, messages, last_activity_at, created_at, updated_at
+		FROM agent_usage_sessions WHERE agent_id = ? ORDER BY updated_at DESC, usage_id DESC`, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("list agent sessions: %w", err)
+	}
+	defer rows.Close()
+
+	sessions := make([]model.UsageSession, 0)
+	for rows.Next() {
+		row, err := scanUsageSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, s.priceUsageSession(row.toModel()))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read agent session rows: %w", err)
+	}
+	return sessions, nil
+}
+
 func (s *Store) priceUsageSession(session model.UsageSession) model.UsageSession {
 	session.Cost = usageCostFromEstimate(s.pricing.Estimate(session.Model, session.InputTokens, session.OutputTokens, session.CacheCreationTokens, session.CacheReadTokens))
 	return session

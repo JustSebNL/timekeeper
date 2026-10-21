@@ -2,9 +2,21 @@ version: 1
 name: timekeeper-agent-harness
 product: TimeKeeper
 api:
-  base_url: http://127.0.0.1:1618
+  base_url: http://timekeeper.local
+  fallback_url: http://127.0.0.1:1618
   health: /health
   cli: .timekeeper/app/tk
+  source_of_truth: timekeeper_store_and_api
+documentation:
+  agent_harness_router: docs/agent.md
+  first_use_guide: docs/HARNESS.md
+  operational_contract: harness/SKILL.md
+runtime:
+  one_core_per_database: true
+  duplicate_listener_rejected_before_database_startup: true
+  lock_file_suffix: .instance.lock
+  lock_file_deletion_is_not_recovery: true
+  read_only_backup_exempt: true
 required_workflow:
   - doctor
   - project_landscape
@@ -27,14 +39,48 @@ recovery:
   windows: scripts/service/kick-server.bat
   policy: failure_only_after_health_check
   healthy_path: no-op
+roles:
+  autonomous_coder:
+    skill: harness/skills/autonomous-coder/SKILL.md
+    trigger: continue_authorized_project_work_until_acceptance_is_verified
+  project_planner:
+    skill: harness/skills/project-planner/SKILL.md
+    trigger: translate_outcome_or_backlog_into_project_task_sprint_plan
+  bug_hunter:
+    skill: harness/skills/bug-hunter/SKILL.md
+    trigger: reproduce_and_isolate_suspected_defect
+  bug_fixer:
+    skill: harness/skills/bug-fixer/SKILL.md
+    trigger: implement_verified_defect_fix_and_regression
+  deep_audit_fixer:
+    skill: harness/skills/deep-audit-fixer/SKILL.md
+    trigger: exhaustively_trace_and_repair_first_party_project_until_scope_is_verified
+  gem_miner:
+    skill: harness/skills/gem-mining/SKILL.md
+    trigger: extract_patterns_from_external_source_repositories
+  code_reviewer:
+    skill: harness/skills/code-reviewer/SKILL.md
+    trigger: independently_review_completed_change
+logging:
+  project_selection: source_owner_project_not_tracking_tool_project
+  record_progress_during_work: true
+  findings_surface: project_trail_of_thought
+  completion_requires: verified_evidence_and_readback
 skills:
   - harness/skills/onboarding/SKILL.md
+  - harness/skills/autonomous-coder/SKILL.md
   - harness/skills/project-landscape/SKILL.md
   - harness/skills/backlog-sync/SKILL.md
   - harness/skills/codebase-audit/SKILL.md
   - harness/skills/timeboxing/SKILL.md
   - harness/skills/troubleshooting/SKILL.md
   - harness/skills/service-recovery/SKILL.md
+  - harness/skills/project-planner/SKILL.md
+  - harness/skills/bug-hunter/SKILL.md
+  - harness/skills/bug-fixer/SKILL.md
+  - harness/skills/deep-audit-fixer/SKILL.md
+  - harness/skills/gem-mining/SKILL.md
+  - harness/skills/code-reviewer/SKILL.md
 privacy:
   store_secrets: false
   store_prompt_bodies: false

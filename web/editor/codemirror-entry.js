@@ -14,6 +14,7 @@ import { sql } from '@codemirror/lang-sql';
 import { markdown } from '@codemirror/lang-markdown';
 import { yaml } from '@codemirror/lang-yaml';
 import { oneDark } from '@codemirror/theme-one-dark';
+import { MergeView } from '@codemirror/merge';
 
 const languages = {
   javascript: () => javascript(),
@@ -102,4 +103,17 @@ export function mount(container, options = {}) {
     focus: () => view.focus(),
     destroy: () => view.destroy()
   };
+}
+
+export function mountMerge(container, options = {}) {
+  const readOnlyExtensions = [basicSetup, oneDark, EditorView.editable.of(false), EditorState.readOnly.of(true)];
+  const merge = new MergeView({
+    a: { doc: String(options.original || ''), extensions: readOnlyExtensions },
+    b: { doc: String(options.modified || ''), extensions: readOnlyExtensions },
+    parent: container,
+    gutter: true,
+    highlightChanges: true,
+    collapseUnchanged: { margin: 3, minSize: 4 }
+  });
+  return { destroy: () => merge.destroy() };
 }

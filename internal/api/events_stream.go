@@ -49,8 +49,10 @@ func eventsStream(database *store.Store, scopedProject bool) http.HandlerFunc {
 			flusher.Flush()
 		}
 
-		ticker := time.NewTicker(50 * time.Millisecond)
-		defer ticker.Stop()
+		pollInterval := 250 * time.Millisecond
+		maxPollInterval := 1 * time.Second
+		timer := time.NewTimer(pollInterval)
+		defer timer.Stop()
 		heartbeat := time.NewTicker(15 * time.Second)
 		defer heartbeat.Stop()
 
@@ -64,11 +66,17 @@ func eventsStream(database *store.Store, scopedProject bool) http.HandlerFunc {
 				if flusher != nil {
 					flusher.Flush()
 				}
-			case <-ticker.C:
+			case <-timer.C:
 				events, err := database.ListEventsAfterID(ctx, projectID, lastID, 50)
 				if err != nil || len(events) == 0 {
+					pollInterval = pollInterval * 2
+					if pollInterval > maxPollInterval {
+						pollInterval = maxPollInterval
+					}
+					timer.Reset(pollInterval)
 					continue
 				}
+				pollInterval = 100 * time.Millisecond
 				for _, evt := range events {
 					data, err := json.Marshal(evt)
 					if err != nil {
@@ -82,6 +90,7 @@ func eventsStream(database *store.Store, scopedProject bool) http.HandlerFunc {
 						lastID = evt.EventID
 					}
 				}
+				timer.Reset(pollInterval)
 			}
 		}
 	}

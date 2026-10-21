@@ -194,7 +194,7 @@ func guardianWakeCLI(args []string, out, errOut io.Writer, baseURL string) int {
 		return 1
 	}
 
-	tk, err := newStoreClient(baseURL)
+	tk, err := newCoreClient(baseURL)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "client: %v\n", err)
 		return 1

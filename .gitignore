@@ -8,6 +8,7 @@
 *.db
 *.db-shm
 *.db-wal
+*.instance.lock
 *.vsix
 /data/
 dev/private-scratch-probe.txt
@@ -16,7 +17,7 @@ dev/private-scratch-probe.txt
 .timekeeper/state/
 .timekeeper/service/
 .timekeeper/log/
-.timekeeper/web/
+# .timekeeper/web/ removed: web assets must be tracked; see timekeeper-development skill
 .timekeeper/recovery/
 .timekeeper/dogfood-core/
 .timekeeper/guardian-*/
@@ -50,3 +51,14 @@ dev-ops/picoclaw/
 # of the published source: planning docs, contract-test harnesses and
 # screenshots stay out of the public repository.
 dev-ops/
+
+# Local recovery state, generated dependencies, and agent workspace notes
+.timekeeper/recovery-*/
+.timekeeper/timekeeper.db*
+**/node_modules/
+/workspace/
+/TIMEKEEPER.pending.md
+/frontend/package.json.md5
+/--help
+/tk-cli-test
+/tools/

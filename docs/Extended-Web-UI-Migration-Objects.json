@@ -1,0 +1,1354 @@
+{
+  "version": "timekeeper-execution-batch/v1",
+  "tasks": [
+    {
+      "category_id": "C-11483",
+      "name": "Add local and remote connection profiles",
+      "goal": "Provide persisted local/remote profiles without crossing profile boundaries or exposing secrets to Svelte.",
+      "estimated_duration_seconds": 14400,
+      "subtasks": [
+        {
+          "name": "Define profile model and secure persistence",
+          "sprints": [
+            {
+              "name": "Specify profile schema, migration, and secret-reference boundary",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement profile storage and compatibility tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Integrate profile selection with desktop lifecycle",
+          "sprints": [
+            {
+              "name": "Route local profiles through attach-or-owned-child lifecycle",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Prove remote profile failures never launch or attach local Core",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add remote endpoint and capability discovery",
+      "goal": "Connect only to configured endpoints and report instance identity, API compatibility, capabilities, and health accurately.",
+      "estimated_duration_seconds": 10800,
+      "subtasks": [
+        {
+          "name": "Implement remote endpoint and capability contract",
+          "sprints": [
+            {
+              "name": "Define endpoint, instance identity, version, and capability DTOs",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement endpoint probe and compatibility validation",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Add connection diagnostics and failover rules",
+          "sprints": [
+            {
+              "name": "Implement Test Connection with step-level diagnostics",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test failover identity match, mismatch, and disabled cases",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add native network, proxy, DNS, and TLS policy",
+      "goal": "Apply supported networking policy through Go/native boundaries while preserving local .local behavior and browser limitations.",
+      "estimated_duration_seconds": 14400,
+      "subtasks": [
+        {
+          "name": "Implement proxy and credential boundary",
+          "sprints": [
+            {
+              "name": "Specify direct/system/HTTP/HTTPS/SOCKS5 support by platform",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement supported proxy routing and redacted diagnostics",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Implement DNS/TLS policy and diagnostics",
+          "sprints": [
+            {
+              "name": "Define DNS and TLS controls with explicit platform support",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test local resolution, remote TLS failures, and browser limitations",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add authentication toggle and Owner bootstrap",
+      "goal": "Introduce an explicit authentication mode and recoverable initial Owner setup before writable workspaces depend on anonymous superuser behavior.",
+      "estimated_duration_seconds": 21600,
+      "subtasks": [
+        {
+          "name": "Design authentication state and emergency recovery",
+          "sprints": [
+            {
+              "name": "Specify auth-off/on transitions and threat model",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Define audited recovery and bootstrap invariants",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Implement initial Owner bootstrap and login",
+          "sprints": [
+            {
+              "name": "Implement first-Owner setup and credential handling",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test auth toggle, login, lockout prevention, and recovery",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add users, groups, roles, and enforced permissions",
+      "goal": "Enforce authorization in Core/API and expose safe permission-aware identity management contracts.",
+      "estimated_duration_seconds": 28800,
+      "subtasks": [
+        {
+          "name": "Implement identity, group, role, and permission models",
+          "sprints": [
+            {
+              "name": "Specify principal and group membership contracts",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement role/permission evaluation and migrations",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Enforce authorization at Core/API boundaries",
+          "sprints": [
+            {
+              "name": "Protect representative read/write routes server-side",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test delegated permissions, denial, and audit attribution",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add session lifecycle and API-key principals",
+      "goal": "Support revocable sessions and scoped API-key identities without leaking credentials to UI persistence.",
+      "estimated_duration_seconds": 14400,
+      "subtasks": [
+        {
+          "name": "Implement session creation and revocation",
+          "sprints": [
+            {
+              "name": "Define session expiry, refresh, and revocation semantics",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement session API and lifecycle tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Implement API-key principal contract",
+          "sprints": [
+            {
+              "name": "Define scoped key creation, rotation, and revocation",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test authorization and secret redaction across API and UI",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add registration approval and generic OIDC scaffold",
+      "goal": "Keep external authentication separate from TimeKeeper authorization and gate pending registrations through explicit policy.",
+      "estimated_duration_seconds": 25200,
+      "subtasks": [
+        {
+          "name": "Implement registration and admin approval workflow",
+          "sprints": [
+            {
+              "name": "Specify registration, pending, approve, and reject transitions",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement policy-enforced approval API and tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Add provider-neutral OIDC and account linking",
+          "sprints": [
+            {
+              "name": "Define OIDC provider configuration and identity-link model",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test provider toggles, account linking, and approval gate",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add vendor-neutral directory-source framework",
+      "goal": "Represent directory sources, external identities, mappings, sync status, and history without vendor-specific Core assumptions.",
+      "estimated_duration_seconds": 21600,
+      "subtasks": [
+        {
+          "name": "Define directory source and identity-link models",
+          "sprints": [
+            {
+              "name": "Specify provider contract, attribute mapping, and membership policy",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement external source/link persistence and migration",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Implement sync history and deprovisioning semantics",
+          "sprints": [
+            {
+              "name": "Define checkpoints, audit attribution, and disable/removal rules",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test historical attribution preservation and provider failure isolation",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add generic SCIM 2.0 provisioning",
+      "goal": "Implement policy-governed SCIM user/group provisioning and deprovisioning with password data excluded.",
+      "estimated_duration_seconds": 18000,
+      "subtasks": [
+        {
+          "name": "Specify and implement SCIM endpoints",
+          "sprints": [
+            {
+              "name": "Define supported SCIM resources, filtering, and error contract",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement authenticated SCIM routes and contract tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Implement mapping and provisioning policy",
+          "sprints": [
+            {
+              "name": "Apply explicit user/group attribute mappings",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test provisioning, deprovisioning, and unauthorized role escalation",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11485",
+      "name": "Build Directory and Identity administration workspace",
+      "goal": "Expose sources, mappings, sync status, and safe test/sync actions through authorized Core-backed UI.",
+      "estimated_duration_seconds": 14400,
+      "subtasks": [
+        {
+          "name": "Build directory source and mapping views",
+          "sprints": [
+            {
+              "name": "Implement directory source list/detail and mapping editor",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Add authorization, validation, and empty/error states",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Build sync status and safe operations",
+          "sprints": [
+            {
+              "name": "Add Test Connection and sync status/history view",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test forbidden actions and provider outage rendering",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11485",
+      "name": "Build remaining permission-aware Administration shell",
+      "goal": "Provide a cohesive Administration workspace whose panels clearly distinguish implemented from unavailable backing contracts.",
+      "estimated_duration_seconds": 21600,
+      "subtasks": [
+        {
+          "name": "Implement administration navigation and capability states",
+          "sprints": [
+            {
+              "name": "Define permission-to-panel and capability-state map",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Build accessible shell and explicit unavailable states",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Integrate identity and system panels",
+          "sprints": [
+            {
+              "name": "Connect implemented identity/session/admin contracts",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test delegated navigation and direct API denial",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add Core assignment contracts and authorization",
+      "goal": "Define authoritative assignment data and permissions before adding assignment UI or Inbox shortcuts.",
+      "estimated_duration_seconds": 14400,
+      "subtasks": [
+        {
+          "name": "Define assignment model and API contract",
+          "sprints": [
+            {
+              "name": "Specify supported assignees, scopes, and change events",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement persistence, API, and authorization tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Integrate assignment into Task workspace",
+          "sprints": [
+            {
+              "name": "Add typed assignment actions and refresh behavior",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test role denial, concurrency, and browser flows",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add persistent TimeKeeper Inbox and message model",
+      "goal": "Persist project/user/group messages in Core with read state, links, and audit attribution independent of delivery providers.",
+      "estimated_duration_seconds": 21600,
+      "subtasks": [
+        {
+          "name": "Implement message persistence and API",
+          "sprints": [
+            {
+              "name": "Specify message, recipient, link, and state model",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement migration, API, and restart-persistence tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Build Inbox workspace",
+          "sprints": [
+            {
+              "name": "Implement Inbox list/detail and read/unread controls",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test permissions, linked entities, and safe empty/error states",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add actionable-message workflows",
+      "goal": "Implement Core-authorized message actions for assignments, approvals, access requests, security reminders, backup failures, and Store requests.",
+      "estimated_duration_seconds": 21600,
+      "subtasks": [
+        {
+          "name": "Implement generic action/state transition contract",
+          "sprints": [
+            {
+              "name": "Specify action types, lifecycle, idempotency, and audit events",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement authorized transitions and regression tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Integrate initial built-in workflows",
+          "sprints": [
+            {
+              "name": "Connect assignment, registration, and access-request actions",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Connect security, backup, and Store request actions with tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add optional ntfy and email message delivery",
+      "goal": "Deliver persisted messages through optional providers without making providers authoritative or leaking secrets.",
+      "estimated_duration_seconds": 18000,
+      "subtasks": [
+        {
+          "name": "Implement ntfy delivery adapter and preferences",
+          "sprints": [
+            {
+              "name": "Specify ntfy config, topic safety, and user preferences",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement delivery, retries, redaction, and fixture tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Implement opt-in email delivery",
+          "sprints": [
+            {
+              "name": "Specify email provider boundary and policy overrides",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test delivery failure, retry, opt-out, and Inbox retention",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11485",
+      "name": "Add native Calendar and reminders",
+      "goal": "Provide timezone-safe native events and reminders, with derived entity dates remaining non-authoritative.",
+      "estimated_duration_seconds": 21600,
+      "subtasks": [
+        {
+          "name": "Implement calendar event model and date projections",
+          "sprints": [
+            {
+              "name": "Specify derived versus explicit event contracts and timezone rules",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement permission-aware event API and projections",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Build Calendar views and reminders",
+          "sprints": [
+            {
+              "name": "Implement calendar navigation, scopes, and entity links",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement reminder scheduling and timezone regression tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add provider-neutral meeting/calendar integration contract",
+      "goal": "Keep meetings durable and provider references supplemental while invitations use the native Inbox.",
+      "estimated_duration_seconds": 14400,
+      "subtasks": [
+        {
+          "name": "Define meeting and provider reference models",
+          "sprints": [
+            {
+              "name": "Specify provider-neutral meeting, attendee, and external-reference DTOs",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement persistence and provider-unavailable tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Connect meeting invitations to Inbox",
+          "sprints": [
+            {
+              "name": "Implement invitation/update message workflow",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test authorization, provider removal, and durable event history",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add logging and diagnostics administration",
+      "goal": "Provide configurable safe logs and sanitized diagnostic bundles without coupling audit retention to debug-log cleanup.",
+      "estimated_duration_seconds": 18000,
+      "subtasks": [
+        {
+          "name": "Implement log path, levels, rotation, and retention",
+          "sprints": [
+            {
+              "name": "Specify safe path fallback and per-component level policy",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement rotation/retention with startup and permission tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Build diagnostics controls and sanitized bundle",
+          "sprints": [
+            {
+              "name": "Implement Open Log Folder and diagnostic bundle boundary",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test redaction, audit separation, and unavailable paths",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add durable security and administration audit trail",
+      "goal": "Record attributable security-sensitive and administrative events with protected retention, filtering, and export semantics.",
+      "estimated_duration_seconds": 14400,
+      "subtasks": [
+        {
+          "name": "Define and persist audit event contract",
+          "sprints": [
+            {
+              "name": "Specify event taxonomy, actor attribution, and retention policy",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement durable audit writes for identity and administration actions",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Expose protected audit query and Administration view",
+          "sprints": [
+            {
+              "name": "Implement permission-checked filtering and pagination API",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Build audit view and test redaction, access denial, and retention",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add SQLite shadow A/B recovery",
+      "goal": "Create consistent verified SQLite snapshots and safe restore candidates without raw-file copies during active writes.",
+      "estimated_duration_seconds": 21600,
+      "subtasks": [
+        {
+          "name": "Implement shadow snapshot and A/B rotation",
+          "sprints": [
+            {
+              "name": "Specify SQLite-consistent snapshot mechanism and paths",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement A/B rotation, integrity check, and interruption tests",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Implement protected recovery candidate workflow",
+          "sprints": [
+            {
+              "name": "Define candidate discovery, validation, and permissions",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test restore verification and no-overwrite-before-validation invariant",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11483",
+      "name": "Add optional MySQL/MariaDB disaster-recovery backup",
+      "goal": "Back up to optional remote SQL storage as a non-authoritative disaster-recovery copy with verified intervals and failure reporting.",
+      "estimated_duration_seconds": 25200,
+      "subtasks": [
+        {
+          "name": "Implement remote SQL configuration and connection checks",
+          "sprints": [
+            {
+              "name": "Specify TLS/configuration/credential policy and interval enum",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement Test Connection and configuration validation",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Implement scheduled backup and verification",
+          "sprints": [
+            {
+              "name": "Implement Backup Now, scheduling, missed-run, and history semantics",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test remote outage isolation, integrity verification, and failure messages",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11485",
+      "name": "Build backup verification and recovery UI",
+      "goal": "Expose backup state and permission-protected restore without presenting unverified copies as recoverable.",
+      "estimated_duration_seconds": 14400,
+      "subtasks": [
+        {
+          "name": "Build backup configuration and history views",
+          "sprints": [
+            {
+              "name": "Implement status/history and verification evidence panels",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test empty, unavailable, failed, and verified states",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Build protected restore workflow",
+          "sprints": [
+            {
+              "name": "Implement candidate review and explicit restore confirmation",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test permission denial, invalid candidate, and post-restore refresh",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "category_id": "C-11485",
+      "name": "Add permission-governed Store and module workflow",
+      "goal": "Use the existing Go Store client boundary for safe catalogue, entitlement, staging, and permission-governed install requests.",
+      "estimated_duration_seconds": 21600,
+      "subtasks": [
+        {
+          "name": "Implement Go adapter and safe Store state projection",
+          "sprints": [
+            {
+              "name": "Trace existing storeclient contract and define narrow DTOs",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Implement fixture-tested adapter with redaction and offline states",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        },
+        {
+          "name": "Build Store workspace and governed actions",
+          "sprints": [
+            {
+              "name": "Implement catalogue, entitlement, verification, and staging views",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Test request/install permissions and staging-versus-activation separation",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "extensions": [
+    {
+      "task_id": "T-11498",
+      "subtasks": [
+        {
+          "name": "Build Core-backed Trail of Thought workspace",
+          "goal": "Render project-scoped human notes and system events with provenance, safe refresh, and honest empty/unavailable states.",
+          "sprints": [
+            {
+              "name": "Trace ToTb API contracts and define typed view model",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Build ToTb timeline, filtering, and empty/error states",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            },
+            {
+              "name": "Verify ToTb rendering, refresh behavior, and accessibility",
+              "estimated_duration_seconds": 1800,
+              "buffer_pct": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "subtask_id": "ST-11549",
+      "sprints": [
+        {
+          "name": "Implement Activity feed from persisted Core events",
+          "estimated_duration_seconds": 1800,
+          "buffer_pct": 0
+        },
+        {
+          "name": "Test Activity freshness, safe rendering, and failure states",
+          "estimated_duration_seconds": 1800,
+          "buffer_pct": 0
+        }
+      ]
+    },
+    {
+      "subtask_id": "ST-11550",
+      "sprints": [
+        {
+          "name": "Implement Core-backed agent Pulse view",
+          "estimated_duration_seconds": 1800,
+          "buffer_pct": 0
+        },
+        {
+          "name": "Test Pulse freshness, empty states, and failure states",
+          "estimated_duration_seconds": 1800,
+          "buffer_pct": 0
+        }
+      ]
+    },
+    {
+      "task_id": "T-11499",
+      "sprints": [
+        {
+          "name": "Trace Memory Galaxy contracts and build typed workspace view",
+          "estimated_duration_seconds": 1800,
+          "buffer_pct": 0
+        },
+        {
+          "name": "Test Memory Galaxy loading, search, errors, and accessibility",
+          "estimated_duration_seconds": 1800,
+          "buffer_pct": 0
+        }
+      ]
+    },
+    {
+      "task_id": "T-11500",
+      "sprints": [
+        {
+          "name": "Map Metrics panels to persisted API fields and provenance",
+          "estimated_duration_seconds": 1800,
+          "buffer_pct": 0
+        },
+        {
+          "name": "Build and test metrics workspace with honest unavailable states",
+          "estimated_duration_seconds": 1800,
+          "buffer_pct": 0
+        }
+      ]
+    },
+    {
+      "task_id": "T-11501",
+      "sprints": [
+        {
+          "name": "Trace Shadowbox Go boundary and define typed workspace contract",
+          "estimated_duration_seconds": 1800,
+          "buffer_pct": 0
+        },
+        {
+          "name": "Build and test isolated Shadowbox workspace states",
+          "estimated_duration_seconds": 1800,
+          "buffer_pct": 0
+        }
+      ]
+    },
+    {
+      "task_id": "T-11502",
+      "sprints": [
+        {
+          "name": "Map plugin/settings contracts and permission boundaries",
+          "estimated_duration_seconds": 1800,
+          "buffer_pct": 0
+        },
+        {
+          "name": "Build settings and plugin views with unavailable states",
+          "estimated_duration_seconds": 1800,
+          "buffer_pct": 0
+        }
+      ]
+    }
+  ],
+  "planning": {
+    "executable_task_metadata": [
+      {
+        "key": "connection_profiles",
+        "phase": 4,
+        "goal": "Provide persisted local/remote profiles without crossing profile boundaries or exposing secrets to Svelte.",
+        "acceptance": [
+          "Local primary/fallback behavior is deterministic.",
+          "Remote mode never silently falls back to local Core.",
+          "Profile persistence and secret references are safe and tested."
+        ],
+        "task_index": 0
+      },
+      {
+        "key": "remote_connection",
+        "phase": 5,
+        "goal": "Connect only to configured endpoints and report instance identity, API compatibility, capabilities, and health accurately.",
+        "acceptance": [
+          "Primary/secondary endpoints and optional failover are explicit.",
+          "Automatic failover rejects mismatched instance IDs.",
+          "API-key values are never persisted in WebView state."
+        ],
+        "task_index": 1
+      },
+      {
+        "key": "network_policy",
+        "phase": 6,
+        "goal": "Apply supported networking policy through Go/native boundaries while preserving local .local behavior and browser limitations.",
+        "acceptance": [
+          "Supported proxy modes and credentials are tested without secret leakage.",
+          "Unsupported browser-only overrides are explicitly unavailable.",
+          "timekeeper.local resolution and fallback behavior remain intact."
+        ],
+        "task_index": 2
+      },
+      {
+        "key": "auth_foundation",
+        "phase": 8,
+        "goal": "Introduce an explicit authentication mode and recoverable initial Owner setup before writable workspaces depend on anonymous superuser behavior.",
+        "acceptance": [
+          "Authentication-off local behavior is explicit.",
+          "Authentication-on login/session bootstrap works.",
+          "Recovery prevents trivial Owner lockout and is audited."
+        ],
+        "task_index": 3
+      },
+      {
+        "key": "identity_authorization",
+        "phase": 9,
+        "goal": "Enforce authorization in Core/API and expose safe permission-aware identity management contracts.",
+        "acceptance": [
+          "Human, agent, service, and API-key principals are distinguishable.",
+          "Unauthorized direct API requests are rejected.",
+          "Explicit group/role mappings and audit attribution are tested."
+        ],
+        "task_index": 4
+      },
+      {
+        "key": "sessions_api_keys",
+        "phase": 10,
+        "goal": "Support revocable sessions and scoped API-key identities without leaking credentials to UI persistence.",
+        "acceptance": [
+          "Session expiry/revocation is enforced server-side.",
+          "API keys have explicit identity/scope and safe display semantics.",
+          "Secrets are shown only at creation and are redacted thereafter."
+        ],
+        "task_index": 5
+      },
+      {
+        "key": "registration_oidc",
+        "phase": 11,
+        "goal": "Keep external authentication separate from TimeKeeper authorization and gate pending registrations through explicit policy.",
+        "acceptance": [
+          "Registration/approval toggles and pending state are persisted.",
+          "Pending identities cannot access protected workspaces.",
+          "Provider secrets remain server-side and approval is permission-checked."
+        ],
+        "task_index": 6,
+        "phases": [
+          11,
+          12
+        ]
+      },
+      {
+        "key": "directory_framework",
+        "phase": 13,
+        "goal": "Represent directory sources, external identities, mappings, sync status, and history without vendor-specific Core assumptions.",
+        "acceptance": [
+          "Provider contract is vendor-neutral.",
+          "External group mappings cannot grant roles implicitly.",
+          "Provider failure leaves local users and ordinary TK operation intact."
+        ],
+        "task_index": 7
+      },
+      {
+        "key": "scim_provisioning",
+        "phase": 14,
+        "goal": "Implement policy-governed SCIM user/group provisioning and deprovisioning with password data excluded.",
+        "acceptance": [
+          "SCIM operations follow explicit attribute and group mappings.",
+          "Disable/removal retains historical attribution.",
+          "Password material is neither accepted nor synchronized."
+        ],
+        "task_index": 8
+      },
+      {
+        "key": "directory_admin_ui",
+        "phase": 15,
+        "goal": "Expose sources, mappings, sync status, and safe test/sync actions through authorized Core-backed UI.",
+        "acceptance": [
+          "Navigation and actions are permission-driven.",
+          "Provider secrets are never exposed to Svelte.",
+          "Configured, unavailable, and failed states are distinct."
+        ],
+        "task_index": 9
+      },
+      {
+        "key": "administration_shell",
+        "phase": 16,
+        "goal": "Provide a cohesive Administration workspace whose panels clearly distinguish implemented from unavailable backing contracts.",
+        "acceptance": [
+          "Users, Groups, Roles, Registrations, Authentication, Sessions, API Keys, Audit, Network, Logging, Backup, Store, Integrations, Storage, System, and Security areas are classified.",
+          "Delegated permissions expose only authorized panels.",
+          "Core remains the enforcement boundary."
+        ],
+        "task_index": 10
+      },
+      {
+        "key": "assignment_contracts",
+        "phase": 20,
+        "goal": "Define authoritative assignment data and permissions before adding assignment UI or Inbox shortcuts.",
+        "acceptance": [
+          "Assignment state is persisted in Core.",
+          "Task/Sprint assignment actions are authorized and auditable.",
+          "UI refreshes from Core after writes."
+        ],
+        "task_index": 11
+      },
+      {
+        "key": "inbox_messages",
+        "phase": 21,
+        "goal": "Persist project/user/group messages in Core with read state, links, and audit attribution independent of delivery providers.",
+        "acceptance": [
+          "Messages survive restart.",
+          "In-app records persist despite provider failure.",
+          "Recipients, state transitions, and links are permission-checked."
+        ],
+        "task_index": 12
+      },
+      {
+        "key": "actionable_messages",
+        "phase": 22,
+        "goal": "Implement Core-authorized message actions for assignments, approvals, access requests, security reminders, backup failures, and Store requests.",
+        "acceptance": [
+          "Actions are idempotent or safely reject duplicate transitions.",
+          "Authorization and audit attribution are enforced in Core.",
+          "Message and domain state remain consistent."
+        ],
+        "task_index": 13
+      },
+      {
+        "key": "message_delivery",
+        "phase": 23,
+        "goal": "Deliver persisted messages through optional providers without making providers authoritative or leaking secrets.",
+        "acceptance": [
+          "In-app message remains after delivery failures.",
+          "Per-user preferences and mandatory security policy are enforced.",
+          "Retry/failure state is visible and secrets remain server-side."
+        ],
+        "task_index": 14
+      },
+      {
+        "key": "calendar",
+        "phase": 24,
+        "goal": "Provide timezone-safe native events and reminders, with derived entity dates remaining non-authoritative.",
+        "acceptance": [
+          "Derived events do not mutate authoritative Task dates.",
+          "Explicit events/reminders persist and are permission-checked.",
+          "Timezone behavior is deterministic without external plugins."
+        ],
+        "task_index": 15,
+        "phases": [
+          24,
+          25
+        ]
+      },
+      {
+        "key": "meeting_contract",
+        "phase": 26,
+        "goal": "Keep meetings durable and provider references supplemental while invitations use the native Inbox.",
+        "acceptance": [
+          "Meeting persists through provider removal/unavailability.",
+          "Provider secrets are isolated.",
+          "Invitations and updates use authorized TK messaging."
+        ],
+        "task_index": 16
+      },
+      {
+        "key": "logging_diagnostics",
+        "phase": 28,
+        "goal": "Provide configurable safe logs and sanitized diagnostic bundles without coupling audit retention to debug-log cleanup.",
+        "acceptance": [
+          "Invalid custom log paths safely fall back without blocking startup.",
+          "Rotation/retention and component levels are configurable.",
+          "Diagnostic output is sanitized and audit policy stays separate."
+        ],
+        "task_index": 17
+      },
+      {
+        "key": "audit_trail",
+        "phase": 28,
+        "goal": "Record attributable security-sensitive and administrative events with protected retention, filtering, and export semantics.",
+        "acceptance": [
+          "Actor, action, target, timestamp, and result are recorded for defined security/admin operations.",
+          "Audit retention is separate from ordinary debug-log rotation.",
+          "Read/export access is permission-checked and sensitive values are redacted."
+        ],
+        "task_index": 18
+      },
+      {
+        "key": "sqlite_shadow",
+        "phase": 29,
+        "goal": "Create consistent verified SQLite snapshots and safe restore candidates without raw-file copies during active writes.",
+        "acceptance": [
+          "Snapshot mechanism is consistent while Core operates.",
+          "Interrupted update leaves a known-good candidate.",
+          "Restore validates candidate before touching primary data."
+        ],
+        "task_index": 19
+      },
+      {
+        "key": "remote_sql_backup",
+        "phase": 30,
+        "goal": "Back up to optional remote SQL storage as a non-authoritative disaster-recovery copy with verified intervals and failure reporting.",
+        "acceptance": [
+          "Remote SQL is never a second live writer.",
+          "Intervals are exactly 30m, 1h, 4h, 8h, 12h, and 24h.",
+          "Outage does not stop Core and failed backups produce durable Inbox events."
+        ],
+        "task_index": 20
+      },
+      {
+        "key": "backup_restore_ui",
+        "phase": 31,
+        "goal": "Expose backup state and permission-protected restore without presenting unverified copies as recoverable.",
+        "acceptance": [
+          "Candidates display source, time, verification, and failure state.",
+          "Restore requires authorization and validated candidate selection.",
+          "UI refreshes from Core after every operation."
+        ],
+        "task_index": 21
+      },
+      {
+        "key": "store_governance",
+        "phase": 32,
+        "goal": "Use the existing Go Store client boundary for safe catalogue, entitlement, staging, and permission-governed install requests.",
+        "acceptance": [
+          "Svelte never calls Store endpoints directly or receives credentials/package bytes.",
+          "Unconfigured/offline/denied states are honest.",
+          "Staging never silently activates a plugin and actions are permission-checked."
+        ],
+        "task_index": 22
+      }
+    ],
+    "deferred_items": [
+      {
+        "key": "entra_provider",
+        "condition": "Phase 17: Only after provider contract, credentials, permissions, and user approval are available.",
+        "acceptance": [
+          "Incremental synchronization follows current provider contract where supported.",
+          "Secrets and permissions are isolated server-side.",
+          "Provider failure does not disable local operation."
+        ]
+      },
+      {
+        "key": "ldap_provider",
+        "condition": "Phase 18: Only after provider contract, test environment, credentials, and user approval are available.",
+        "acceptance": [
+          "TLS and credential handling follow security policy.",
+          "External groups require explicit mappings.",
+          "Connection/sync failure preserves local operation."
+        ]
+      },
+      {
+        "key": "teams_provider",
+        "condition": "Phase 27: Only after Microsoft provider credentials, external contract, and user approval are available.",
+        "acceptance": [
+          "Teams references supplement durable TK meetings.",
+          "Provider failures do not remove meetings or Inbox invitations.",
+          "Credentials and requested permissions are explicit and redacted."
+        ]
+      }
+    ],
+    "release_gates": [
+      {
+        "reference": "T-11503",
+        "phase": 2,
+        "required_evidence": [
+          "Feature matrix row for every capability",
+          "Authoritative source and testable acceptance per row",
+          "API/service and browser tests mapped to features"
+        ]
+      },
+      {
+        "reference": "T-11504",
+        "phase": 35,
+        "required_evidence": [
+          "Measured cold/warm and foreground/background performance",
+          "Accessibility and security results",
+          "Legacy-to-new feature parity with optional/excluded scope classified"
+        ]
+      },
+      {
+        "reference": "T-11505",
+        "phases": [
+          36,
+          37
+        ],
+        "required_evidence": [
+          "Reproducible rollback artifact and tested procedure",
+          "CLI/headless compatibility and supported-platform package verification",
+          "Legacy UI retired only after required parity and remote/local behavior pass"
+        ]
+      }
+    ],
+    "application_constraints": [
+      "Source plan: docs/Extended-Web-UI-Migration-Plan.md (revision 2026-10-11).",
+      "Target existing Project: P-10053 (TimeKeeper — UI and repository completion).",
+      "Existing target Category mapping: core=C-11483.",
+      "Existing target Category mapping: desktop=C-11484.",
+      "Existing target Category mapping: workspaces=C-11485.",
+      "Existing target Category mapping: parity_release=C-11486.",
+      "Manifest note (purpose): Complete, duplicate-aware creation manifest for the extended migration scope. It includes existing-object references and proposed new Task/Subtask/Sprint objects.",
+      "Manifest note (direct_cli_import_supported): False",
+      "Manifest note (reason): tk t batch imports Tasks only. tk p import creates a new Project. The current CLI has no safe batch operation to apply nested Task/Subtask/Sprint objects to an existing Project and map existing Category IDs.",
+      "Manifest note (safe_application): Do not pass this file to tk t batch or tk p import. A future importer should validate the whole manifest, resolve existing references, preview changes, enforce dependencies and four-direct-Sprint capacity, then apply atomically or report partial failure with IDs.",
+      "Manifest note (estimates): Each proposed Sprint is initially bounded to 30 minutes (1800 seconds); these are planning slices, not claims that a whole feature fits in one Sprint. Split a slice further if implementation exceeds its estimate.",
+      "Manifest note (sprint_shorthand): For compact entries under new_tasks, each Sprint string expands to {name: <string>, estimated_duration_seconds: 1800, buffer_pct: 0}.",
+      "Manifest note (status_policy): Only create entries marked create. Entries marked reuse are already tracked and must be continued in place. Conditional entries remain deferred until their stated decision, credentials, or contracts are available.",
+      "Resolve existing IDs and current status immediately before applying; this manifest is a point-in-time plan and may be stale.",
+      "Never reopen completed Tasks for unrelated new scope; create a new Task or add only within an open owning Task.",
+      "A Task/Subtask may own at most four direct Sprints, including terminal history. Check capacity before adding each Sprint.",
+      "Each Sprint must be started before completion and completed only with observed implementation/test evidence.",
+      "Keep external provider work deferred until required contracts, credentials, and approvals exist; do not fabricate integrations or secrets.",
+      "Do not retire the legacy UI, deploy, or change production endpoints as part of merely applying this plan.",
+      "Phase 1 (reuse): Refresh source/current-system audit; refs: T-11477, SP-11478; state: Completed.",
+      "Phase 2 (reuse): Maintain feature matrix and API/UI test coverage; refs: T-11503; state: Open.",
+      "Phase 3 (reuse_with_extension): Stabilize Wails/Core lifecycle; refs: T-11491, T-11492, T-11494; state: Completed. Extension note: Remote-profile lifecycle and no-local-fallback requirements are covered by new tasks below; do not reopen completed tasks.",
+      "Phase 7 (reuse): Preserve/read-only Project hierarchy; refs: T-11496, T-11506; state: Completed.",
+      "Phase 19 (reuse): Complete Task/Subtask/Sprint workspace; refs: T-11497, SP-11546, SP-11548; state: Completed.",
+      "Phase 33 (reuse_with_extension): Add remaining Activity/ToTb/Metrics/Memory/Shadowbox workspaces; refs: T-11498, T-11499, T-11500, T-11501, T-11502; state: Open. Extension note: Continue these Tasks; add the missing ToTb Subtask to T-11498. The existing Activity and Pulse Subtasks ST-11549 and ST-11550 have no Sprints yet.",
+      "Phase 34 (reuse): Complete tray/background/native capabilities; refs: T-11493, T-11494; state: Completed.",
+      "Phase 35 (reuse): Run parity/performance/security/accessibility gates; refs: T-11504; state: Open.",
+      "Phase 36 (reuse): Produce rollback artifacts; refs: T-11505; state: Open.",
+      "Phase 37 (reuse): Retire legacy UI only after verified parity; refs: T-11505; state: Open."
+    ]
+  }
+}

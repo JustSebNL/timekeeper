@@ -23,12 +23,14 @@ import (
 // The test executable also serves as an actual native runtime adapter. It
 // receives the same argv/environment contract as a vendor's supervisor bridge.
 func TestMain(m *testing.M) {
-    if os.Getenv("TIMEKEEPER_TEST_FASE_ADAPTER")=="1"{
-        var out,errOut strings.Builder
-        code:=RunTracked([]string{"agent","identity"},&out,&errOut,os.Getenv("TK_BASE_URL"))
-        if err:=os.WriteFile(os.Getenv("TK_TEST_WAKE_RECEIPT"),[]byte(out.String()),0600);err!=nil{os.Exit(2)}
-        os.Exit(code)
-    }
+	if os.Getenv("TIMEKEEPER_TEST_FASE_ADAPTER") == "1" {
+		var out, errOut strings.Builder
+		code := RunTracked([]string{"agent", "identity"}, &out, &errOut, os.Getenv("TK_BASE_URL"))
+		if err := os.WriteFile(os.Getenv("TK_TEST_WAKE_RECEIPT"), []byte(out.String()), 0600); err != nil {
+			os.Exit(2)
+		}
+		os.Exit(code)
+	}
 	if os.Getenv("TIMEKEEPER_TEST_ADAPTER") == "1" {
 		data, _ := json.Marshal(map[string]string{"agent": os.Getenv("TIMEKEEPER_AGENT_ID"), "session": os.Getenv("TIMEKEEPER_SESSION_ID"), "runtime": os.Getenv("TIMEKEEPER_AGENT_RUNTIME"), "hermes_session": os.Getenv("HERMES_SESSION_ID"), "nudge": os.Getenv("AGENT_LAST_NUDGE_ID"), "sprint": os.Getenv("AGENT_LAST_SPRINT_ID"), "project": os.Getenv("PROJECT_ID"), "base": os.Getenv("TK_BASE_URL"), "reason": strings.Join(os.Args[1:], " ")})
 		if err := os.WriteFile(os.Getenv("TK_TEST_WAKE_RECEIPT"), data, 0600); err != nil {
