@@ -125,6 +125,7 @@ func newWithObserver(database *store.Store, runtime RuntimeStatus, knowledgeServ
 	mux.HandleFunc("GET /api/v1/agents/{agentID}/nudges", listPendingPulseNudges(database))
 	mux.HandleFunc("POST /api/v1/agents/{agentID}/nudges/{nudgeID}/ack", acknowledgePulseNudge(database))
 	mux.HandleFunc("GET /api/v1/search", globalSearch(database))
+	mux.HandleFunc("GET /api/v1/resolve", resolveReference(database))
 	mux.HandleFunc("GET /api/v1/projects", listProjects(database))
 	mux.HandleFunc("GET /api/v1/project-deadlines", projectDeadlineWatch(database))
 	mux.HandleFunc("POST /api/v1/projects", createProject(database))
