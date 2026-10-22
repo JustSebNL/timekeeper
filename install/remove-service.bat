@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 
 rem Remove/uninstall the TimeKeeper Windows service without deleting project data.
-set "SCRIPT=%~dp0..\scripts\service\install-windows.ps1"
+set "SCRIPT=%~dp0..\install\install-windows.ps1"
 
 if not exist "%SCRIPT%" goto missing_script
 

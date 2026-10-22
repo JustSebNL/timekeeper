@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -32,6 +33,7 @@ type Store struct {
 	fase    faseRegistry
 	db      *sql.DB
 	pricing pricing.Catalog
+	mu      sync.Mutex
 }
 
 // Open opens a SQLite database, enables required safety settings, and applies migrations.
@@ -69,7 +71,7 @@ func OpenWithPricing(path string, catalog pricing.Catalog) (*Store, error) {
 func (s *Store) initPragmas(ctx context.Context) error {
 	pragmas := []string{
 		"PRAGMA journal_mode = WAL;",
-		"PRAGMA busy_timeout = 5000;",
+		"PRAGMA busy_timeout = 30000;",
 		"PRAGMA synchronous = NORMAL;",
 		"PRAGMA cache_size = -64000;",
 		"PRAGMA foreign_keys = ON;",

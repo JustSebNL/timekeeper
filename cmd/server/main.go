@@ -268,7 +268,7 @@ func main() {
 	if handled, code := dispatchClient(os.Args[1:], os.Getenv("TIMEKEEPER_URL"), os.Stdout, os.Stderr); handled {
 		os.Exit(code)
 	}
-	addr := flag.String("addr", "127.0.0.1:1618", "HTTP listen address")
+	addr := flag.String("addr", "timekeeper.local", "HTTP listen address")
 	proxyAddr := flag.String("proxy-addr", envOr("TIMEKEEPER_PROXY_ADDR", "127.0.0.1:80"), "reverse-proxy listen address for the friendly URLs (http://timekeeper.local/ and http://api.timekeeper.local/); empty to disable")
 	obsidianDescriptor := flag.String("obsidian-descriptor", envOr("TIMEKEEPER_OBSIDIAN_DESCRIPTOR", ""), "optional Obsidian Memory Galaxy endpoint descriptor path")
 	edgeJournal := flag.String("edge-journal", envOr("TIMEKEEPER_EDGE_JOURNAL", ""), "optional edge event journal path; enables the observer plugin")
@@ -297,6 +297,11 @@ func main() {
 	logMode := logging.ModeNormal
 	flag.Var(modeFlag{&logMode}, "log-mode", "log mode: normal|debug (debug logs every step, raw inputs, full errors)")
 	flag.Parse()
+
+	// Ensure addr has a port; default to 1618 if hostname only
+	if !strings.Contains(*addr, ":") {
+		*addr = *addr + ":1618"
+	}
 
 	offlineBatchRequested := strings.TrimSpace(*offlineBatchFile) != "" || strings.TrimSpace(*offlineBatchProject) != "" || strings.TrimSpace(*offlineBatchCopyTo) != "" || strings.TrimSpace(*offlineBatchFormat) != "" || *offlineBatchApply
 	if offlineBatchRequested {

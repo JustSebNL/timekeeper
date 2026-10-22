@@ -13,8 +13,7 @@ import (
 
 // serviceManager installs, removes, starts, stops, and queries the OS service
 // that runs TimeKeeper. It delegates to the Windows PowerShell installer or the
-// Linux service-manager script; Windows prefers Bend2Will and retains NSSM for
-// guarded legacy migration.
+// Linux service-manager script; Windows uses Bend2Will.
 func serviceManager(args []string, out, errOut io.Writer, baseURL string) int {
 	exe, err := os.Executable()
 	if err != nil {

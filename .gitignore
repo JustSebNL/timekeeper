@@ -51,6 +51,8 @@ dev-ops/picoclaw/
 # of the published source: planning docs, contract-test harnesses and
 # screenshots stay out of the public repository.
 dev-ops/
+.archive/
+frontend
 
 # Local recovery state, generated dependencies, and agent workspace notes
 .timekeeper/recovery-*/

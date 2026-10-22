@@ -42,7 +42,7 @@ Files: `extensions/vscode/lib/client.js`, new history/tree helper modules as nee
 ## Slice D — Extended migration conformance and verification
 
 - Keep Wails as a client/adapter over one Core and one SQLite owner. Add no speculative auth, remote failover, message/Calendar service, or independent history database in this vertical.
-- Keep `http://timekeeper.local` primary. Document the `127.0.0.1:1618` loopback fallback later in the networking/diagnostics section, not in the opening/local-workspace prose.
+- Keep `http://timekeeper.local` primary. Document the `timekeeper.local:1618` loopback fallback later in the networking/diagnostics section, not in the opening/local-workspace prose.
 - Update the feature matrix/status only for delivered behavior. Do not retire the legacy UI until the document's parity, accessibility, packaging, and rollback gates pass.
 - Run focused Go/API/desktop tests, frontend tests/check/build, extension lint/tests, and scoped diff checks. Verify `/api/v1/version`, file-history route availability, installed assets, and browser/IDE behavior separately from source-level tests.
 - Update the owning TimeKeeper ToTb checkpoint with verified findings and keep SP-11461 open until its live rollout/history acceptance is proven.

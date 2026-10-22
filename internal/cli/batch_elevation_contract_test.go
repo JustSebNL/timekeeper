@@ -34,8 +34,8 @@ func TestKickServerRequestsElevationOnlyOnUnhealthyServicePath(t *testing.T) {
 		t.Fatal("service restart must occur only after the health gate fails")
 	}
 	if strings.Contains(script, "\"%NSSM%\" restart") {
-		t.Fatal("kick-server must not bypass the supported elevated service manager with direct NSSM control")
-	}
+			t.Fatal("kick-server must not bypass the supported elevated service manager with direct NSSM control")
+		}
 }
 
 func TestLegacyServiceInstallBatchRequestsElevationBeforeMutation(t *testing.T) {

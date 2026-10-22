@@ -67,7 +67,7 @@ Implement `Health`, `Version`, and `Projects` as bounded GETs. Decode the curren
 
 - [x] **Step 5: Write failing child lifecycle tests**
 
-Add `TestLaunchUsesExplicitPathsAndLoopback`, `TestStartupTimeoutStopsOnlyOwnedChild`, `TestChildExitBeforeReadyFails`, and `TestCloseDoesNotStopAttachedCore`. The fake launcher records arguments and returns a fake process; the fake process exposes a controllable `Wait` result and records stdin-close/kill calls. Use an explicitly configured free loopback port in launch tests so no test competes with the live canonical service; assert child `-addr` exactly matches that configured URL (the desktop default remains `127.0.0.1:1618`), along with `-db <absolute DB>`, `-ui <absolute dashboard>`, and `-shutdown-on-stdin-close`. Timeout must close input and then kill only that returned child, while an attached session performs no process operation.
+Add `TestLaunchUsesExplicitPathsAndLoopback`, `TestStartupTimeoutStopsOnlyOwnedChild`, `TestChildExitBeforeReadyFails`, and `TestCloseDoesNotStopAttachedCore`. The fake launcher records arguments and returns a fake process; the fake process exposes a controllable `Wait` result and records stdin-close/kill calls. Use an explicitly configured free loopback port in launch tests so no test competes with the live canonical service; assert child `-addr` exactly matches that configured URL (the desktop default remains `timekeeper.local:1618`), along with `-db <absolute DB>`, `-ui <absolute dashboard>`, and `-shutdown-on-stdin-close`. Timeout must close input and then kill only that returned child, while an attached session performs no process operation.
 
 - [x] **Step 6: Run the child tests and confirm the expected red**
 
@@ -76,7 +76,7 @@ Expected: FAIL until launch, bounded readiness polling, and session ownership ar
 
 - [x] **Step 7: Implement process launch and session close semantics**
 
-Implement the OS launcher with `exec.CommandContext`, a dedicated stdin pipe, and a goroutine that records `Wait()`. `StartOrAttach` derives the child `-addr` from the already-validated `CoreURL` host and port, preserving the default `127.0.0.1:1618` and never selecting a fallback port; it polls only that URL until ready, child exit, context cancellation, or `StartupTimeout`. `Session.Close` is a no-op for attached sessions; for owned sessions it closes stdin, waits at most `ShutdownTimeout`, and calls `Kill` only on timeout. Return the declared error categories without leaking HTTP bodies.
+Implement the OS launcher with `exec.CommandContext`, a dedicated stdin pipe, and a goroutine that records `Wait()`. `StartOrAttach` derives the child `-addr` from the already-validated `CoreURL` host and port, preserving the default `timekeeper.local:1618` and never selecting a fallback port; it polls only that URL until ready, child exit, context cancellation, or `StartupTimeout`. `Session.Close` is a no-op for attached sessions; for owned sessions it closes stdin, waits at most `ShutdownTimeout`, and calls `Kill` only on timeout. Return the declared error categories without leaking HTTP bodies.
 
 - [x] **Step 8: Run desktop package tests and inspect the focused diff**
 
@@ -140,7 +140,7 @@ Expected: FAIL because the Wails adapter does not exist.
 
 - [x] **Step 3: Add Wails v2.15.0 and the thin adapter**
 
-Add the pinned Wails v2.15.0 module dependency. Build `cmd/desktop` with explicit flags `-core-url`, `-core-exe`, `-db`, and `-ui`; default only `-core-url` to `http://127.0.0.1:1618`. If attach succeeds, show connected status. If attach fails and launch configuration is incomplete, keep the window open with an actionable configuration/offline status. If launch is configured, call `StartOrAttach`; never panic or silently fall back to another DB/port. Implement `OnShutdown` to close the session with a bounded context.
+Add the pinned Wails v2.15.0 module dependency. Build `cmd/desktop` with explicit flags `-core-url`, `-core-exe`, `-db`, and `-ui`; default only `-core-url` to `http://timekeeper.local`. If attach succeeds, show connected status. If attach fails and launch configuration is incomplete, keep the window open with an actionable configuration/offline status. If launch is configured, call `StartOrAttach`; never panic or silently fall back to another DB/port. Implement `OnShutdown` to close the session with a bounded context.
 
 - [x] **Step 4: Embed a minimal diagnostic shell and wire Wails lifecycle hooks**
 

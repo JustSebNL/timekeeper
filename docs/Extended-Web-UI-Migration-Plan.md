@@ -276,7 +276,7 @@ currentWorkspace
 
 ## 6.2 Local connection
 
-The preferred local endpoint is `http://timekeeper.local`; source-level Wails startup maps that exact hostname to loopback, bypasses system proxy routing, and falls back to `http://127.0.0.1:1618` only when the friendly endpoint is unreachable. An incompatible Core is reported as incompatible rather than hidden by fallback. The fallback is local-profile behavior only; it is not available to a remote profile.
+The preferred local endpoint is `http://timekeeper.local`; source-level Wails startup maps that exact hostname to loopback, bypasses system proxy routing, and falls back to `http://timekeeper.local` only when the friendly endpoint is unreachable. An incompatible Core is reported as incompatible rather than hidden by fallback. The fallback is local-profile behavior only; it is not available to a remote profile.
 
 Settings now includes an explicit, read-only **Test connection** action. Wails reports the selected Core endpoint, whether the loopback fallback was used, and Core identity/API/capabilities; browser builds report their browser-facing API origin and explicitly do not claim to control native proxy/DNS routing. Per-profile selection, authentication state, DNS/TLS/proxy diagnostics, and remote endpoint checks remain unimplemented.
 
@@ -1297,7 +1297,7 @@ cache policy
 IPv4/IPv6 preference
 ```
 
-Local `timekeeper.local` resolution must preserve the local resolution path before falling back to `127.0.0.1:1618`.
+Local `timekeeper.local` resolution must preserve the local resolution path before falling back to `timekeeper.local:1618`.
 
 ## 15.4 Browser limitation
 
@@ -1628,7 +1628,7 @@ A `Create Shadow Now` action is useful for administration and pre-maintenance ch
 
 Recovery must verify the candidate shadow before replacing the authoritative database.
 
-The source implementation provides an offline `-restore-shadow-slot shadow-a.db -confirm-shadow-restore` (or B-slot) maintenance mode. It refuses when the database instance lock or configured loopback listener is busy (default `127.0.0.1:1618`), checks the candidate before modifying the primary, preserves the old database plus WAL/SHM in a timestamped recovery directory, stages the candidate beside the primary, verifies the installed file, and exits without restarting Core. It does not choose a slot automatically and does not turn a health-check failure into an automatic rollback/restore action.
+The source implementation provides an offline `-restore-shadow-slot shadow-a.db -confirm-shadow-restore` (or B-slot) maintenance mode. It refuses when the database instance lock or configured loopback listener is busy (default `timekeeper.local:1618`), checks the candidate before modifying the primary, preserves the old database plus WAL/SHM in a timestamped recovery directory, stages the candidate beside the primary, verifies the installed file, and exits without restarting Core. It does not choose a slot automatically and does not turn a health-check failure into an automatic rollback/restore action.
 
 Do not overwrite the current primary until the restore candidate passes the required integrity checks.
 
@@ -2536,7 +2536,7 @@ The extended migration is complete only when the required scope is explicitly cl
 ## Connection
 
 - `timekeeper.local` is the preferred local endpoint;
-- `127.0.0.1:1618` is the local fallback;
+- `timekeeper.local:1618` is the local fallback;
 - remote primary/secondary endpoints work as configured;
 - automatic failover verifies instance identity;
 - capability/version incompatibility is explicit;

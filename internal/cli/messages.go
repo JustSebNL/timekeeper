@@ -381,8 +381,8 @@ func msgSeed(projectID string, args []string, out, errOut io.Writer, baseURL str
 		tags string
 		link string
 	}{
-		{model.MessageKindNote, "Project conventions: canonical port is 1618; canonical address is 127.0.0.1:1618; the friendly URLs are timekeeper.local and api.timekeeper.local once the installer has run.", "port,url,convention", ""},
-		{model.MessageKindDecision, "Adopt NSSM for the Windows service installer; the kernel-level service recovery is the right primary mechanism. The 30-minute scheduled task is the bounded failure-only health kick, not a primary.", "service,architecture", ""},
+		{model.MessageKindNote, "Project conventions: canonical port is 1618; canonical address is timekeeper.local; the friendly URLs are timekeeper.local and api.timekeeper.local once the installer has run.", "port,url,convention", ""},
+		{model.MessageKindDecision, "Adopt Bend2Will obey for the Windows service installer; the kernel-level service recovery is the right primary mechanism. The 30-minute scheduled task is the bounded failure-only health kick, not a primary.", "service,architecture", ""},
 		{model.MessageKindObservation, "When port 80 is already in use (Windows HTTP.sys / PID 4), the friendly-URL proxy logs a clean warning and the canonical 1618 listener keeps answering. tk doctor reports the conflict honestly.", "port,recovery", ""},
 		{model.MessageKindLesson, "Always set the working directory to the repo root before launching the Windows-cross-compiled binary. Absolute /mnt/d/ paths get mangled into D:\\mnt\\d\\... by the loader.", "windows,build,launch", ""},
 		{model.MessageKindLink, "TimeKeeper architecture: see TIMEKEEPER.md for the full contract.", "docs", "/TIMEKEEPER.md"},

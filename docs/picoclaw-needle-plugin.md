@@ -141,7 +141,7 @@ review its manifest permissions and configure the PicoClaw process hook.
 Use another store during local testing with:
 
 ```bash
-edge --list-plugins --plugin-store http://127.0.0.1:1618
+edge --list-plugins --plugin-store http://timekeeper.local
 ```
 
 or:

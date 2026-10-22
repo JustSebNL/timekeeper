@@ -191,7 +191,46 @@ func (t diagnosticTransport) RoundTrip(request *http.Request) (*http.Response, e
 		clone.Header.Set("X-TimeKeeper-Command", command)
 	}
 	start := time.Now()
-	response, err := base.RoundTrip(clone)
+	// Retry on database_busy (503) with backoff instead of failing immediately.
+	// This effectively queues the request until the database is available.
+	var response *http.Response
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		// Clone the request body for each attempt
+		if clone.Body != nil {
+			bodyBytes, _ := io.ReadAll(clone.Body)
+			clone.Body.Close()
+			clone.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			clone.ContentLength = int64(len(bodyBytes))
+		}
+		response, err = base.RoundTrip(clone)
+		if err != nil {
+			break
+		}
+		if response.StatusCode != http.StatusServiceUnavailable {
+			break
+		}
+		// Check if it's database_busy
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		var envelope apiErrorEnvelope
+		isBusy := false
+		if json.Unmarshal(body, &envelope) == nil && envelope.Error.Code == "database_busy" {
+			isBusy = true
+		}
+		if !isBusy {
+			// Not a database_busy error; restore body and return
+			response.Body = io.NopCloser(bytes.NewReader(body))
+			break
+		}
+		response.Body = io.NopCloser(bytes.NewReader(body))
+		// Backoff before retry
+		wait := time.Duration(attempt+1) * 200 * time.Millisecond
+		if wait > 2*time.Second {
+			wait = 2 * time.Second
+		}
+		time.Sleep(wait)
+	}
 	if err != nil {
 		failure := &connectionFailure{
 			method:    clone.Method,

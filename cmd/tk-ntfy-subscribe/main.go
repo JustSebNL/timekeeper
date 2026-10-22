@@ -2,7 +2,7 @@
 // when a wake-up message arrives.
 //
 // This is the agent-side companion to the guardian's ntfy publisher.
-// It runs as a supervised service (NSSM) and replaces the HTTP receiver
+// It runs as a supervised service (Bend2Will) and replaces the HTTP receiver
 // process that kept dying.
 //
 // Usage:

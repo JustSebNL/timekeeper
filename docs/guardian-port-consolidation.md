@@ -10,7 +10,7 @@ remaining deployment migration and retirement checks.
 
 ## Decision
 
-The friendly contact point is `http://timekeeper.local/`; the canonical process listener remains numeric loopback at `127.0.0.1:1618`. `GET /api/v1/connection-info` advertises the friendly dashboard/API hosts and the actual port suffix when the proxy uses a non-default port.
+The friendly contact point is `http://timekeeper.local/`; the canonical process listener remains numeric loopback at `timekeeper.local:1618`. `GET /api/v1/connection-info` advertises the friendly dashboard/API hosts and the actual port suffix when the proxy uses a non-default port.
 
 Pulse Guardian already runs inside the TimeKeeper server process. The separate
 `127.0.0.1:1619` receiver duplicates a small part of the control plane and
@@ -31,7 +31,7 @@ port collision.
 
 ```text
                     one canonical listener
-                    127.0.0.1:1618
+                    timekeeper.local:1618
                            |
        +-------------------+-------------------+
        |                   |                   |
@@ -56,13 +56,13 @@ how to cross its own sandbox or supervisor boundary.
 
 ## Windows service boundary
 
-The Windows Core service is separate from any agent-side worker. The current installation uses NSSM; the checked-out installer now supports Bend2Will's `obey` service manager as a replacement while retaining `LocalService`. The installed service has not been migrated in this workspace; the migration and health check must run before describing Bend2Will as deployed.
+The Windows Core service uses Bend2Will's `obey` service manager with `LocalService`. The installed service has not been migrated in this workspace; the migration and health check must run before describing Bend2Will as deployed.
 
 ```text
-TimeKeeper Core service (NSSM before migration / Bend2Will after verified migration; delayed start, LocalService)
+TimeKeeper Core service (Bend2Will; delayed start, LocalService)
   -> timekeeper.exe
   -> API + dashboard + in-process Pulse Guardian
-  -> 127.0.0.1:1618
+  -> timekeeper.local:1618
 ```
 
 The agent-side wake consumer is a different component:
@@ -81,11 +81,11 @@ adapter boundary.
 
 The portable installation contract is therefore:
 
-- Linux uses systemd. The Windows installer can use Bend2Will `obey` with `LocalService`, delayed startup, SCM recovery, and bounded logs; NSSM remains a fallback and the existing NSSM installation is not replaced until `-MigrateFromNssm` is explicitly approved and its health check passes.
+- Linux uses systemd. The Windows installer uses Bend2Will `obey` with `LocalService`, delayed startup, SCM recovery, and bounded logs.
 - The agent runtime supervises its own adapter where possible.
 - If an agent needs a Windows-side watcher, install a separate per-agent
   supervisor under the agent's user context, not as the Core `LocalService`
-  account. NSSM may be used for that second process only when its account and
+  account.
   runtime profile are explicitly configured.
 - A user-context Task Scheduler logon trigger is an acceptable Windows
   alternative when a service account cannot access the runtime profile.
@@ -118,7 +118,7 @@ The current `cmd/guardian` / `internal/guardian/receiver.go` process:
 1. listens on `127.0.0.1:1619`;
 2. parses `timekeeper-pulse-guardian/v1` recovery signals;
 3. writes a local recovery artifact;
-4. POSTs nudge acknowledgement back to `127.0.0.1:1618`;
+4. POSTs nudge acknowledgement back to `timekeeper.local:1618`;
 5. returns `X-Timekeeper-Pulse-Accepted: v1`.
 
 The core server already owns the database and exposes Guardian status, Pulse,

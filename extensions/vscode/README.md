@@ -34,7 +34,7 @@ VS Code extension → numeric-loopback Time Keeper HTTP API → SQLite authority
 2. In VS Code, set `timekeeper.serverUrl` to the exact local server origin. The companion deliberately restricts this setting to numeric loopback origins as a client security boundary; unlike the general CLI/dashboard contact point, its current default remains:
 
    ```text
-   http://127.0.0.1:1618
+   http://timekeeper.local
    ```
 
    The human/agent-facing default contact point elsewhere is `http://timekeeper.local/`.
