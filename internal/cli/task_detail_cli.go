@@ -75,7 +75,20 @@ func taskShow(args []string, out, errOut io.Writer, baseURL string) int {
 		_, _ = fmt.Fprintf(out, "Subtask\t%s\t%s\t%s\n", subtask.SubtaskID, subtask.Status, subtask.Name)
 	}
 	for _, sprint := range detail.Sprints {
-		_, _ = fmt.Fprintf(out, "Sprint\t%s\t%s\t%s\t%d s\n", sprint.SprintID, sprint.Status, sprint.Name, sprint.EstimatedDurationSeconds)
+		_, _ = fmt.Fprintf(out, "Sprint	%s	%s	%s	%d s\n", sprint.SprintID, sprint.Status, sprint.Name, sprint.EstimatedDurationSeconds)
+	}
+	// Surface linked Treasure Chest gems
+	gemEndpoint := strings.TrimRight(baseURL, "/") + "/api/v1/projects/" + url.PathEscape(detail.Task.ProjectID) + "/gems?task_id=" + url.QueryEscape(detail.Task.TaskID)
+	gemResp, gemErr := newHTTPClient(10 * time.Second).Get(gemEndpoint)
+	if gemErr == nil && gemResp.StatusCode == http.StatusOK {
+		var gemResult model.ProjectGemList
+		if json.NewDecoder(gemResp.Body).Decode(&gemResult) == nil && len(gemResult.Items) > 0 {
+			_, _ = fmt.Fprintln(out, "Treasure Chest gems:")
+			for _, g := range gemResult.Items {
+				_, _ = fmt.Fprintf(out, "  %s	[%s]	%s\n", g.Ref, g.Category, g.Name)
+			}
+		}
+		gemResp.Body.Close()
 	}
 	return 0
 }

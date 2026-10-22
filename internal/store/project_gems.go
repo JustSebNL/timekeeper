@@ -102,6 +102,24 @@ func (s *Store) CreateProjectGem(ctx context.Context, projectID string, input mo
 	if err != nil { return model.ProjectGem{}, fmt.Errorf("begin gem create: %w", err) }
 	defer tx.Rollback()
 	if err := s.projectExistsForGemTx(ctx, tx, projectID); err != nil { return model.ProjectGem{}, err }
+	if input.TaskID != "" {
+		var exists int
+		if err := tx.QueryRowContext(ctx, "SELECT 1 FROM tasks WHERE task_id = ? AND project_id = ?", input.TaskID, projectID).Scan(&exists); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return model.ProjectGem{}, fmt.Errorf("%w: task %s not found in project %s", ErrValidation, input.TaskID, projectID)
+			}
+			return model.ProjectGem{}, fmt.Errorf("validate gem task: %w", err)
+		}
+	}
+	if input.SprintID != "" {
+		var exists int
+		if err := tx.QueryRowContext(ctx, "SELECT 1 FROM sprints WHERE sprint_id = ? AND project_id = ?", input.SprintID, projectID).Scan(&exists); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return model.ProjectGem{}, fmt.Errorf("%w: sprint %s not found in project %s", ErrValidation, input.SprintID, projectID)
+			}
+			return model.ProjectGem{}, fmt.Errorf("validate gem sprint: %w", err)
+		}
+	}
 	if input.ParentGemID != nil {
 		parent, err := getProjectGemTx(ctx, tx, projectID, *input.ParentGemID, false)
 		if err != nil { return model.ProjectGem{}, fmt.Errorf("read parent gem: %w", err) }
@@ -234,6 +252,24 @@ func (s *Store) UpdateProjectGem(ctx context.Context, projectID string, gemID in
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil { return model.ProjectGem{}, fmt.Errorf("begin gem edit: %w", err) }
 	defer tx.Rollback()
+	if input.TaskID != "" {
+		var exists int
+		if err := tx.QueryRowContext(ctx, "SELECT 1 FROM tasks WHERE task_id = ? AND project_id = ?", input.TaskID, projectID).Scan(&exists); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return model.ProjectGem{}, fmt.Errorf("%w: task %s not found in project %s", ErrValidation, input.TaskID, projectID)
+			}
+			return model.ProjectGem{}, fmt.Errorf("validate gem task: %w", err)
+		}
+	}
+	if input.SprintID != "" {
+		var exists int
+		if err := tx.QueryRowContext(ctx, "SELECT 1 FROM sprints WHERE sprint_id = ? AND project_id = ?", input.SprintID, projectID).Scan(&exists); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return model.ProjectGem{}, fmt.Errorf("%w: sprint %s not found in project %s", ErrValidation, input.SprintID, projectID)
+			}
+			return model.ProjectGem{}, fmt.Errorf("validate gem sprint: %w", err)
+		}
+	}
 	current, err := getProjectGemTx(ctx, tx, projectID, gemID, false)
 	if err != nil { return model.ProjectGem{}, err }
 	now := time.Now().UTC().Round(0)

@@ -426,6 +426,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		"CREATE INDEX IF NOT EXISTS project_gems_project_updated_idx ON project_gems(project_id, deleted_at, pinned DESC, updated_at DESC, gem_id DESC)",
 		"CREATE INDEX IF NOT EXISTS project_gems_project_category_idx ON project_gems(project_id, category COLLATE NOCASE, subcategory COLLATE NOCASE, created_at DESC)",
 		"CREATE INDEX IF NOT EXISTS project_gems_project_parent_idx ON project_gems(project_id, parent_gem_id, created_at ASC, gem_id ASC)",
+		"CREATE INDEX IF NOT EXISTS project_gems_project_task_idx ON project_gems(project_id, task_id, updated_at DESC, gem_id DESC)",
+		"CREATE INDEX IF NOT EXISTS project_gems_project_sprint_idx ON project_gems(project_id, sprint_id, updated_at DESC, gem_id DESC)",
 		`CREATE TABLE IF NOT EXISTS project_gem_revisions (
 			revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
