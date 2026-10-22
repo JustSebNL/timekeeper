@@ -1437,20 +1437,22 @@ func getTask(database *store.Store) http.HandlerFunc {
 			return
 		}
 		allSprints := append([]model.Sprint(nil), sprints...)
-		for _, subtask := range subtasks {
-			subtaskSprints, err := database.ListSubtaskSprints(r.Context(), subtask.SubtaskID)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "read_task_failed", "Could not read Task Subtask Sprints.")
-				return
+			for _, subtask := range subtasks {
+				subtaskSprints, err := database.ListSubtaskSprints(r.Context(), subtask.SubtaskID)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "read_task_failed", "Could not read Task Subtask Sprints.")
+					return
+				}
+				allSprints = append(allSprints, subtaskSprints...)
 			}
-			allSprints = append(allSprints, subtaskSprints...)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"task":     task,
-			"subtasks": subtasks,
-			"sprints":  sprints,
-			"children": summariseChildren(subtasks, sprints, allSprints),
-		})
+			gems, _ := database.ListProjectGems(r.Context(), task.ProjectID, model.ProjectGemFilter{TaskID: task.TaskID, Limit: 50})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"task":     task,
+				"subtasks": subtasks,
+				"sprints":  sprints,
+				"gems":     gems.Items,
+				"children": summariseChildren(subtasks, sprints, allSprints),
+			})
 	}
 }
 
