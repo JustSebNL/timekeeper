@@ -20,10 +20,13 @@ type ProjectGem struct {
 	Ref         string     `json:"ref"`
 	ProjectID   string     `json:"project_id"`
 	ParentGemID *int64     `json:"parent_gem_id,omitempty"`
+	TaskID      string     `json:"task_id,omitempty"`
+	SprintID    string     `json:"sprint_id,omitempty"`
 	Category    string     `json:"category"`
 	Subcategory string     `json:"subcategory,omitempty"`
 	Name        string     `json:"name"`
 	Content     string     `json:"content"`
+	Notes       string     `json:"notes,omitempty"`
 	Tags        string     `json:"tags,omitempty"`
 	SourceRef   string     `json:"source_ref,omitempty"`
 	Revision    int        `json:"revision"`
@@ -36,10 +39,13 @@ type ProjectGem struct {
 
 type CreateProjectGemInput struct {
 	ParentGemID *int64 `json:"parent_gem_id,omitempty"`
+	TaskID      string `json:"task_id,omitempty"`
+	SprintID    string `json:"sprint_id,omitempty"`
 	Category    string `json:"category,omitempty"`
 	Subcategory string `json:"subcategory,omitempty"`
 	Name        string `json:"name"`
 	Content     string `json:"content"`
+	Notes       string `json:"notes,omitempty"`
 	Tags        string `json:"tags,omitempty"`
 	SourceRef   string `json:"source_ref,omitempty"`
 	CreatedBy   string `json:"created_by,omitempty"`
@@ -50,8 +56,11 @@ type UpdateProjectGemInput struct {
 	Subcategory string `json:"subcategory"`
 	Name        string `json:"name"`
 	Content     string `json:"content"`
+	Notes       string `json:"notes"`
 	Tags        string `json:"tags"`
 	SourceRef   string `json:"source_ref"`
+	TaskID      string `json:"task_id"`
+	SprintID    string `json:"sprint_id"`
 	EditedBy    string `json:"edited_by"`
 }
 
@@ -60,6 +69,8 @@ type ProjectGemFilter struct {
 	Category       string
 	Subcategory    string
 	ParentGemID    *int64
+	TaskID         string
+	SprintID       string
 	PinnedOnly     bool
 	IncludeDeleted bool
 	Limit          int

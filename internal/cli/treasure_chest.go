@@ -30,6 +30,9 @@ type treasureGemOptions struct {
 	Author      string
 	FilePath    string
 	Content     string
+	TaskID      string
+	SprintID    string
+	Notes       string
 }
 
 func printTreasureChestHelp(out io.Writer) {
@@ -199,6 +202,12 @@ func writeTreasureGem(out io.Writer, gem model.ProjectGem) {
 		path += "/" + gem.Subcategory
 	}
 	fmt.Fprintf(out, "%s\t[%s]\t%s\n", gem.Ref, path, gem.Name)
+	if gem.TaskID != "" || gem.SprintID != "" {
+		fmt.Fprintf(out, "  task=%s sprint=%s\n", gem.TaskID, gem.SprintID)
+	}
+	if gem.Notes != "" {
+		fmt.Fprintf(out, "  notes: %s\n", gem.Notes)
+	}
 }
 
 func parseGemContentTail(args []string, options *treasureGemOptions) error {
@@ -217,8 +226,11 @@ func parseGemContentTail(args []string, options *treasureGemOptions) error {
 			case "--category": options.Category = strings.TrimSpace(value)
 			case "--tags": options.Tags = strings.TrimSpace(value)
 			case "--source": options.SourceRef = strings.TrimSpace(value)
-			case "--author": options.Author = strings.TrimSpace(value)
-			case "--file": options.FilePath = value
+					case "--author": options.Author = strings.TrimSpace(value)
+					case "--file": options.FilePath = value
+					case "--task": options.TaskID = strings.TrimSpace(value)
+					case "--sprint": options.SprintID = strings.TrimSpace(value)
+					case "--notes": options.Notes = strings.TrimSpace(value)
 			}
 		case "--help", "-h":
 			return fmt.Errorf("help requested")
@@ -261,7 +273,7 @@ func treasureGemAdd(projectID string, args []string, out, errOut io.Writer, base
 		fmt.Fprintf(errOut, "%v\n", err)
 		return 2
 	}
-	input := model.CreateProjectGemInput{Category: options.Category, Subcategory: options.Subcategory, Name: name, Content: options.Content, Tags: options.Tags, SourceRef: options.SourceRef, CreatedBy: options.Author}
+	input := model.CreateProjectGemInput{Category: options.Category, Subcategory: options.Subcategory, Name: name, Content: options.Content, Tags: options.Tags, SourceRef: options.SourceRef, TaskID: options.TaskID, SprintID: options.SprintID, Notes: options.Notes, CreatedBy: options.Author}
 	body, status, err := treasureRequest(http.MethodPost, treasureBaseURL(baseURL, projectID)+"/gems", input, options.Author)
 	if err != nil || status != http.StatusCreated {
 		return treasureRequestError("add Treasure Chest gem", status, body, err, errOut)
@@ -289,7 +301,7 @@ func treasureGemAttach(projectID string, args []string, out, errOut io.Writer, b
 	if name == "" || strings.ContainsAny(name, "\r\n") { fmt.Fprintln(errOut, "gem name is required and must be one line"); return 2 }
 	options := treasureGemOptions{Category: parent.Category, Subcategory: parent.Subcategory}
 	if err := parseGemContentTail(args[2:], &options); err != nil { fmt.Fprintf(errOut, "%v\n", err); return 2 }
-	input := model.CreateProjectGemInput{ParentGemID: &parent.GemID, Category: options.Category, Subcategory: options.Subcategory, Name: name, Content: options.Content, Tags: options.Tags, SourceRef: options.SourceRef, CreatedBy: options.Author}
+	input := model.CreateProjectGemInput{ParentGemID: &parent.GemID, Category: options.Category, Subcategory: options.Subcategory, Name: name, Content: options.Content, Tags: options.Tags, SourceRef: options.SourceRef, TaskID: options.TaskID, SprintID: options.SprintID, Notes: options.Notes, CreatedBy: options.Author}
 	body, status, err := treasureRequest(http.MethodPost, treasureBaseURL(baseURL, projectID)+"/gems", input, options.Author)
 	if err != nil || status != http.StatusCreated { return treasureRequestError("attach Treasure Chest gem", status, body, err, errOut) }
 	gem, err := decodeTreasureGem(body)
@@ -307,7 +319,7 @@ func treasureGemEdit(projectID string, args []string, out, errOut io.Writer, bas
 	if err != nil { fmt.Fprintln(errOut, err); return 2 }
 	current, err := readTreasureGem(baseURL, projectID, gemID, false)
 	if err != nil { fmt.Fprintf(errOut, "read gem: %v\n", err); return 1 }
-	input := model.UpdateProjectGemInput{Category: current.Category, Subcategory: current.Subcategory, Name: current.Name, Content: current.Content, Tags: current.Tags, SourceRef: current.SourceRef}
+	input := model.UpdateProjectGemInput{Category: current.Category, Subcategory: current.Subcategory, Name: current.Name, Content: current.Content, Tags: current.Tags, SourceRef: current.SourceRef, TaskID: current.TaskID, SprintID: current.SprintID, Notes: current.Notes}
 	options := treasureGemOptions{}
 	nameSet, contentSet := false, false
 	for i := 1; i < len(args); i++ {
@@ -325,6 +337,9 @@ func treasureGemEdit(projectID string, args []string, out, errOut io.Writer, bas
 		case "--tags": input.Tags = strings.TrimSpace(value)
 		case "--source": input.SourceRef = strings.TrimSpace(value)
 		case "--author": input.EditedBy = strings.TrimSpace(value)
+		case "--task": input.TaskID = strings.TrimSpace(value)
+		case "--sprint": input.SprintID = strings.TrimSpace(value)
+		case "--notes": input.Notes = strings.TrimSpace(value)
 		default: fmt.Fprintf(errOut, "unknown Treasure Chest edit option %q\n", flag); return 2
 		}
 	}
@@ -352,15 +367,17 @@ func treasureGemList(projectID string, args []string, search bool, out, errOut i
 	for i := 0; i < len(args); i++ {
 		flag := args[i]
 		switch flag {
-		case "--category", "--subcategory", "--parent", "--limit":
+		case "--category", "--subcategory", "--parent", "--limit", "--task", "--sprint":
 			if i+1 >= len(args) { fmt.Fprintf(errOut, "%s requires a value\n", flag); return 2 }
 			i++
 			value := args[i]
 			switch flag {
 			case "--category": options.Category = value
-			case "--subcategory": options.Subcategory = value
-			case "--parent": id, err := parseGemID(value); if err != nil { fmt.Fprintln(errOut, err); return 2 }; options.ParentGemID = &id
-			case "--limit": limit, err := strconv.Atoi(value); if err != nil || limit < 1 || limit > model.MaxProjectGemListLimit { fmt.Fprintf(errOut, "--limit must be between 1 and %d\n", model.MaxProjectGemListLimit); return 2 }; options.Limit = limit
+						case "--subcategory": options.Subcategory = value
+						case "--parent": id, err := parseGemID(value); if err != nil { fmt.Fprintln(errOut, err); return 2 }; options.ParentGemID = &id
+						case "--limit": limit, err := strconv.Atoi(value); if err != nil || limit < 1 || limit > model.MaxProjectGemListLimit { fmt.Fprintf(errOut, "--limit must be between 1 and %d\n", model.MaxProjectGemListLimit); return 2 }; options.Limit = limit
+						case "--task": options.TaskID = value
+						case "--sprint": options.SprintID = value
 			}
 		case "--pinned": options.PinnedOnly = true
 		case "--include-deleted": options.IncludeDeleted = true
@@ -383,6 +400,8 @@ func treasureGemList(projectID string, args []string, search bool, out, errOut i
 	if options.ParentGemID != nil { query.Set("parent_gem_id", strconv.FormatInt(*options.ParentGemID, 10)) }
 	if options.PinnedOnly { query.Set("pinned", "true") }
 	if options.IncludeDeleted { query.Set("include_deleted", "true") }
+	if options.TaskID != "" { query.Set("task_id", options.TaskID) }
+	if options.SprintID != "" { query.Set("sprint_id", options.SprintID) }
 	query.Set("limit", strconv.Itoa(options.Limit))
 	body, status, err := treasureRequest(http.MethodGet, endpoint+"?"+query.Encode(), nil, "")
 	if err != nil || status != http.StatusOK { return treasureRequestError("list Treasure Chest gems", status, body, err, errOut) }

@@ -55,7 +55,7 @@ func createProjectGem(database *store.Store) http.HandlerFunc {
 
 func parseProjectGemFilter(r *http.Request) (model.ProjectGemFilter, error) {
 	query := r.URL.Query()
-	filter := model.ProjectGemFilter{Query: query.Get("q"), Category: query.Get("category"), Subcategory: query.Get("subcategory")}
+	filter := model.ProjectGemFilter{Query: query.Get("q"), Category: query.Get("category"), Subcategory: query.Get("subcategory"), TaskID: query.Get("task_id"), SprintID: query.Get("sprint_id")}
 	if raw := query.Get("parent_gem_id"); raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || id < 1 { return filter, fmt.Errorf("parent_gem_id must be a positive integer") }

@@ -14,7 +14,7 @@ import (
 	"github.com/JustSebNL/timekeeper/internal/model"
 )
 
-const projectGemColumns = `gem_id, project_id, parent_gem_id, category, subcategory, name, content, tags, source_ref, revision, pinned, deleted_at, created_by, created_at, updated_at`
+const projectGemColumns = `gem_id, project_id, parent_gem_id, task_id, sprint_id, category, subcategory, name, content, notes, tags, source_ref, revision, pinned, deleted_at, created_by, created_at, updated_at`
 
 type projectGemScanner interface { Scan(dest ...any) error }
 
@@ -53,8 +53,8 @@ func scanProjectGem(scanner projectGemScanner) (model.ProjectGem, error) {
 	var pinned int
 	var deletedAt sql.NullString
 	var createdAt, updatedAt string
-	if err := scanner.Scan(&gem.GemID, &gem.ProjectID, &parentID, &gem.Category, &gem.Subcategory,
-		&gem.Name, &gem.Content, &gem.Tags, &gem.SourceRef, &gem.Revision, &pinned,
+	if err := scanner.Scan(&gem.GemID, &gem.ProjectID, &parentID, &gem.TaskID, &gem.SprintID, &gem.Category, &gem.Subcategory,
+		&gem.Name, &gem.Content, &gem.Notes, &gem.Tags, &gem.SourceRef, &gem.Revision, &pinned,
 		&deletedAt, &gem.CreatedBy, &createdAt, &updatedAt); err != nil {
 		return model.ProjectGem{}, err
 	}
@@ -114,18 +114,19 @@ func (s *Store) CreateProjectGem(ctx context.Context, projectID string, input mo
 	var parent any
 	if input.ParentGemID != nil { parent = *input.ParentGemID }
 	result, err := tx.ExecContext(ctx, `INSERT INTO project_gems (
-		project_id, parent_gem_id, category, subcategory, name, content, tags, source_ref,
+		project_id, parent_gem_id, task_id, sprint_id, category, subcategory, name, content, notes, tags, source_ref,
 		revision, pinned, deleted_at, created_by, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, NULL, ?, ?, ?)`,
-		projectID, parent, input.Category, input.Subcategory, input.Name, input.Content,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, NULL, ?, ?, ?)`,
+		projectID, parent, strings.TrimSpace(input.TaskID), strings.TrimSpace(input.SprintID), input.Category, input.Subcategory, input.Name, input.Content, input.Notes,
 		input.Tags, input.SourceRef, input.CreatedBy, stamp(now), stamp(now))
 	if err != nil { return model.ProjectGem{}, fmt.Errorf("insert project gem: %w", err) }
 	gemID, err := result.LastInsertId()
 	if err != nil { return model.ProjectGem{}, fmt.Errorf("read project gem id: %w", err) }
 	gem := model.ProjectGem{GemID: gemID, Ref: fmt.Sprintf("G-%d", gemID), ProjectID: projectID,
-		ParentGemID: input.ParentGemID, Category: input.Category, Subcategory: input.Subcategory,
-		Name: input.Name, Content: input.Content, Tags: input.Tags, SourceRef: input.SourceRef,
-		Revision: 1, CreatedBy: input.CreatedBy, CreatedAt: now, UpdatedAt: now}
+		ParentGemID: input.ParentGemID, TaskID: strings.TrimSpace(input.TaskID), SprintID: strings.TrimSpace(input.SprintID),
+		Category: input.Category, Subcategory: input.Subcategory, Name: input.Name, Content: input.Content,
+		Notes: input.Notes, Tags: input.Tags, SourceRef: input.SourceRef, Revision: 1,
+		CreatedBy: input.CreatedBy, CreatedAt: now, UpdatedAt: now}
 	if err := insertProjectGemRevision(ctx, tx, gem, input.CreatedBy); err != nil { return model.ProjectGem{}, err }
 	eventType := "gem_created"
 	if gem.ParentGemID != nil { eventType = "gem_attached" }
@@ -186,6 +187,8 @@ func (s *Store) ListProjectGems(ctx context.Context, projectID string, filter mo
 	if !filter.IncludeDeleted { where += ` AND deleted_at IS NULL` }
 	if filter.Category != "" { where += ` AND category = ? COLLATE NOCASE`; args = append(args, filter.Category) }
 	if filter.Subcategory != "" { where += ` AND subcategory = ? COLLATE NOCASE`; args = append(args, filter.Subcategory) }
+	if filter.TaskID != "" { where += ` AND task_id = ?`; args = append(args, strings.TrimSpace(filter.TaskID)) }
+	if filter.SprintID != "" { where += ` AND sprint_id = ?`; args = append(args, strings.TrimSpace(filter.SprintID)) }
 	if filter.ParentGemID != nil { where += ` AND parent_gem_id = ?`; args = append(args, *filter.ParentGemID) }
 	if filter.PinnedOnly { where += ` AND pinned = 1` }
 	if filter.Query != "" {
@@ -194,8 +197,8 @@ func (s *Store) ListProjectGems(ctx context.Context, projectID string, filter mo
 		}
 		terms := strings.Fields(filter.Query)
 		for _, term := range terms {
-			where += ` AND (instr(lower(name),lower(?))>0 OR instr(lower(content),lower(?))>0 OR instr(lower(category),lower(?))>0 OR instr(lower(subcategory),lower(?))>0 OR instr(lower(tags),lower(?))>0 OR instr(lower(source_ref),lower(?))>0)`
-			for i := 0; i < 6; i++ {
+			where += ` AND (instr(lower(name),lower(?))>0 OR instr(lower(content),lower(?))>0 OR instr(lower(notes),lower(?))>0 OR instr(lower(category),lower(?))>0 OR instr(lower(subcategory),lower(?))>0 OR instr(lower(tags),lower(?))>0 OR instr(lower(source_ref),lower(?))>0)`
+			for i := 0; i < 7; i++ {
 				args = append(args, term)
 			}
 		}
@@ -238,10 +241,13 @@ func (s *Store) UpdateProjectGem(ctx context.Context, projectID string, gemID in
 	updated.Category, updated.Subcategory = input.Category, input.Subcategory
 	updated.Name, updated.Content = input.Name, input.Content
 	updated.Tags, updated.SourceRef = input.Tags, input.SourceRef
+	updated.Notes = input.Notes
+	updated.TaskID = strings.TrimSpace(input.TaskID)
+	updated.SprintID = strings.TrimSpace(input.SprintID)
 	updated.Revision++
 	updated.UpdatedAt = now
-	if _, err := tx.ExecContext(ctx, `UPDATE project_gems SET category=?, subcategory=?, name=?, content=?, tags=?, source_ref=?, revision=?, updated_at=? WHERE project_id=? AND gem_id=?`,
-		updated.Category, updated.Subcategory, updated.Name, updated.Content, updated.Tags, updated.SourceRef,
+	if _, err := tx.ExecContext(ctx, `UPDATE project_gems SET category=?, subcategory=?, name=?, content=?, notes=?, tags=?, source_ref=?, task_id=?, sprint_id=?, revision=?, updated_at=? WHERE project_id=? AND gem_id=?`,
+		updated.Category, updated.Subcategory, updated.Name, updated.Content, updated.Notes, updated.Tags, updated.SourceRef, updated.TaskID, updated.SprintID,
 		updated.Revision, stamp(now), projectID, gemID); err != nil { return model.ProjectGem{}, fmt.Errorf("update project gem: %w", err) }
 	if err := insertProjectGemRevision(ctx, tx, updated, input.EditedBy); err != nil { return model.ProjectGem{}, err }
 	if err := recordProjectEvent(ctx, tx, projectID, "gem", updated.Ref, "gem_edited", updated.Ref+" edited to revision "+fmt.Sprint(updated.Revision), now); err != nil {
